@@ -1,8 +1,8 @@
-# 🛰️ Blingsight · Crew Health Monitor
+# 🛰️ EVAde · Crew Health Monitor
 
-**NASA Space Apps Challenge 2026 · NYU Tandon · Team Blingsight Data**
+**NASA Space Apps Challenge 2026 · NYU Tandon · Team EVAde**
 
-> On long missions, astronauts carry much of the responsibility for spotting health changes in themselves. Blingsight is an onboard health co-pilot that **collects** health indicators (EEG, ECG, vitals, sleep, mood, radiation), **compares** them with each astronaut's *own* baseline, and tells them **what to do next**, with no help from Earth needed.
+> On long missions, astronauts carry much of the responsibility for spotting health changes in themselves. EVAde is an onboard health co-pilot that **collects** health indicators (EEG, ECG, vitals, sleep, mood, radiation), **compares** them with each astronaut's *own* baseline, and tells them **what to do next**, with no help from Earth needed.
 
 **Design principle (from our whiteboard):** *we do not assume astronauts know how to assess their health.* Every alert says why it fired and gives concrete steps, and a tutorial section teaches the basics.
 
