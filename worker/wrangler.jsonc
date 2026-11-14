@@ -8,7 +8,7 @@
   "compatibility_flags": ["nodejs_compat"],
 
   // Serve everything on evade.health (Cloudflare creates the DNS record + cert on deploy).
-  "workers_dev": true,
+  "workers_dev": false,
   "routes": [{ "pattern": "evade.health", "custom_domain": true }],
 
   // The repo's frontend/ folder is served as-is: frontend/voice/index.html -> /voice/.
