@@ -42,7 +42,7 @@
     "TWILIO_ACCOUNT_SID": "ACaf8ad78c4d47f613d6fb9c618743dbf8",
     "TWILIO_PHONE_NUMBER": "+19086631285",
     "XAI_MODEL": "grok-voice-latest",
-    "XAI_VOICE": "eve",
+    "XAI_VOICE": "atlas",
     "EVADE_COMMS_MODE": "online",
     "TWILIO_VALIDATE_SIGNATURE": "true",
     // Comma-separated list of origins allowed by CORS, or "*". Auth is a bearer header
