@@ -3,7 +3,8 @@
 (() => {
   const RATE = 24000;
   const params = new URLSearchParams(location.search);
-  // Access key: from ?token= (then remembered and stripped from the URL), else remembered, else ask once.
+  // Optional access key: from ?token= (then remembered and stripped from the URL), else
+  // remembered. The demo is open without a key; a token is still sent if one is present.
   const KEY_STORE = "evade_access_key";
   let TOKEN = params.get("token") || "";
   if (TOKEN) {
@@ -13,11 +14,6 @@
     history.replaceState(null, "", location.pathname + (rest ? "?" + rest : "") + location.hash);
   } else {
     try { TOKEN = localStorage.getItem(KEY_STORE) || ""; } catch {}
-    const local = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
-    if (!TOKEN && !local) {
-      TOKEN = (window.prompt("Enter the EVAde access key") || "").trim();
-      if (TOKEN) { try { localStorage.setItem(KEY_STORE, TOKEN); } catch {} }
-    }
   }
   const CREW = params.get("crew") || "browser-demo";
   const qs = (extra = {}) => {
@@ -47,6 +43,17 @@
 
   function clearEmpty(el) { const e = el.querySelector(".empty"); if (e) e.remove(); }
   function scrollDown() { transcriptEl.scrollTop = transcriptEl.scrollHeight; }
+
+  function limitMessage(text) {
+    const t = String(text || "").toLowerCase();
+    if (t.includes("too many people talking")) {
+      return "Too many people are talking to EVAde right now. Please try again in a minute.";
+    }
+    if (t.includes("session limit reached") || t.includes("time-up")) {
+      return "This demo session has reached its time limit. You can start a new check-in whenever you're ready.";
+    }
+    return null;
+  }
 
   function bubble(role, id) {
     const key = `${role}:${id || Math.random()}`;
@@ -158,8 +165,17 @@
       case "status":
         if (msg.state === "connecting") setStatus("connecting", "Connecting to Grok…");
         else if (msg.state === "ready") setStatus("ready", "Listening. Just talk.");
-        else if (msg.state === "ended") setStatus("", "Call ended");
+        else if (msg.state === "ended") {
+          const friendly = limitMessage(msg.reason || msg.message);
+          setStatus(friendly ? "error" : "", friendly || "Call ended");
+          if (friendly) sysNote(friendly);
+        }
         break;
+      case "notice": {
+        const friendly = limitMessage(msg.message) || msg.message;
+        if (friendly) { setStatus("error", friendly); sysNote(friendly); }
+        break;
+      }
       case "audio": playPcm16(msg.audio); break;
       case "clear": stopPlayback(); break;
       case "mark": ackMarkWhenPlayed(msg.name); break;
@@ -190,10 +206,12 @@
         }
         refreshData();
         break;
-      case "error":
-        setStatus("error", msg.message || "Error");
-        sysNote(`⚠️ ${msg.message || "Error"}`);
+      case "error": {
+        const friendly = limitMessage(msg.message) || msg.message || "Error";
+        setStatus("error", friendly);
+        sysNote(`⚠️ ${friendly}`);
         break;
+      }
     }
   }
 
@@ -221,8 +239,19 @@
       if (TOKEN) wsQs.set("token", TOKEN);
       ws = new WebSocket(`${proto}://${location.host}/voice/browser?${wsQs}`);
       ws.onmessage = (e) => onServer(JSON.parse(e.data));
-      ws.onclose = () => { if (ctx) stop(false); };
-      ws.onerror = () => setStatus("error", "Connection error");
+      ws.onclose = (e) => {
+        const friendly = limitMessage(e.reason);
+        if (friendly) {
+          setStatus("error", friendly);
+          sysNote(friendly);
+        } else if (e.code !== 1000 && !statusEl.classList.contains("error")) {
+          setStatus("error", "Connection error");
+        }
+        if (ctx) stop(false);
+      };
+      ws.onerror = () => {
+        if (!statusEl.classList.contains("error")) setStatus("error", "Connection error");
+      };
       setStatus("connecting", "Connecting…");
       talkBtn.classList.add("live");
       talkBtn.textContent = "End check-in";
