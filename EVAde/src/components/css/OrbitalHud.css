@@ -1,0 +1,168 @@
+.orbital {
+  --px: 0;
+  --py: 0;
+  position: relative;
+  inline-size: 100%;
+  aspect-ratio: 1;
+  max-inline-size: 36rem;
+  margin-inline: auto;
+  perspective: 75rem;
+}
+
+.orbital__scene {
+  position: absolute;
+  inset: 8%;
+  transform-style: preserve-3d;
+  transform: rotateX(calc(var(--py) * -14deg)) rotateY(calc(var(--px) * 18deg));
+  transition: transform 600ms var(--ease-standard, ease-out);
+}
+
+.orbital__planet {
+  position: absolute;
+  inset: 18%;
+  inline-size: 64%;
+  block-size: 64%;
+  animation: planet-breathe 8s ease-in-out infinite;
+}
+
+.orbital__latitudes ellipse {
+  fill: none;
+  stroke: var(--color-on-dark);
+  stroke-opacity: 0.16;
+  stroke-width: 0.6;
+}
+
+.orbital__latitudes {
+  transform-origin: 100px 100px;
+  animation: planet-spin 40s linear infinite;
+}
+
+.orbital__orbit {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-18deg);
+}
+
+.orbital__orbit--inner {
+  transform: rotate(14deg);
+}
+
+.orbital__ring {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  overflow: visible;
+}
+
+.orbital__ring ellipse {
+  fill: none;
+  stroke: var(--color-accent);
+  stroke-opacity: 0.5;
+  stroke-width: 1.5;
+  stroke-dasharray: 2 6;
+  vector-effect: non-scaling-stroke;
+}
+
+.orbital__iss,
+.orbital__moon {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  offset-path: ellipse(48% 18% at 50% 50%);
+  offset-rotate: auto;
+  animation: orbit-travel 18s linear infinite;
+}
+
+.orbital__iss {
+  inline-size: 18%;
+  filter: drop-shadow(0 0 var(--spacing-2) var(--color-accent));
+}
+
+.orbital__moon {
+  offset-path: ellipse(40% 14% at 50% 50%);
+  inline-size: var(--spacing-3);
+  block-size: var(--spacing-3);
+  border-radius: var(--radius-full);
+  background: var(--color-data-categorical-pink);
+  box-shadow: 0 0 var(--spacing-4) var(--color-data-categorical-pink);
+  animation-duration: 11s;
+  animation-direction: reverse;
+}
+
+.orbital__card {
+  position: absolute;
+  z-index: 1;
+  transform: translate3d(calc(var(--px) * var(--depth) * -1), calc(var(--py) * var(--depth) * -1), 0);
+  transition: transform 500ms var(--ease-standard, ease-out);
+}
+
+.orbital__card > * {
+  animation: card-float 6s ease-in-out infinite;
+  animation-delay: var(--float-delay, 0s);
+}
+
+.orbital__card--heart {
+  --depth: var(--spacing-10);
+  inset-block-start: 4%;
+  inset-inline-start: -4%;
+  inline-size: 15rem;
+}
+
+.orbital__card--sleep {
+  --depth: var(--spacing-8);
+  --float-delay: -2s;
+  inset-block-start: 14%;
+  inset-inline-end: -6%;
+}
+
+.orbital__card--dose {
+  --depth: var(--spacing-12);
+  --float-delay: -4s;
+  inset-block-end: 10%;
+  inset-inline-end: 2%;
+}
+
+.orbital__card--mood {
+  --depth: var(--spacing-6);
+  --float-delay: -1s;
+  inset-block-end: 16%;
+  inset-inline-start: 2%;
+}
+
+@keyframes orbit-travel {
+  from {
+    offset-distance: 0%;
+  }
+  to {
+    offset-distance: 100%;
+  }
+}
+
+@keyframes planet-breathe {
+  50% {
+    transform: scale(1.03);
+  }
+}
+
+@keyframes planet-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes card-float {
+  50% {
+    transform: translateY(calc(var(--spacing-2) * -1));
+  }
+}
+
+@media (max-width: 40rem) {
+  .orbital__card--heart {
+    inline-size: 12rem;
+  }
+
+  .orbital__card--mood {
+    display: none;
+  }
+}

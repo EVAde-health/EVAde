@@ -1,0 +1,38 @@
+.score-ring {
+  position: relative;
+  flex: none;
+  inline-size: 7.5rem;
+  block-size: 7.5rem;
+}
+
+.score-ring--lg {
+  inline-size: 10rem;
+  block-size: 10rem;
+}
+
+.score-ring__svg {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  transform: rotate(-90deg);
+}
+
+.score-ring__track,
+.score-ring__value {
+  fill: none;
+  stroke-width: 8;
+}
+
+.score-ring__track {
+  stroke: var(--color-background-muted);
+}
+
+.score-ring__value {
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 3px currentColor);
+}
+
+.score-ring__label {
+  position: relative;
+}

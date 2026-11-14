@@ -1,0 +1,38 @@
+.tutorial-player__video,
+.tutorial-player__placeholder {
+  inline-size: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-container);
+  background: var(--color-background-muted);
+}
+
+.tutorial-player__placeholder {
+  --tone: var(--color-accent);
+  position: relative;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  background:
+    radial-gradient(circle at 30% 30%, color-mix(in oklab, var(--tone) 40%, transparent), transparent 60%),
+    radial-gradient(circle at 80% 80%, color-mix(in oklab, var(--color-accent) 30%, transparent), transparent 55%),
+    var(--color-background-muted);
+}
+
+.tutorial-player__placeholder::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(0deg, transparent 0 3px, color-mix(in oklab, var(--color-text-primary) 4%, transparent) 3px 4px);
+  animation: scanlines 6s linear infinite;
+}
+
+@keyframes scanlines {
+  to {
+    background-position: 0 var(--spacing-10);
+  }
+}
+
+.tutorial-player__placeholder--blue { --tone: var(--color-data-categorical-blue); }
+.tutorial-player__placeholder--pink { --tone: var(--color-data-categorical-pink); }
+.tutorial-player__placeholder--orange { --tone: var(--color-data-categorical-orange); }
+.tutorial-player__placeholder--yellow { --tone: var(--color-data-yellow-3); }
+.tutorial-player__placeholder--purple { --tone: var(--color-data-categorical-purple); }

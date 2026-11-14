@@ -1,0 +1,32 @@
+.panel-card {
+  --panel-tone: var(--color-accent);
+  position: relative;
+  overflow: hidden;
+  block-size: 100%;
+}
+
+.panel-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  block-size: var(--spacing-1);
+  background: linear-gradient(90deg, var(--panel-tone), transparent 85%);
+  opacity: 0.85;
+}
+
+.panel-card--nominal { --panel-tone: var(--color-success); }
+.panel-card--caution { --panel-tone: var(--color-warning); }
+.panel-card--critical { --panel-tone: var(--color-error); }
+
+.panel-card__icon {
+  flex: none;
+  inline-size: var(--spacing-8);
+  block-size: var(--spacing-8);
+  border-radius: var(--radius-element);
+  color: var(--panel-tone);
+  background: color-mix(in oklab, var(--panel-tone) 16%, transparent);
+}
+
+.panel-card__actions {
+  margin-block-start: calc(var(--spacing-2) * -1);
+}

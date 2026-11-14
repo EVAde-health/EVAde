@@ -1,0 +1,87 @@
+.explorer__chart {
+  min-block-size: 300px;
+  animation: rise-in 450ms var(--ease-entrance, ease-out) both;
+}
+
+.explorer__table {
+  max-block-size: 300px;
+}
+
+.explorer__zone-bar {
+  gap: 2px;
+  block-size: var(--spacing-8);
+  border-radius: var(--radius-element);
+  overflow: hidden;
+}
+
+.explorer__zone-segment {
+  align-items: center;
+  min-inline-size: 0;
+  padding-inline: var(--spacing-2);
+  border-radius: var(--radius-inner);
+  transition: flex-grow var(--duration-slow, 400ms) var(--ease-standard, ease);
+}
+
+.explorer__zone-label {
+  color: var(--color-on-dark);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.explorer__rhythm {
+  inline-size: 100%;
+  max-inline-size: 56rem;
+  block-size: auto;
+}
+
+.explorer__rhythm-axis {
+  font-size: 3.2px;
+  fill: var(--color-text-secondary);
+}
+
+.explorer__rhythm-cell {
+  transition: opacity var(--duration-fast, 120ms);
+}
+
+.explorer__rhythm:hover .explorer__rhythm-cell {
+  opacity: 0.55;
+}
+
+.explorer__rhythm .explorer__rhythm-cell:hover {
+  opacity: 1;
+  stroke: var(--color-text-primary);
+  stroke-width: 0.6;
+}
+
+.explorer__rhythm-flag {
+  fill: var(--color-error);
+  stroke: var(--color-background-card);
+  stroke-width: 0.5;
+  pointer-events: none;
+}
+
+.explorer__rhythm-caption {
+  min-block-size: 1.5em;
+}
+
+.explorer__ramp {
+  flex: 1;
+  max-inline-size: 12rem;
+  block-size: var(--spacing-2);
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, var(--color-data-blue-1), var(--color-data-blue-3), var(--color-data-blue-5));
+}
+
+.explorer__legend-line {
+  inline-size: var(--spacing-4);
+  block-size: 2px;
+  border-radius: var(--radius-full);
+}
+
+.explorer__legend-band {
+  inline-size: var(--spacing-4);
+  block-size: var(--spacing-3);
+  border-radius: var(--radius-inner);
+  background: color-mix(in oklab, var(--color-success) 18%, transparent);
+}

@@ -1,0 +1,13 @@
+.page-header {
+  animation: rise-in 500ms var(--ease-entrance, ease-out) both;
+}
+
+.page-header__eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.page-header__title {
+  font-size: clamp(1.75rem, 3vw, 2.5rem);
+  letter-spacing: -0.02em;
+}

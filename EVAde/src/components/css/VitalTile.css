@@ -1,0 +1,31 @@
+.vital-tile {
+  --tile-tone: var(--color-success);
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  border-inline-start: var(--spacing-1) solid var(--tile-tone);
+}
+
+.vital-tile--caution { --tile-tone: var(--color-warning); }
+.vital-tile--critical { --tile-tone: var(--color-error); }
+
+.vital-tile::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 100% 0%, color-mix(in oklab, var(--tile-tone) 14%, transparent), transparent 60%);
+  pointer-events: none;
+}
+
+.vital-tile--selected {
+  box-shadow: 0 0 0 2px var(--color-accent), var(--shadow-med);
+}
+
+.vital-tile:focus-visible {
+  outline: 2px solid var(--focus-outline-color);
+  outline-offset: 2px;
+}
+
+.vital-tile__delta {
+  margin-inline-start: auto;
+}

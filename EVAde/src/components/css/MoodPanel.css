@@ -1,0 +1,34 @@
+.mood-panel__emoji {
+  line-height: 1;
+  animation: mood-bob 4s ease-in-out infinite;
+}
+
+@keyframes mood-bob {
+  50% {
+    transform: translateY(calc(var(--spacing-1) * -1)) rotate(-6deg);
+  }
+}
+
+.mood-panel__cell {
+  aspect-ratio: 1;
+  border-radius: var(--radius-inner);
+  cursor: default;
+  transition: transform var(--duration-fast, 120ms) var(--ease-standard, ease);
+}
+
+.mood-panel__cell:hover,
+.mood-panel__cell:focus-visible {
+  transform: scale(1.12);
+  outline: 2px solid var(--color-text-primary);
+  outline-offset: 1px;
+}
+
+.mood-panel__key {
+  inline-size: var(--spacing-4);
+  block-size: var(--spacing-3);
+  border-radius: var(--radius-inner);
+}
+
+.mood-panel__calendar {
+  max-inline-size: 20rem;
+}

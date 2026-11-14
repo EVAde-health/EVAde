@@ -1,0 +1,17 @@
+.bone-panel__key {
+  inline-size: var(--spacing-4);
+  block-size: 2px;
+  border-radius: var(--radius-full);
+}
+
+.bone-panel__key--dashed {
+  background: transparent;
+  border-block-start: 2px dashed var(--color-data-neutral);
+}
+
+.bone-panel__band {
+  inline-size: var(--spacing-4);
+  block-size: var(--spacing-3);
+  border-radius: var(--radius-inner);
+  background: color-mix(in oklab, var(--color-warning) 22%, transparent);
+}

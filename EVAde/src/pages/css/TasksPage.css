@@ -1,0 +1,11 @@
+.tasks__summary {
+  background:
+    radial-gradient(ellipse at 100% 0%, color-mix(in oklab, var(--color-data-categorical-orange) 14%, transparent), transparent 55%),
+    radial-gradient(ellipse at 0% 100%, color-mix(in oklab, var(--color-accent) 16%, transparent), transparent 55%),
+    var(--color-background-card);
+}
+
+.tasks__stats {
+  flex: 1;
+  min-inline-size: 16rem;
+}

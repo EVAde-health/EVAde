@@ -1,0 +1,135 @@
+.landing {
+  min-block-size: 100dvh;
+  overflow-x: clip;
+}
+
+.landing__hero {
+  position: relative;
+  min-block-size: 100dvh;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.landing__hero::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0;
+  block-size: 30%;
+  background: linear-gradient(transparent, var(--color-background-body));
+  pointer-events: none;
+  z-index: -1;
+}
+
+.landing__grain {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.06;
+  background-image: radial-gradient(var(--color-text-primary) 0.5px, transparent 0.5px);
+  background-size: var(--spacing-1) var(--spacing-1);
+  pointer-events: none;
+}
+
+.landing__hero > .nebula-canvas {
+  z-index: -2;
+}
+
+.landing__nav {
+  position: relative;
+  z-index: 2;
+}
+
+.landing__hero-grid {
+  flex: 1;
+  align-items: center;
+  inline-size: 100%;
+  max-inline-size: 90rem;
+  margin-inline: auto;
+  padding: var(--spacing-6);
+}
+
+.landing__copy {
+  max-inline-size: 40rem;
+}
+
+.landing__title {
+  font-size: clamp(2.6rem, 6vw, 5.2rem);
+  line-height: 1.02;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+
+.landing__title-accent {
+  display: inline-block;
+  font-variant-ligatures: none;
+}
+
+.landing__lede {
+  max-inline-size: 34rem;
+  text-wrap: pretty;
+}
+
+.landing__cta {
+  box-shadow: 0 0 var(--spacing-8) color-mix(in oklab, var(--color-accent) 55%, transparent);
+  animation: cta-glow 3.5s ease-in-out infinite;
+}
+
+@keyframes cta-glow {
+  50% {
+    box-shadow: 0 0 var(--spacing-12) color-mix(in oklab, var(--color-accent) 80%, transparent);
+  }
+}
+
+.landing__visual {
+  min-inline-size: 0;
+}
+
+.landing__marquee {
+  position: relative;
+  overflow: hidden;
+  padding-block: var(--spacing-5);
+  -webkit-mask-image: linear-gradient(90deg, transparent, black 10%, black 90%, transparent);
+  mask-image: linear-gradient(90deg, transparent, black 10%, black 90%, transparent);
+}
+
+.landing__marquee-track {
+  inline-size: max-content;
+  animation: marquee 40s linear infinite;
+}
+
+.landing__marquee:hover .landing__marquee-track {
+  animation-play-state: paused;
+}
+
+@keyframes marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.landing__pillar {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 100% 0%, color-mix(in oklab, var(--color-accent) 12%, transparent), transparent 55%),
+    var(--color-background-card);
+}
+
+.landing__pillar-icon {
+  inline-size: var(--spacing-12);
+  block-size: var(--spacing-12);
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-container);
+  background: var(--color-background-muted);
+}
+
+.landing__pillar-icon--blue { background: var(--color-background-blue); }
+.landing__pillar-icon--pink { background: var(--color-background-pink); }
+.landing__pillar-icon--orange { background: var(--color-background-orange); }
+.landing__pillar-icon--purple { background: var(--color-background-purple); }
+.landing__pillar-icon--teal { background: var(--color-background-teal); }
+
+.landing__footer {
+  border-block-start: 1px solid var(--color-border);
+}
