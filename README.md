@@ -11,15 +11,16 @@
 ## Contents
 1. [What's built](#-whats-built)
 2. [Run it](#-run-it-2-minutes)
-3. [Architecture](#-architecture)
-4. [Datasets & data sources](#-datasets--data-sources)
-5. [Key numbers for the pitch](#-key-numbers-for-the-pitch)
-6. [Team & task list](#-team--task-list)
-7. [Ideas & roadmap](#-ideas--roadmap)
-8. [Open questions](#-open-questions)
-9. [Repo layout](#-repo-layout)
-10. [Limitations](#%EF%B8%8F-honest-limitations)
-11. [Sources](#-sources)
+3. [Voice agent (Twilio + Grok)](#-voice-agent-twilio--grok)
+4. [Architecture](#-architecture)
+5. [Datasets & data sources](#-datasets--data-sources)
+6. [Key numbers for the pitch](#-key-numbers-for-the-pitch)
+7. [Team & task list](#-team--task-list)
+8. [Ideas & roadmap](#-ideas--roadmap)
+9. [Open questions](#-open-questions)
+10. [Repo layout](#-repo-layout)
+11. [Limitations](#%EF%B8%8F-honest-limitations)
+12. [Sources](#-sources)
 
 ---
 
@@ -30,10 +31,13 @@
 | **Live monitor** | `http://localhost:8000` | Simulated live EEG (4 ch) + ECG at 256 Hz → stress, fatigue and heart-rhythm scores vs. a **personal baseline** → green / yellow / red alerts with actions. "Send to flight surgeon" on any alert. Demo buttons: Calm, Stress, Fatigue, Arrhythmia |
 | **Daily check-in** (React + TypeScript) | `http://localhost:8000/checkin/` | Astronaut enters blood pressure, temperature, blood sugar, sleep, mood and symptoms. Checked against reference ranges **and** their own history. Saved locally (SQLite). Flight-surgeon **downlink queue** with comms modes: Online (ISS), Mars 20-min delay, Blackout |
 | **Mission trends** | `http://localhost:8000/mission` | 180-day mission (ISS or Mars transit, exercise on/off) built from **published NASA data**: radiation, bone, sleep, HRV, blood pressure, EEG, comms delay, with insights + actions. **Live NOAA space weather** (solar radiation storm level) and radiation dose by destination |
+| **Voice check-in** (Twilio + Grok) | Call your Twilio number (webhook `POST /voice/incoming`) | Phone call with **EVAde**, a Grok realtime voice agent: asks sleep, mood 1–5, symptoms and optional BP / temperature / blood sugar → saves to SQLite → reads back **green / yellow / red** with why + what to do → can queue a message to the **flight-surgeon downlink**. Optional `POST /voice/alert` phones someone with a red alert. See [Voice agent](#-voice-agent-twilio--grok) |
 
 Every number on screen is labelled **backed** (from a study), **derived** (our arithmetic on a study's number) or **illustrative** (chosen for the demo), with a source link.
 
 **Demo script (about 90 s):** live monitor → click Stress → alert + action → check-in with a bad day → red result → send to flight surgeon → Blackout keeps it queued → Mars mode transmits with a 20-min arrival → Mission trends ▶ Play on Mars transit (radiation passes 50% of the career limit) → tick **Demo storm** for an S3 solar storm alert.
+
+**+ Voice add-on (about 20 s):** call the Twilio number on speaker → EVAde greets you → "I slept four hours, mood two, and I've got a headache" → EVAde says **red**, explains *why* (under 4 hours hurts judgement) and gives 2 actions → "yes, send it to the flight surgeon" → "Sent to the flight surgeon now."
 
 ---
 
@@ -58,6 +62,87 @@ uvicorn api.main:app                     # Windows: py -m uvicorn api.main:app
 | Test the live NOAA feed | `python -m stream.space_weather` |
 | Edit the React check-in app | `cd checkin-app && npm install && npm run dev` (http://localhost:5173, keep FastAPI running) |
 | Rebuild it for FastAPI to serve | `cd checkin-app && npm run build` |
+
+---
+
+## 📞 Voice agent (Twilio + Grok)
+
+A crew member **phones a Twilio number** and talks live with **EVAde**, an xAI Grok realtime voice agent that runs the daily check-in out loud. Same design principle: every flag comes with *why* and *what to do*, and it says it's **decision support, not a medical device**.
+
+```
+Phone ⇄ Twilio ──(Media Stream WS, μ-law 8 kHz)──> /voice/stream ⇄ wss://api.x.ai/v1/realtime (grok-voice-latest)
+                                                       │  function calls
+                                                       ▼
+                                        api/voice_tools.py → models/checkin_rules.py → SQLite data/evade.db
+                                        (save_checkin, queue_flight_surgeon_message → downlink_queue)
+```
+
+- **Audio passes straight through:** Twilio sends G.711 μ-law 8 kHz and xAI accepts/returns `audio/pcmu`, so there's no resampling.
+- **Barge-in:** when Grok's server VAD hears you start talking, we tell Twilio to `clear` its buffered audio.
+- **Tools:** `save_checkin` (stores the check-in, returns level + reasons + actions, compares sleep and mood with your own last 7 check-ins) and `queue_flight_surgeon_message` (writes to `downlink_queue` with comms mode `online` / `mars` / `blackout`).
+- **Security:** `/voice/incoming` checks Twilio's `X-Twilio-Signature`; it hands Twilio a one-time token that `/voice/stream` checks before opening an xAI session. `/voice/alert` needs `X-EVADE-Token` (or a localhost caller).
+- **Stand-ins:** `models/checkin_rules.py` (standard clinical reference ranges) and the SQLite helpers in `api/voice_tools.py` are placeholders for the team's real check-in rules and storage. Repoint the two functions in `api/voice_tools.py` when that code lands. `api/main.py` here is minimal; merge its `include_router` line into the real one.
+
+### Setup
+
+1. **Keys:** an xAI API key ([console.x.ai](https://console.x.ai)) and a Twilio account with a voice-capable number ([console.twilio.com](https://console.twilio.com)).
+2. **Env:** copy `.env.example` to `.env` and fill it in (it's git-ignored):
+
+| Variable | Required | What it is |
+|---|---|---|
+| `XAI_API_KEY` | ✅ | xAI API key (sent as `Authorization: Bearer …`) |
+| `TWILIO_ACCOUNT_SID` | for `/voice/alert` | Twilio Account SID (`AC…`) |
+| `TWILIO_AUTH_TOKEN` | ✅ (recommended) | Twilio auth token; turns on webhook signature checks |
+| `TWILIO_PHONE_NUMBER` | for `/voice/alert` | Your Twilio number, E.164 (`+1…`) |
+| `PUBLIC_BASE_URL` | ✅ | Public HTTPS URL of this server, e.g. `https://abc123.ngrok.app` |
+| `XAI_VOICE` | optional | Voice name, default `eve` (others include `ara`, `rex`, `sal`, `leo`) |
+| `XAI_MODEL` | optional | Default `grok-voice-latest` |
+| `TWILIO_VALIDATE_SIGNATURE` | optional | `false` to skip signature checks in local testing only |
+| `EVADE_COMMS_MODE` | optional | Default downlink mode: `online` (ISS), `mars` (20-min delay), `blackout` |
+| `EVADE_ALERT_TOKEN` | optional | Shared secret for `POST /voice/alert` from another machine |
+
+### Run it locally
+
+```bash
+# Mac / Linux
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn api.main:app --port 8000
+```
+
+```powershell
+# Windows (PowerShell)
+py -m venv .venv; .venv\Scripts\Activate.ps1
+py -m pip install -r requirements.txt
+py -m uvicorn api.main:app --port 8000
+```
+
+Tests: `python -m pytest` (Windows: `py -m pytest`). They mock Twilio and xAI, so no keys are needed.
+
+### Expose it and point Twilio at it
+
+Twilio has to reach your laptop over HTTPS/WSS. In a second terminal, run **one** of:
+
+```bash
+ngrok http 8000                                   # copy the https://….ngrok-free.app URL
+cloudflared tunnel --url http://localhost:8000    # copy the https://….trycloudflare.com URL
+```
+
+Put that URL in `.env` as `PUBLIC_BASE_URL` and restart uvicorn. Then in the Twilio Console: **Phone Numbers → Manage → Active numbers → your number → Voice configuration → "A call comes in" → Webhook → `https://<public>/voice/incoming` → HTTP POST → Save.** Call the number.
+
+Optional red-alert call (from the same machine):
+
+```bash
+curl -X POST http://localhost:8000/voice/alert -H "Content-Type: application/json" \
+  -d '{"to": "+15551234567", "message": "EVAde red alert: crew member check-in is red."}'
+```
+
+### Voice limitations
+- Needs a **live link** (phone network + internet to xAI), so it's a **ground-side or ISS channel**. On a Mars transit, the on-board check-in and on-device text-to-speech are the right path.
+- **Twilio trial accounts** play a trial notice at the start of each call, and can only call (and receive calls from) **verified numbers**. Upgrade to remove both.
+- The tunnel URL changes each time you restart a free ngrok/cloudflared tunnel: update `PUBLIC_BASE_URL` **and** the Twilio webhook.
+- One-time stream tokens live in memory, so run a single uvicorn worker.
+- The caller's phone number is used as the crew ID until login exists.
 
 ---
 
@@ -189,7 +274,7 @@ Put downloads in `data/` (git-ignored). **No freely downloadable raw astronaut E
 | **Gamified to-do list for health tracking** | Split into basic and non-basic tasks | Planned |
 | **Dashboard → predictions / alerts** | Dynamic charts, multiple ways to display info, **color coding** | ✅ Live + mission + check-in pages |
 | **Journal + talk with AI** | AI extrapolates from journal entries (Grok) → therapist summary | Planned (Ryan B) |
-| **Space voice agent (Twilio)** | Voice check-ins / alerts | Planned (Ryan B, Daniel) |
+| **Space voice agent (Twilio)** | Voice check-ins / alerts | ✅ Voice check-in + red-alert call (Twilio + Grok); see [Voice agent](#-voice-agent-twilio--grok) |
 | **Space radiation & weather → best time for a spacewalk** | Use NOAA proton flux + forecast | Data feed ✅; prediction planned |
 | **"How many days until they need to go home?"** | Project radiation vs career limit, bone loss, etc. | Radiation projection ✅ in Mission trends; full version planned |
 | **Contact flight surgeon** after an illness is detected | | ✅ Downlink queue |
@@ -232,7 +317,10 @@ Postgres DB · SpaceXSI (Cursor + Grok bot) · GoDaddy registry (domain) · Auth
 
 ```
 api/            FastAPI app (main.py), local SQLite storage
+  voice.py        Twilio ⇄ Grok voice bridge: /voice/incoming, /voice/stream, /voice/alert
+  voice_tools.py  voice agent tools: save_checkin, queue_flight_surgeon_message (adapter to models/)
 models/         features, baseline analyzer, actions, check-in rules, mission engine, ML training
+tests/          pytest: voice routes, signature check, check-in rules, downlink queue, bridge
 stream/         simulated EEG/ECG source, NOAA space-weather feed
 frontend/       live monitor + mission trends pages (vanilla JS)
 checkin-app/    React + TypeScript daily check-in (built app in dist/)
@@ -247,6 +335,7 @@ data/           local DB + downloaded datasets (git-ignored)
 - Check-in thresholds use **standard clinical reference ranges**, not spaceflight-specific ones.
 - Some trend shapes and timings are **illustrative** and labelled as such in the app.
 - The ML model is currently trained on simulated data; real-data accuracy is pending.
+- The voice agent needs a live link (ground-side / ISS channel) and an xAI API key; Twilio trial accounts only reach verified numbers.
 - **Decision-support tool, not a medical device.**
 
 ---
