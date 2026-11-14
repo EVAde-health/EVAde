@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 _ENV = ["XAI_API_KEY", "XAI_VOICE", "XAI_MODEL", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN",
         "TWILIO_PHONE_NUMBER", "PUBLIC_BASE_URL", "TWILIO_VALIDATE_SIGNATURE",
-        "EVADE_COMMS_MODE", "EVADE_ALERT_TOKEN"]
+        "EVADE_COMMS_MODE", "EVADE_ALERT_TOKEN", "EVADE_BROWSER_TOKEN"]
 
 
 @pytest.fixture(autouse=True)

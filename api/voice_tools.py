@@ -227,3 +227,34 @@ def run_tool(name: str, crew_id: str, arguments: str | dict | None) -> dict:
         return handler(crew_id, args)
     except Exception as exc:  # pragma: no cover - defensive
         return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+# ------------------------------------------------------------ read helpers
+def latest_checkin(crew_id: Optional[str] = None) -> Optional[dict]:
+    """Most recent check-in (optionally for one crew member), or None."""
+    sql = "SELECT * FROM checkins"
+    params: tuple = ()
+    if crew_id:
+        sql += " WHERE crew_id = ?"
+        params = (crew_id,)
+    with closing(connect()) as conn:
+        row = conn.execute(sql + " ORDER BY id DESC LIMIT 1", params).fetchone()
+    if row is None:
+        return None
+    out = dict(row)
+    for key in ("symptoms", "reasons", "actions"):
+        out[key] = json.loads(out[key]) if out.get(key) else []
+    return out
+
+
+def list_downlink(limit: int = 10, crew_id: Optional[str] = None) -> list[dict]:
+    """Newest flight-surgeon downlink messages first."""
+    limit = max(1, min(int(limit), 100))
+    sql = "SELECT * FROM downlink_queue"
+    params: tuple = ()
+    if crew_id:
+        sql += " WHERE crew_id = ?"
+        params = (crew_id,)
+    with closing(connect()) as conn:
+        rows = conn.execute(sql + " ORDER BY id DESC LIMIT ?", params + (limit,)).fetchall()
+    return [dict(r) for r in rows]
