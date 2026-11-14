@@ -3,7 +3,22 @@
 (() => {
   const RATE = 24000;
   const params = new URLSearchParams(location.search);
-  const TOKEN = params.get("token") || "";
+  // Access key: from ?token= (then remembered and stripped from the URL), else remembered, else ask once.
+  const KEY_STORE = "evade_access_key";
+  let TOKEN = params.get("token") || "";
+  if (TOKEN) {
+    try { localStorage.setItem(KEY_STORE, TOKEN); } catch {}
+    params.delete("token");
+    const rest = params.toString();
+    history.replaceState(null, "", location.pathname + (rest ? "?" + rest : "") + location.hash);
+  } else {
+    try { TOKEN = localStorage.getItem(KEY_STORE) || ""; } catch {}
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+    if (!TOKEN && !local) {
+      TOKEN = (window.prompt("Enter the EVAde access key") || "").trim();
+      if (TOKEN) { try { localStorage.setItem(KEY_STORE, TOKEN); } catch {} }
+    }
+  }
   const CREW = params.get("crew") || "browser-demo";
   const qs = (extra = {}) => {
     const p = new URLSearchParams({ crew_id: CREW, ...extra });
