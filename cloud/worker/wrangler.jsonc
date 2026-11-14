@@ -1,0 +1,52 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "evade-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  // Public API address on Daniel's domain (evade.health must be a zone in the EVAde Cloudflare account)
+  "routes": [{ "pattern": "api.evade.health", "custom_domain": true }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "evade-db",
+      "database_id": "c97b8036-5c72-46eb-af95-de38ef64e0b8",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Workers AI (journal analysis, Whisper voice-to-text, daily briefing)
+  "ai": { "binding": "AI" },
+  // R2: photos, ultrasound images, voice journals
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "evade-media" }],
+  // Live crew feed over WebSockets
+  "durable_objects": { "bindings": [{ "name": "LIVE", "class_name": "CrewFeed" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CrewFeed"] }],
+  // Sessions + OAuth state (Workers KV)
+  "kv_namespaces": [{ "binding": "SESSIONS", "id": "09f54c946903407a94189a7db78bf20c" }],
+  // Pull NOAA space weather every 15 minutes into the space_weather table
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "vars": {
+    // Comma-separated frontend origins allowed by CORS. Add the GoDaddy domain once Daniel sets it up.
+    "ALLOWED_ORIGINS": "https://evade.health,https://www.evade.health,http://localhost:5173,http://localhost:3000",
+    // Michael's FastAPI model service. Leave empty until it is deployed; /predict/* then returns 503.
+    "FASTAPI_URL": "",
+    // Where users land after signing in, and the cookie domain shared by evade.health + api.evade.health
+    "FRONTEND_URL": "https://evade.health",
+    "COOKIE_DOMAIN": ".evade.health",
+    // Logins with these emails become flight_surgeon (doctor panel). Comma-separated.
+    "STAFF_EMAILS": "",
+    // Public Turnstile site key (create a widget for evade.health in the dashboard)
+    "TURNSTILE_SITE_KEY": "",
+    // "true" shows a no-OAuth test login. Keep "false" in production.
+    "DEV_LOGIN": "false",
+    // Optional AI Gateway id (create one named "evade" in the dashboard for logs + caching of AI calls)
+    "AI_GATEWAY": ""
+  }
+  // Secrets (set with `npx wrangler secret put <NAME>`):
+  //   API_KEY        shared key the frontend / Python send in the X-EVAde-Key header
+  //   FASTAPI_KEY    optional key forwarded to FastAPI in X-EVAde-Key
+  //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   Google OAuth client
+  //   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET   GitHub OAuth app
+  //   TURNSTILE_SECRET                         Turnstile widget secret
+}
