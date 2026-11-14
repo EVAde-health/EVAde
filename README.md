@@ -71,6 +71,7 @@ Talk live with **EVAde**, an xAI Grok realtime voice agent that runs the daily c
 
 - **🎙️ Browser (primary demo):** open **http://localhost:8000/voice/**, press **Talk to EVAde**, and use your laptop mic. No phone number needed.
 - **📞 Phone:** dial a Twilio number. Needs a Twilio number (paid account), so use it once you have one.
+- **☁️ Hosted:** the same agent runs on Cloudflare Workers at **https://evade.health** (TypeScript port in [`worker/`](worker/README.md)): phone **+1 (908) 663-1285**, browser at `https://evade.health/voice/?token=…`, and a JSON + WebSocket API for the React Native app ([`worker/API.md`](worker/API.md)).
 
 Same design principle: every flag comes with *why* and *what to do*, and it says it's **decision support, not a medical device**.
 
@@ -150,6 +151,10 @@ Optional red-alert call (from the same machine):
 curl -X POST http://localhost:8000/voice/alert -H "Content-Type: application/json" \
   -d '{"to": "+15551234567", "message": "EVAde red alert: crew member check-in is red."}'
 ```
+
+### Hosted on Cloudflare (evade.health)
+
+[`worker/`](worker/README.md) is a TypeScript port of the voice agent for Cloudflare Workers, with the same persona, tools, check-in rules and security checks. Calls and app sessions each run in a Durable Object that bridges the WebSocket to xAI. Check-ins, the downlink queue and one-time stream tokens live in a D1 database instead of `data/evade.db`. `frontend/` is served as static assets. The React Native app uses REST under `/api/` plus a voice WebSocket (`/api/voice/ws`), documented in [`worker/API.md`](worker/API.md). To deploy: `cd worker && npm install && npx wrangler d1 migrations apply evade --remote`, set the four secrets (`XAI_API_KEY`, `TWILIO_AUTH_TOKEN`, `EVADE_BROWSER_TOKEN`, `EVADE_ALERT_TOKEN`) with `npx wrangler secret put`, then run `npx wrangler deploy`, and point the Twilio webhook at `https://evade.health/voice/incoming`. On the hosted version, the tunnel and single-worker limits below don't apply.
 
 ### Voice limitations
 - Needs a **live link** (internet to xAI, plus the phone network for phone mode), so it's a **ground-side or ISS channel**. On a Mars transit, the on-board check-in and on-device text-to-speech are the right path.
@@ -339,6 +344,7 @@ models/         features, baseline analyzer, actions, check-in rules, mission en
 tests/          pytest: voice routes, signature check, check-in rules, downlink queue, phone + browser bridges
 stream/         simulated EEG/ECG source, NOAA space-weather feed
 frontend/       live monitor + mission trends pages (vanilla JS); voice/ = browser voice check-in page
+worker/         Cloudflare Worker (TypeScript) hosting the voice agent + app API on evade.health; D1 migrations, vitest
 checkin-app/    React + TypeScript daily check-in (built app in dist/)
 docs/           research brief, mission_trends.json, radiation_data.json, screenshots, whiteboards
 data/           local DB + downloaded datasets (git-ignored)
