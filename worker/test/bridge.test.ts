@@ -25,7 +25,7 @@ describe("phone bridge (CallBridge in api/voice.py)", () => {
     expect(s.session.audio.input.format.type).toBe("audio/pcmu");
     expect(s.session.audio.output.format.type).toBe("audio/pcmu");
     expect(s.session.turn_detection).toEqual({ type: "server_vad" });
-    expect(s.session.voice).toBe("eve");
+    expect(s.session.voice).toBe("atlas");
     expect(s.session.instructions).toContain("You are EVAde, a calm onboard health co-pilot");
     expect(new Set(s.session.tools.map((t: { name: string }) => t.name))).toEqual(new Set(["save_checkin", "queue_flight_surgeon_message"]));
     await b.onXai({ type: "session.updated" });
