@@ -15,6 +15,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { connectXai, log, type Msg } from "./agent";
 import { BrowserBridge, CallBridge } from "./bridges";
+import { IDLE_AUDIO_SECONDS, SESSION_LIMIT_REACHED, TIME_UP, heartbeatSlot, releaseSlot } from "./slots";
 import { consumeStreamToken } from "./tokens";
 import type { ToolContext } from "./tools";
 
@@ -30,6 +31,10 @@ export class VoiceSession extends DurableObject<Env> {
   private ended = false;
   private clientChain: Promise<void> = Promise.resolve();
   private xaiChain: Promise<void> = Promise.resolve();
+  private slotId: string | null = null;
+  private limitTimer: ReturnType<typeof setTimeout> | null = null;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
@@ -38,6 +43,8 @@ export class VoiceSession extends DurableObject<Env> {
     if (this.client) return new Response("Session already in use", { status: 409 });
     const url = new URL(request.url);
     this.mode = url.searchParams.get("mode") === "phone" ? "phone" : "browser";
+    this.slotId = url.searchParams.get("slot") || null;
+    const maxSeconds = Number(url.searchParams.get("maxSeconds")) || (this.mode === "phone" ? 600 : 300);
 
     const pair = new WebSocketPair();
     const [clientEnd, server] = [pair[0], pair[1]];
@@ -58,6 +65,7 @@ export class VoiceSession extends DurableObject<Env> {
       this.sendClient({ type: "status", state: "connecting" });
       this.ctx.waitUntil(this.startXai());
     }
+    this.armGuards(maxSeconds);
     return new Response(null, { status: 101, webSocket: clientEnd });
   }
 
@@ -97,6 +105,7 @@ export class VoiceSession extends DurableObject<Env> {
       }
       if (msg.event === "start" && this.phone.authorized && !this.xaiStarted) await this.startXai();
     } else if (this.browser) {
+      if (msg.type === "audio") this.resetIdleTimer();
       if ((await this.browser.onClient(msg)) === "stop") this.end();
     } else {
       this.end(1011); // evicted mid-session: state is gone, end cleanly
@@ -139,12 +148,44 @@ export class VoiceSession extends DurableObject<Env> {
     if (this.xai && this.xai.readyState === WebSocket.OPEN) this.xai.send(JSON.stringify(msg));
   }
 
+  // ------------------------------------------------------- spending guards
+  private armGuards(maxSeconds: number): void {
+    this.limitTimer = setTimeout(() => this.end(1000, SESSION_LIMIT_REACHED), Math.max(0, maxSeconds) * 1000);
+    if (this.mode === "browser") this.resetIdleTimer();
+    if (this.slotId) {
+      this.heartbeatTimer = setInterval(() => {
+        this.ctx.waitUntil(heartbeatSlot(this.env.DB, this.slotId!));
+      }, 30_000);
+    }
+  }
+
+  private resetIdleTimer(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => this.end(1000, TIME_UP), IDLE_AUDIO_SECONDS * 1000);
+  }
+
+  private clearGuards(): void {
+    if (this.limitTimer) clearTimeout(this.limitTimer);
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.limitTimer = this.idleTimer = this.heartbeatTimer = null;
+  }
+
   // ------------------------------------------------------------------ end
-  private end(code = 1000): void {
+  private end(code = 1000, reason = ""): void {
     if (this.ended) return;
     this.ended = true;
+    this.clearGuards();
+    if (this.slotId) this.ctx.waitUntil(releaseSlot(this.env.DB, this.slotId));
     try { this.xai?.close(1000); } catch { /* already closed */ }
-    if (this.mode === "browser") this.sendClient({ type: "status", state: "ended" });
-    try { this.client?.close(code, code === 1008 ? "Policy violation" : ""); } catch { /* already closed */ }
+    if (this.mode === "browser") {
+      if (reason) {
+        this.sendClient({ type: "notice", message: reason });
+        this.sendClient({ type: "status", state: "ended", reason });
+      } else {
+        this.sendClient({ type: "status", state: "ended" });
+      }
+    }
+    try { this.client?.close(code, reason || (code === 1008 ? "Policy violation" : "")); } catch { /* already closed */ }
   }
 }

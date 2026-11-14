@@ -19,8 +19,9 @@ rules, Twilio flow and security checks; the Python version stays in the repo for
 | Why a DO | A call is minutes of ~50 frames/s each way. A plain Worker request has one CPU budget for its whole life (10 ms on Free), which a call would exhaust; in a DO every incoming WebSocket message resets the CPU budget, and the object stays alive while the sockets are open. |
 | Agent logic | `src/agent.ts` (persona, `session.update`, greeting, barge-in, tool calls, playback marks) and `src/bridges.ts` (Twilio / app transports). Transport-free, so tests drive them directly. |
 | Tools + rules | `src/tools.ts` (`save_checkin`, `queue_flight_surgeon_message`, same JSON schemas) and `src/rules.ts` (green / yellow / red). |
-| Storage | **D1** database `evade` (binding `DB`) replaces `data/evade.db`: tables `checkins`, `downlink_queue`, `stream_tokens`. |
+| Storage | **D1** database `evade` (binding `DB`) replaces `data/evade.db`: tables `checkins`, `downlink_queue`, `stream_tokens`, `sessions`. |
 | One-time tokens | `/voice/incoming` writes a random token (120 s TTL) to `stream_tokens`; the DO consumes it with a single `DELETE … RETURNING` when Twilio's `start` event arrives, before any xAI session opens. Works across isolates; can't be replayed. App WebSocket tickets from `POST /api/voice/start` use the same table (`ws.` prefix, 60 s TTL). |
+| Session cap | Browser/app sessions take a row in `sessions` (heartbeat in the last ~2 minutes counts as live). `MAX_CONCURRENT_SESSIONS` (default 5) rejects new browser sessions with "too many people talking". Phone calls are not counted. |
 | Twilio signature | WebCrypto HMAC-SHA1 of `PUBLIC_BASE_URL + path + query` + sorted form params, constant-time compare (matches twilio-python's `RequestValidator`, incl. the `:443` variant). |
 | Outbound call | Twilio REST `Calls.json` with `fetch` + basic auth; TwiML `<Say voice="Polly.Joanna">` ×2 with a 1 s pause. |
 
@@ -28,7 +29,14 @@ rules, Twilio flow and security checks; the Python version stays in the repo for
 
 Vars (in `wrangler.jsonc`): `PUBLIC_BASE_URL=https://evade.health`, `TWILIO_ACCOUNT_SID`,
 `TWILIO_PHONE_NUMBER=+19086631285`, `XAI_MODEL`, `XAI_VOICE`, `EVADE_COMMS_MODE`,
-`TWILIO_VALIDATE_SIGNATURE`, `CORS_ALLOW_ORIGINS`.
+`TWILIO_VALIDATE_SIGNATURE`, `CORS_ALLOW_ORIGINS`, `DEMO_OPEN`, `MAX_SESSION_SECONDS`,
+`MAX_CONCURRENT_SESSIONS`.
+
+| Var | Default | Meaning |
+| --- | --- | --- |
+| `DEMO_OPEN` | `"true"` | When `"true"`, the web/app voice socket and read APIs (`/voice/browser`, `/api/voice/ws`, `/api/voice/start`, check-ins, downlink) do not require a token. `/api/alert` and `/voice/alert` stay token-protected, and Twilio signature checks are unchanged. **To turn it off:** set `DEMO_OPEN` to `"false"` in `wrangler.jsonc` and redeploy (`npx wrangler deploy`). |
+| `MAX_SESSION_SECONDS` | `"300"` | Max length of a browser/app voice session. The Durable Object sends a notice (`session limit reached`) and closes with code 1000. Browser sessions also close after 60 s with no client audio (`time-up`). Phone calls use a 600 s limit and are not subject to the idle-audio timer or the concurrency cap. |
+| `MAX_CONCURRENT_SESSIONS` | `"5"` | Max live browser/app sessions (rows in `sessions` with a heartbeat in the last ~2 minutes). Extra callers get `"too many people talking"` (HTTP 429 on `POST /api/voice/start`, or a notice + close on the WebSocket). |
 
 Secrets (`npx wrangler secret put <NAME>`, never in git):
 
@@ -36,7 +44,7 @@ Secrets (`npx wrangler secret put <NAME>`, never in git):
 | --- | --- |
 | `XAI_API_KEY` | xAI realtime voice (server-side only; never reaches the app) |
 | `TWILIO_AUTH_TOKEN` | Twilio signature check on `/voice/incoming` and REST auth for alerts |
-| `EVADE_BROWSER_TOKEN` | App / browser access: `Authorization: Bearer …` or `?token=…` |
+| `EVADE_BROWSER_TOKEN` | App / browser access when `DEMO_OPEN` is `"false"`: `Authorization: Bearer …` or `?token=…` |
 | `EVADE_ALERT_TOKEN` | `X-EVADE-Token` (or `Authorization: Bearer`) for `POST /api/alert` |
 
 ## Deploy
@@ -56,12 +64,13 @@ npx wrangler secret put TWILIO_AUTH_TOKEN
 npx wrangler secret put EVADE_BROWSER_TOKEN
 npx wrangler secret put EVADE_ALERT_TOKEN
 
-npm test                         # 56 tests, fully local (Miniflare + fake xAI/Twilio)
+npm test                         # vitest, fully local (Miniflare + fake xAI/Twilio)
 npx wrangler deploy              # creates the evade.health custom domain on first deploy
 ```
 
 Then in the Twilio Console set the number's **"A call comes in"** webhook to
-`https://evade.health/voice/incoming` (HTTP POST). Browser: `https://evade.health/voice/?token=<EVADE_BROWSER_TOKEN>`.
+`https://evade.health/voice/incoming` (HTTP POST). Browser: `https://evade.health/voice/`
+(open for the hackathon demo while `DEMO_OPEN` is `"true"`).
 
 `evade.health` must be an active zone in the same Cloudflare account. The custom-domain route
 creates the DNS record and certificate; remove any existing A/CNAME record on the apex first.
@@ -74,8 +83,8 @@ npm run db:migrate:local
 npm run dev                      # http://localhost:8787/voice/
 ```
 
-On `localhost` the app API is open without a token (like the Python localhost-only mode);
-on `evade.health` a token is always required. Logs: `npx wrangler tail`.
+On `localhost` the app API is open without a token (like the Python localhost-only mode).
+On `evade.health`, access follows `DEMO_OPEN` (see above). Logs: `npx wrangler tail`.
 
 ## Tests
 
@@ -83,4 +92,5 @@ on `evade.health` a token is always required. Logs: `npx wrangler tail`.
 D1 and the Durable Object. Outbound requests go to `test/fake-xai.js`, which emulates the xAI
 realtime socket and Twilio's REST API. Covered: check-in rules and wording, tools and D1 storage,
 TwiML, Twilio signatures (reference values from twilio-python), one-time tokens, alert auth,
-REST API + CORS, the phone and app bridges, and full WebSocket round trips through the DO.
+REST API + CORS, the phone and app bridges, full WebSocket round trips through the DO,
+`DEMO_OPEN` access, the concurrency cap, and the session time limit.

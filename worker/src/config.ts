@@ -15,6 +15,13 @@ export function flag(env: EnvLike, name: string, fallback: boolean): boolean {
   return !["0", "false", "no", "off"].includes(value.trim().toLowerCase());
 }
 
+export function envInt(env: EnvLike, name: string, fallback: number): number {
+  const value = envStr(env, name);
+  if (value === undefined) return fallback;
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
 export function publicBaseUrl(env: EnvLike): string | undefined {
   const url = envStr(env, "PUBLIC_BASE_URL");
   return url ? url.replace(/\/+$/, "") : undefined;

@@ -3,16 +3,23 @@
  * api/voice_browser.py, adapted for a public Worker + React Native clients).
  *
  * Allowed when ANY of:
+ *  - `DEMO_OPEN` is true (hackathon demo: web/app voice + read APIs are public;
+ *    spending guards still apply; /voice/alert and /api/alert stay protected),
  *  - `Authorization: Bearer <EVADE_BROWSER_TOKEN>` header (preferred for the RN app),
  *  - `?token=<EVADE_BROWSER_TOKEN>` query (web page links, WebSockets where the client
  *    cannot set headers),
  *  - `?ticket=<one-time ticket>` from POST /api/voice/start (WebSockets only),
  *  - local development: request host is localhost under `wrangler dev`, and the Origin
  *    (when present) matches the Host, same as the Python localhost-only rule.
- * On evade.health the last rule can never match, so a token is required.
+ * On evade.health, when DEMO_OPEN is false the last rule can never match, so a token
+ * is required.
  */
-import { envStr, isLocalRequest, safeEqual, type EnvLike } from "./config";
+import { envStr, flag, isLocalRequest, safeEqual, type EnvLike } from "./config";
 import { consumeToken, WS_TICKET_PREFIX } from "./tokens";
+
+export function demoOpen(env: EnvLike): boolean {
+  return flag(env, "DEMO_OPEN", false);
+}
 
 export function bearerToken(request: Request): string | null {
   const h = request.headers.get("Authorization") ?? "";
@@ -35,6 +42,7 @@ function originMatchesHost(request: Request): boolean {
 }
 
 export async function appAllowed(env: EnvLike & { DB?: D1Database }, request: Request, opts: { allowTicket?: boolean } = {}): Promise<boolean> {
+  if (demoOpen(env)) return true;
   const expected = envStr(env, "EVADE_BROWSER_TOKEN");
   const token = suppliedToken(request);
   if (expected && token && (await safeEqual(token, expected))) return true;

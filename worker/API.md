@@ -8,15 +8,29 @@ and `OPTIONS` preflights return `204`.
 
 | Endpoint group | Credential |
 | --- | --- |
-| App API + voice socket | `Authorization: Bearer <EVADE_BROWSER_TOKEN>` (preferred). `?token=<EVADE_BROWSER_TOKEN>` also works, for clients that can't set headers. |
+| App API + voice socket | When `DEMO_OPEN` is `"true"` (current hackathon demo), no token is required for `/voice/browser`, `/api/voice/ws`, `/api/voice/start`, `GET /api/checkins/latest`, `GET /api/downlink`, and the `/voice/api/…` aliases. When `DEMO_OPEN` is `"false"`, send `Authorization: Bearer <EVADE_BROWSER_TOKEN>` (preferred) or `?token=<EVADE_BROWSER_TOKEN>`. |
 | Voice socket only | `?ticket=<ticket>` from `POST /api/voice/start` (single use, 60 s). Use this on React Native so the long-lived token never goes in a URL. |
-| Red-alert call | `X-EVADE-Token: <EVADE_ALERT_TOKEN>` or `Authorization: Bearer <EVADE_ALERT_TOKEN>` |
+| Red-alert call | Always required, even when the demo is open: `X-EVADE-Token: <EVADE_ALERT_TOKEN>` or `Authorization: Bearer <EVADE_ALERT_TOKEN>` |
+
+To require a token again after the demo, set `DEMO_OPEN` to `"false"` in `wrangler.jsonc` and
+redeploy.
 
 Errors use FastAPI's shape: `{"detail": "..."}` (`403` bad/missing token, `401` bad alert token,
-`422` validation, `503` Twilio not configured).
+`422` validation, `429` too many concurrent browser sessions, `503` Twilio not configured).
 
-> The bearer token is a shared demo secret. Don't ship a production app with it baked in;
-> put real user login in front of `/api/voice/start` when the team adds auth.
+> When `DEMO_OPEN` is `"false"`, the bearer token is a shared demo secret. Don't ship a production
+> app with it baked in; put real user login in front of `/api/voice/start` when the team adds auth.
+
+## Spending guards (browser / app sessions)
+
+These apply to the web page and React Native voice socket, not to the concurrency cap for
+Twilio phone calls (phone calls still end after 600 s).
+
+| Guard | Default | What happens |
+| --- | --- | --- |
+| Max session length (`MAX_SESSION_SECONDS`) | 300 s (phone: 600 s) | Server sends `{"type":"notice","message":"session limit reached"}` and `{"type":"status","state":"ended","reason":"session limit reached"}`, then closes with code `1000` and that reason. |
+| No client audio | 60 s | Same close pattern, with message / reason `time-up`. |
+| Concurrent sessions (`MAX_CONCURRENT_SESSIONS`) | 5 | `POST /api/voice/start` returns `429 {"detail":"too many people talking"}`. A WebSocket upgrade is accepted only long enough to send a notice / error with that message, then closes with code `1000`. Phone calls are not counted. |
 
 ## REST endpoints
 
@@ -56,9 +70,10 @@ comms_mode ("online"|"mars"|"blackout"), status ("sent"|"in_transit"|"queued"), 
 
 ## Voice WebSocket: `wss://evade.health/api/voice/ws` (alias `/voice/browser`)
 
-Query: `ticket=` **or** `token=`, plus optional `crew=` (crew ID, max 64 chars, default
-`browser-demo`). Every frame is a JSON **text** frame. Audio is **PCM16 little-endian, mono,
-24 000 Hz, base64**. Send chunks of about 20-100 ms (20 ms = 480 samples = 960 bytes).
+Query: optional `ticket=` **or** `token=` (not required while `DEMO_OPEN` is `"true"`), plus
+optional `crew=` (crew ID, max 64 chars, default `browser-demo`). Every frame is a JSON **text**
+frame. Audio is **PCM16 little-endian, mono, 24 000 Hz, base64**. Send chunks of about 20-100 ms
+(20 ms = 480 samples = 960 bytes).
 
 ### Client → server
 
@@ -73,7 +88,8 @@ Query: `ticket=` **or** `token=`, plus optional `crew=` (crew ID, max 64 chars, 
 
 | Message | Meaning / what to do |
 | --- | --- |
-| `{"type":"status","state":"connecting"\|"ready"\|"ended"}` | Session lifecycle. Start streaming mic audio at `ready`. |
+| `{"type":"status","state":"connecting"\|"ready"\|"ended", "reason"?}` | Session lifecycle. Start streaming mic audio at `ready`. `reason` is set when the server ends the session (`session limit reached`, `time-up`, or `too many people talking`). |
+| `{"type":"notice","message":"…"}` | Server-side notice immediately before a guarded close (same phrases as `reason`). |
 | `{"type":"audio","audio":"<base64 pcm16>"}` | Agent speech. Queue it for gapless playback. |
 | `{"type":"clear"}` | Barge-in: the user started talking. **Stop playback and drop queued audio now.** |
 | `{"type":"mark","name":"..."}` | Playback marker. When everything queued before it has played, send the same `mark` back (the agent waits for this before continuing after a tool call, so it doesn't talk over itself). |
@@ -85,8 +101,10 @@ Query: `ticket=` **or** `token=`, plus optional `crew=` (crew ID, max 64 chars, 
 | `{"type":"error","message":"…"}` | xAI or server error (e.g. "Could not connect to xAI. Is XAI_API_KEY set?"). |
 | `{"type":"pong"}` | Reply to `ping`. |
 
-Close codes: `1000` normal, `1007` invalid JSON frame, `1011` server/xAI failure. A bad or
-missing token/ticket is rejected with HTTP `403` before the upgrade.
+Close codes: `1000` normal (reason may be `session limit reached`, `time-up`, or
+`too many people talking`), `1007` invalid JSON frame, `1011` server/xAI failure. When
+`DEMO_OPEN` is `"false"`, a bad or missing token/ticket is rejected with HTTP `403` before
+the upgrade.
 
 ## React Native example (TypeScript)
 
@@ -96,12 +114,16 @@ audio modules: for example a PCM recorder that emits 24 kHz 16-bit mono chunks a
 can queue raw PCM (such as `react-native-audio-api`'s Web-Audio-style `AudioContext`). The
 `mic` and `player` objects below stand in for whichever you choose.
 
+While `DEMO_OPEN` is `"true"` you can omit the bearer token; keep it in the client anyway so
+the same code works after the demo is closed.
+
 ```ts
 const BASE = "https://evade.health";
 const TOKEN = process.env.EXPO_PUBLIC_EVADE_TOKEN!; // demo only, see the auth note
 
 type ServerMsg =
-  | { type: "status"; state: "connecting" | "ready" | "ended" }
+  | { type: "status"; state: "connecting" | "ready" | "ended"; reason?: string }
+  | { type: "notice"; message: string }
   | { type: "audio"; audio: string }
   | { type: "clear" }
   | { type: "mark"; name: string }

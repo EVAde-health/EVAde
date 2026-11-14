@@ -15,6 +15,9 @@ export default defineConfig({
             TWILIO_AUTH_TOKEN: "",
             EVADE_BROWSER_TOKEN: "test-browser-token",
             EVADE_ALERT_TOKEN: "",
+            // wrangler.jsonc has DEMO_OPEN=true for the live demo; tests default to closed access
+            // and opt in with makeEnv({ DEMO_OPEN: "true" }).
+            DEMO_OPEN: "false",
           },
           // Every outbound fetch from the Worker (xAI, Twilio) goes to a local fake.
           outboundService: "fake-xai",

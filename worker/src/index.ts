@@ -19,6 +19,7 @@ import { alertAuth, appAllowed } from "./auth";
 import { envStr, publicBaseUrl } from "./config";
 import { errorResponse, json, preflight, withCors } from "./http";
 import { LANDING_HTML } from "./landing";
+import { acquireBrowserSlot, countBrowserSlots, maxConcurrentSessions, maxSessionSeconds, releaseSlot, TOO_MANY_TALKING } from "./slots";
 import { issueStreamToken, issueToken, WS_TICKET_PREFIX } from "./tokens";
 import { latestCheckin, listDownlink } from "./tools";
 import { alertTwiml, connectStreamTwiml, createCall, isValidTwilioRequest, parseForm, signatureCheckEnabled, TwilioError } from "./twilio";
@@ -29,6 +30,18 @@ const DEFAULT_ALERT = "EVAde red alert. Please check the crew health dashboard n
 const WS_TICKET_TTL_S = 60;
 
 const isWsUpgrade = (r: Request) => r.headers.get("Upgrade")?.toLowerCase() === "websocket";
+
+/** Accept the socket, tell the client why, and close (so the web page can show the reason). */
+function rejectSocket(message: string): Response {
+  const pair = new WebSocketPair();
+  const [clientEnd, server] = [pair[0], pair[1]];
+  server.accept();
+  server.send(JSON.stringify({ type: "notice", message }));
+  server.send(JSON.stringify({ type: "error", message }));
+  server.send(JSON.stringify({ type: "status", state: "ended", reason: message }));
+  server.close(1000, message);
+  return new Response(null, { status: 101, webSocket: clientEnd });
+}
 
 // ------------------------------------------------------------------ phone
 async function incomingCall(request: Request, env: Env): Promise<Response> {
@@ -75,11 +88,13 @@ async function outboundAlert(request: Request, env: Env): Promise<Response> {
   }
 }
 
-function toSession(request: Request, env: Env, mode: "phone" | "browser", crew?: string): Promise<Response> {
+function toSession(request: Request, env: Env, mode: "phone" | "browser", crew?: string, slot?: string): Promise<Response> {
   const url = new URL(request.url);
   const target = new URL("https://voice-session/connect");
   target.searchParams.set("mode", mode);
+  target.searchParams.set("maxSeconds", String(maxSessionSeconds(env, mode)));
   if (crew !== undefined) target.searchParams.set("crew", crew);
+  if (slot) target.searchParams.set("slot", slot);
   const stub = env.VOICE_SESSION.get(env.VOICE_SESSION.newUniqueId());
   log("info", "voice session", { mode, path: url.pathname });
   return stub.fetch(new Request(target.toString(), request));
@@ -91,12 +106,23 @@ const forbidden = () => errorResponse(403, "Missing or wrong token (Authorizatio
 async function voiceSocket(request: Request, env: Env): Promise<Response> {
   if (!isWsUpgrade(request)) return errorResponse(426, "Expected a WebSocket upgrade");
   if (!(await appAllowed(env, request, { allowTicket: true }))) return forbidden();
+  const cap = maxConcurrentSessions(env);
+  const slot = await acquireBrowserSlot(env.DB, cap);
+  if (!slot) return rejectSocket(TOO_MANY_TALKING);
   const crew = (new URL(request.url).searchParams.get("crew") || "browser-demo").slice(0, 64);
-  return toSession(request, env, "browser", crew);
+  try {
+    return await toSession(request, env, "browser", crew, slot);
+  } catch (err) {
+    await releaseSlot(env.DB, slot);
+    throw err;
+  }
 }
 
 async function voiceStart(request: Request, env: Env): Promise<Response> {
   if (!(await appAllowed(env, request))) return forbidden();
+  if ((await countBrowserSlots(env.DB)) >= maxConcurrentSessions(env)) {
+    return errorResponse(429, TOO_MANY_TALKING);
+  }
   const url = new URL(request.url);
   let crew = url.searchParams.get("crew");
   if (!crew && request.headers.get("Content-Type")?.includes("application/json")) {
