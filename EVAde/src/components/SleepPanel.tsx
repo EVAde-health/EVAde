@@ -6,7 +6,7 @@ import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/Segme
 import { MoonIcon } from '@heroicons/react/24/outline';
 import { SLEEP, SLEEP_TARGET, weeklySleepAverage } from '../data/mission';
 import { STATUS_STYLES, classify } from '../data/status';
-import { AXIS_TICK, CHART_MARGIN, GRID_STROKE, SERIES, Y_AXIS_WIDTH } from './chartConfig';
+import { AXIS_TICK, BAR_CURSOR, CHART_MARGIN, GRID_STROKE, SERIES, Y_AXIS_WIDTH } from './chartConfig';
 import ChartTooltip from './ChartTooltip';
 import PanelCard from './PanelCard';
 import './css/SleepPanel.css';
@@ -59,7 +59,7 @@ export default function SleepPanel() {
           <CartesianGrid vertical={false} stroke={GRID_STROKE} />
           <XAxis dataKey="label" tick={AXIS_TICK} axisLine={false} tickLine={false} interval={1} />
           <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={Y_AXIS_WIDTH} unit="h" domain={[0, 10]} />
-          <Tooltip cursor={{ fill: 'var(--color-tint-hover)' }} content={<ChartTooltip unit="h" />} />
+          <Tooltip cursor={BAR_CURSOR} content={<ChartTooltip unit="h" />} />
           {view === 'nights' ? (
             <Bar dataKey="hours" name="Sleep" radius={[4, 4, 0, 0]} animationDuration={700}>
               {SLEEP.map(night => (
@@ -79,13 +79,13 @@ export default function SleepPanel() {
         {view === 'nights'
           ? (['nominal', 'caution', 'critical'] as const).map(s => (
               <HStack key={s} gap={2} vAlign="center">
-                <HStack className="sleep-panel__swatch" style={{ background: STATUS_STYLES[s].color }} />
+                <HStack className="sleep-panel__swatch" style={{ background: STATUS_STYLES[s].color }} aria-hidden="true" />
                 <Text type="supporting">{s === 'nominal' ? '≥ 7 h' : s === 'caution' ? '6–7 h' : '< 6 h'}</Text>
               </HStack>
             ))
           : STAGES.map(stage => (
               <HStack key={stage.key} gap={2} vAlign="center">
-                <HStack className="sleep-panel__swatch" style={{ background: stage.color }} />
+                <HStack className="sleep-panel__swatch" style={{ background: stage.color }} aria-hidden="true" />
                 <Text type="supporting">{stage.label}</Text>
               </HStack>
             ))}

@@ -44,11 +44,11 @@ export default function BehaviorPanel() {
       </ResponsiveContainer>
       <HStack gap={4}>
         <HStack gap={2} vAlign="center">
-          <HStack className="behavior-panel__key" style={{ background: SERIES.quaternary }} />
+          <HStack className="behavior-panel__key" style={{ background: SERIES.quaternary }} aria-hidden="true" />
           <Text type="supporting">Today</Text>
         </HStack>
         <HStack gap={2} vAlign="center">
-          <HStack className="behavior-panel__key behavior-panel__key--dashed" />
+          <HStack className="behavior-panel__key behavior-panel__key--dashed" aria-hidden="true" />
           <Text type="supporting">Baseline</Text>
         </HStack>
       </HStack>

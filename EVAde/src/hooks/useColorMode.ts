@@ -1,5 +1,6 @@
 import { flushSync } from 'react-dom';
 import { usePersistentState } from './usePersistentState';
+import { isReducedMotion } from './useReducedMotion';
 
 export type ColorMode = 'light' | 'dark';
 
@@ -24,8 +25,7 @@ export function useColorMode() {
   // Flips the mode, animating with the View Transitions API when available.
   function toggleMode(origin?: { x: number; y: number }) {
     const next: ColorMode = mode === 'dark' ? 'light' : 'dark';
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (!document.startViewTransition || reduced) {
+    if (!document.startViewTransition || isReducedMotion()) {
       setMode(next);
       return;
     }

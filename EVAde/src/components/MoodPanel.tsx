@@ -3,6 +3,7 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YA
 import { Grid } from '@astryxdesign/core/Grid';
 import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
+import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { Tooltip as HoverTip } from '@astryxdesign/core/Tooltip';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import { FaceSmileIcon } from '@heroicons/react/24/outline';
@@ -57,19 +58,19 @@ export default function MoodPanel() {
 
       {view === 'calendar' ? (
         <VStack gap={3}>
-          <Grid columns={7} gap={1} className="mood-panel__calendar">
+          <VisuallyHidden>{`Last ${MOOD.length} days of mood check-ins; seven-day average ${weekAverage} of 5.`}</VisuallyHidden>
+          <Grid columns={7} gap={1} className="mood-panel__calendar" aria-hidden="true">
             {MOOD.map((day, i) => (
               <HoverTip key={day.t} content={`${day.label}: ${MOOD_LABELS[day.score - 1]} (${day.score}/5)`}>
                 <HStack
                   className="mood-panel__cell rise-in"
                   style={{ ...stagger(i * 0.3), background: MOOD_RAMP[day.score - 1] }}
-                  tabIndex={0}
-                  aria-label={`${day.label}: ${MOOD_LABELS[day.score - 1]}`}
+                  aria-hidden="true"
                 />
               </HoverTip>
             ))}
           </Grid>
-          <HStack gap={2} vAlign="center">
+          <HStack gap={2} vAlign="center" aria-hidden="true">
             <Text type="supporting">Rough</Text>
             {MOOD_RAMP.map(color => (
               <HStack key={color} className="mood-panel__key" style={{ background: color }} />

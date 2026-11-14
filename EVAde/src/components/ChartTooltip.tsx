@@ -33,7 +33,7 @@ export default function ChartTooltip({ active, payload, label, unit, formatLabel
       {label !== undefined && <Text type="supporting">{formatLabel ? formatLabel(label) : label}</Text>}
       {payload.map(entry => (
         <HStack key={String(entry.dataKey ?? entry.name)} gap={2} vAlign="center">
-          <HStack className="chart-tooltip__key" style={{ background: entry.color }} />
+          <HStack className="chart-tooltip__key" style={{ background: entry.color }} aria-hidden="true" />
           <Text type="supporting">{entry.name}</Text>
           <Text type="label" hasTabularNumbers>{formatValue(entry.value, unit)}</Text>
         </HStack>

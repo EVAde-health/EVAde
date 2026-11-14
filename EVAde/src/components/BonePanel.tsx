@@ -52,10 +52,10 @@ export default function BonePanel() {
         </LineChart>
       </ResponsiveContainer>
       <HStack gap={4} wrap="wrap">
-        <HStack gap={2} vAlign="center"><HStack className="bone-panel__key" style={{ background: SERIES.primary }} /><Text type="supporting">Hip</Text></HStack>
-        <HStack gap={2} vAlign="center"><HStack className="bone-panel__key" style={{ background: SERIES.tertiary }} /><Text type="supporting">Spine</Text></HStack>
-        <HStack gap={2} vAlign="center"><HStack className="bone-panel__key bone-panel__key--dashed" /><Text type="supporting">Projection</Text></HStack>
-        <HStack gap={2} vAlign="center"><HStack className="bone-panel__band" /><Text type="supporting">Loss beyond 4%</Text></HStack>
+        <HStack gap={2} vAlign="center"><HStack className="bone-panel__key" style={{ background: SERIES.primary }} aria-hidden="true" /><Text type="supporting">Hip</Text></HStack>
+        <HStack gap={2} vAlign="center"><HStack className="bone-panel__key" style={{ background: SERIES.tertiary }} aria-hidden="true" /><Text type="supporting">Spine</Text></HStack>
+        <HStack gap={2} vAlign="center"><HStack className="bone-panel__key bone-panel__key--dashed" aria-hidden="true" /><Text type="supporting">Projection</Text></HStack>
+        <HStack gap={2} vAlign="center"><HStack className="bone-panel__band" aria-hidden="true" /><Text type="supporting">Loss beyond 4%</Text></HStack>
       </HStack>
     </PanelCard>
   );

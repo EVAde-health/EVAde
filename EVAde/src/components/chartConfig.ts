@@ -18,3 +18,6 @@ export const MOOD_RAMP = [
   'var(--color-data-purple-4)',
   'var(--color-data-purple-5)',
 ];
+
+// Soft translucent accent band behind hovered bars (replaces the harsh tint).
+export const BAR_CURSOR = { fill: 'var(--color-accent)', fillOpacity: 0.1, radius: 6, className: 'chart-bar-cursor' };

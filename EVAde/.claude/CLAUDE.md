@@ -49,7 +49,12 @@ Routes change the URL via React Router (`/`, `/login`, `/dashboard`, `/tutorials
 - Gamification: actions award XP through `useMission()` (toggleTask, addWater, addMeal, completeTutorial)
   and confirm with a toast.
 - Light + dark mode: use tokens only, never mode-specific hex. Toggle lives in `ThemeToggle`.
-- Motion: CSS/compositor animations, respect `prefers-reduced-motion`, pause rAF loops when hidden.
+- Motion: animate generously (entrances, hovers, pop-ups) with CSS/compositor properties; pause rAF loops when hidden.
+  Reduced motion is an in-app preference (`MotionToggle` → `useReducedMotion`/`setReducedMotion`, `<html data-motion>`),
+  not the OS flag. Gate heavy motion with `:root[data-motion='reduced']` in CSS or `useReducedMotion()` in TS.
+- Scroll effects: `useScrollProgress` writes `--progress` (0–1) on an element; drive parallax from it in CSS.
+- Glass: app pages sit on `AmbientBackdrop`; use `.glass` for frosted surfaces. Dialogs/popovers animate globally in index.css.
+- Decorative elements (swatches, keys, glows, duplicated marquee items) get `aria-hidden="true"`.
 - Performance: pages are lazy-loaded; keep Recharts imports inside dashboard components only.
 
 <!-- ASTRYX:START -->

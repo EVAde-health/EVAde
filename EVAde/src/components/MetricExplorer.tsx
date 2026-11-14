@@ -35,7 +35,7 @@ import {
   type VitalId,
 } from '../data/vitals';
 import { ZONE_COLORS, type Zone } from '../data/status';
-import { AXIS_TICK, CHART_MARGIN, GRID_STROKE, Y_AXIS_WIDTH } from './chartConfig';
+import { AXIS_TICK, BAR_CURSOR, CHART_MARGIN, GRID_STROKE, Y_AXIS_WIDTH } from './chartConfig';
 import ChartTooltip from './ChartTooltip';
 import PanelCard from './PanelCard';
 import './css/MetricExplorer.css';
@@ -103,7 +103,7 @@ function ZonesView({ vital, timeWindow }: { vital: VitalId; timeWindow: TimeWind
           <CartesianGrid vertical={false} stroke={GRID_STROKE} />
           <XAxis dataKey="center" tick={AXIS_TICK} axisLine={false} tickLine={false} unit={` ${def.unit}`} />
           <YAxis tick={AXIS_TICK} axisLine={false} tickLine={false} width={Y_AXIS_WIDTH} allowDecimals={false} />
-          <Tooltip cursor={{ fill: 'var(--color-tint-hover)' }} content={<ChartTooltip unit="readings" formatLabel={l => `${l} ${def.unit}`} />} />
+          <Tooltip cursor={BAR_CURSOR} content={<ChartTooltip unit="readings" formatLabel={l => `${l} ${def.unit}`} />} />
           <Bar dataKey="count" name="Readings" radius={[4, 4, 0, 0]}>
             {bins.map(bin => (
               <Cell key={bin.center} fill={ZONE_COLORS[bin.zone]} />
@@ -150,7 +150,7 @@ function RhythmView({ vital }: { vital: VitalId }) {
       </svg>
       <HStack gap={2} vAlign="center">
         <Text type="supporting" hasTabularNumbers>{min} {def.unit}</Text>
-        <HStack className="explorer__ramp" />
+        <HStack className="explorer__ramp" aria-hidden="true" />
         <Text type="supporting" hasTabularNumbers>{max} {def.unit}</Text>
       </HStack>
     </VStack>
@@ -287,17 +287,17 @@ export default function MetricExplorer({ vital, onVitalChange }: { vital: VitalI
       {(view === 'trend' || view === 'range') && (
         <HStack gap={5} wrap="wrap" vAlign="center">
           <HStack gap={2} vAlign="center">
-            <HStack className="explorer__legend-line" style={{ background: def.color }} />
+            <HStack className="explorer__legend-line" style={{ background: def.color }} aria-hidden="true" />
             <Text type="supporting">{isBloodPressure ? 'Systolic' : view === 'range' ? 'Average with low–high band' : def.label}</Text>
           </HStack>
           {isBloodPressure && (
             <HStack gap={2} vAlign="center">
-              <HStack className="explorer__legend-line" style={{ background: VITALS.diastolic.color }} />
+              <HStack className="explorer__legend-line" style={{ background: VITALS.diastolic.color }} aria-hidden="true" />
               <Text type="supporting">Diastolic</Text>
             </HStack>
           )}
           <HStack gap={2} vAlign="center">
-            <HStack className="explorer__legend-band" />
+            <HStack className="explorer__legend-band" aria-hidden="true" />
             <Text type="supporting">Normal range</Text>
           </HStack>
         </HStack>

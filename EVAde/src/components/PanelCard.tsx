@@ -20,7 +20,7 @@ interface PanelCardProps {
 // Dashboard widget shell: icon, title, status and content.
 export default function PanelCard({ title, subtitle, icon, status, actions, className = '', children }: PanelCardProps) {
   return (
-    <Card padding={5} className={`panel-card ${status ? `panel-card--${status}` : ''} ${className}`}>
+    <Card padding={5} className={`panel-card reveal-on-scroll ${status ? `panel-card--${status}` : ''} ${className}`}>
       <VStack gap={4}>
         <HStack gap={3} vAlign="start">
           {icon && (

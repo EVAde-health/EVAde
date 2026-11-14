@@ -21,13 +21,23 @@ export default function ScoreRing({ value, max = 100, label, tone, caption, suff
           cx="50"
           cy="50"
           r={RADIUS}
+          className="score-ring__halo"
+          stroke={STATUS_STYLES[tone].color}
+          strokeDasharray={CIRCUMFERENCE}
+          strokeDashoffset={CIRCUMFERENCE * (1 - fraction)}
+          aria-hidden="true"
+        />
+        <circle
+          cx="50"
+          cy="50"
+          r={RADIUS}
           className="score-ring__value"
           stroke={STATUS_STYLES[tone].color}
           strokeDasharray={CIRCUMFERENCE}
           strokeDashoffset={CIRCUMFERENCE * (1 - fraction)}
         />
       </svg>
-      <VStack gap={0} hAlign="center" className="score-ring__label">
+      <VStack gap={0} hAlign="center" className="score-ring__label" aria-hidden="true">
         <Text type={size === 'lg' ? 'display-2' : 'display-3'} hasTabularNumbers>
           {Math.round(animated)}
           {suffix}

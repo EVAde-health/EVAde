@@ -13,14 +13,13 @@
   aspect-ratio: 1;
   border-radius: var(--radius-inner);
   cursor: default;
-  transition: transform var(--duration-fast, 120ms) var(--ease-standard, ease);
+  user-select: none;
+  transition: box-shadow var(--duration-fast, 120ms) ease, transform var(--duration-fast, 120ms) var(--ease-standard, ease);
 }
 
-.mood-panel__cell:hover,
-.mood-panel__cell:focus-visible {
-  transform: scale(1.12);
-  outline: 2px solid var(--color-text-primary);
-  outline-offset: 1px;
+.mood-panel__cell:hover {
+  transform: scale(1.18);
+  box-shadow: 0 0 0 2px var(--color-background-card), 0 0 var(--spacing-3) color-mix(in oklab, var(--color-data-purple-4) 70%, transparent);
 }
 
 .mood-panel__key {

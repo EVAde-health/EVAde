@@ -4,6 +4,7 @@
 }
 
 .landing__hero {
+  --progress: 0;
   position: relative;
   min-block-size: 100dvh;
   isolation: isolate;
@@ -37,6 +38,27 @@
 .landing__nav {
   position: relative;
   z-index: 2;
+  animation: nav-drop 800ms cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+
+/* Parallax: copy drifts up faster than the orbital, both fade into depth. */
+.landing__parallax {
+  opacity: calc(1 - var(--progress) * 1.6);
+}
+
+.landing__depth-copy {
+  translate: 0 calc(var(--progress) * -30vh);
+  filter: blur(calc(var(--progress) * var(--spacing-2)));
+}
+
+.landing__depth-visual {
+  translate: 0 calc(var(--progress) * -8vh);
+  scale: calc(1 + var(--progress) * 0.35);
+  rotate: calc(var(--progress) * -6deg);
+}
+
+.landing__hero > .nebula-canvas {
+  scale: calc(1 + var(--progress) * 0.25);
 }
 
 .landing__hero-grid {
@@ -84,21 +106,63 @@
   min-inline-size: 0;
 }
 
+.landing__scroll-cue {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: calc(var(--spacing-12, 3rem) + var(--spacing-12, 3rem));
+  z-index: 1;
+  pointer-events: none;
+  opacity: calc(0.8 - var(--progress) * 4);
+  animation: cue-bob 2.4s ease-in-out infinite;
+}
+
+/* Infinite signals ticker with frosted, blurred edges. */
 .landing__marquee {
   position: relative;
   overflow: hidden;
   padding-block: var(--spacing-5);
-  -webkit-mask-image: linear-gradient(90deg, transparent, black 10%, black 90%, transparent);
-  mask-image: linear-gradient(90deg, transparent, black 10%, black 90%, transparent);
+  -webkit-mask-image: linear-gradient(90deg, transparent, black 22%, black 78%, transparent);
+  mask-image: linear-gradient(90deg, transparent, black 22%, black 78%, transparent);
 }
 
 .landing__marquee-track {
   inline-size: max-content;
-  animation: marquee 40s linear infinite;
+  padding-inline-end: var(--spacing-3);
+  animation: marquee 45s linear infinite;
+  will-change: transform;
 }
 
-.landing__marquee:hover .landing__marquee-track {
-  animation-play-state: paused;
+.landing__marquee-edge {
+  position: absolute;
+  inset-block: 0;
+  inline-size: 28%;
+  z-index: 1;
+  pointer-events: none;
+  backdrop-filter: blur(var(--spacing-2));
+  -webkit-backdrop-filter: blur(var(--spacing-2));
+}
+
+.landing__marquee-edge--start {
+  inset-inline-start: 0;
+  -webkit-mask-image: linear-gradient(90deg, black, transparent);
+  mask-image: linear-gradient(90deg, black, transparent);
+}
+
+.landing__marquee-edge--end {
+  inset-inline-end: 0;
+  -webkit-mask-image: linear-gradient(270deg, black, transparent);
+  mask-image: linear-gradient(270deg, black, transparent);
+}
+
+.landing__section-head {
+  max-inline-size: 44rem;
+  text-align: center;
+}
+
+.landing__finale {
+  min-block-size: 90vh;
+  justify-content: center;
+  text-align: center;
 }
 
 @keyframes marquee {
@@ -107,29 +171,24 @@
   }
 }
 
-.landing__pillar {
-  position: relative;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 100% 0%, color-mix(in oklab, var(--color-accent) 12%, transparent), transparent 55%),
-    var(--color-background-card);
+@keyframes nav-drop {
+  from {
+    opacity: 0;
+    translate: 0 -100%;
+  }
 }
 
-.landing__pillar-icon {
-  inline-size: var(--spacing-12);
-  block-size: var(--spacing-12);
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-container);
-  background: var(--color-background-muted);
+@keyframes cue-bob {
+  50% {
+    translate: 0 var(--spacing-2);
+  }
 }
 
-.landing__pillar-icon--blue { background: var(--color-background-blue); }
-.landing__pillar-icon--pink { background: var(--color-background-pink); }
-.landing__pillar-icon--orange { background: var(--color-background-orange); }
-.landing__pillar-icon--purple { background: var(--color-background-purple); }
-.landing__pillar-icon--teal { background: var(--color-background-teal); }
-
-.landing__footer {
-  border-block-start: 1px solid var(--color-border);
+:root[data-motion='reduced'] .landing__depth-copy,
+:root[data-motion='reduced'] .landing__depth-visual,
+:root[data-motion='reduced'] .landing__hero > .nebula-canvas {
+  translate: none;
+  scale: none;
+  rotate: none;
+  filter: none;
 }

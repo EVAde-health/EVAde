@@ -39,10 +39,10 @@ const MOOD_TASK = { id: 'p-mood', xp: 25 };
 // Animated three-dot "typing" indicator.
 function TypingDots() {
   return (
-    <HStack gap={1} className="journal__typing" aria-label="Assistant is typing">
-      <HStack className="journal__dot" />
-      <HStack className="journal__dot" />
-      <HStack className="journal__dot" />
+    <HStack gap={1} className="journal__typing" role="status" aria-label="Assistant is typing">
+      <HStack className="journal__dot" aria-hidden="true" />
+      <HStack className="journal__dot" aria-hidden="true" />
+      <HStack className="journal__dot" aria-hidden="true" />
     </HStack>
   );
 }

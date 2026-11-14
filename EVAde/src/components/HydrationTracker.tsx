@@ -31,7 +31,7 @@ export default function HydrationTracker() {
       <HStack gap={5} vAlign="center">
         <Stack className="hydration__tank" role="img" aria-label={`${Math.round(fill * 100)}% of daily water goal`}>
           <Stack className="hydration__water" style={{ transform: `translateY(${(1 - fill) * 100}%)` }} />
-          <Stack className="hydration__bubbles" />
+          <Stack className="hydration__bubbles" aria-hidden="true" />
         </Stack>
         <VStack gap={3}>
           <VStack gap={0.5}>

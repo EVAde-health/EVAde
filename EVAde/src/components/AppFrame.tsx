@@ -24,8 +24,10 @@ import {
 import { CREW } from '../data/mission';
 import { BASIC_TASKS, PROTOCOL_TASKS } from '../data/tasks';
 import { useMission } from '../context/MissionContext';
+import AmbientBackdrop from './AmbientBackdrop';
 import BrandMark from './BrandMark';
 import LevelMeter from './LevelMeter';
+import MotionToggle from './MotionToggle';
 import PageLoader from './PageLoader';
 import ThemeToggle from './ThemeToggle';
 import './css/AppFrame.css';
@@ -47,50 +49,57 @@ export default function AppFrame() {
   const remaining = TASK_TOTAL - completed.length;
 
   return (
-    <AppShell
-      variant="elevated"
-      contentPadding={0}
-      sideNav={
-        <SideNav
-          collapsible
-          header={
-            <SideNavHeading
-              heading="EVAde"
-              subheading={`${CREW.mission} · Day ${CREW.missionDay}`}
-              icon={<NavIcon icon={<BrandMark size="sm" />} />}
-              headingHref="/dashboard"
-            />
-          }
-          footer={
-            <VStack gap={2}>
-              <LevelMeter />
-              <Divider />
-              <HStack gap={1} vAlign="center" hAlign="between">
-                <SideNavItem label="Sign out" icon={ArrowLeftStartOnRectangleIcon} href="/" />
-                <ThemeToggle size="sm" />
-              </HStack>
-            </VStack>
-          }>
-          <SideNavSection title="Mission control" isHeaderHidden>
-            {NAV_ITEMS.map(item => (
-              <SideNavItem
-                key={item.href}
-                label={item.label}
-                href={item.href}
-                icon={item.icon}
-                selectedIcon={item.selectedIcon}
-                isSelected={pathname === item.href}
-                endContent={item.href === '/tasks' && remaining > 0 ? <Badge variant="purple" label={String(remaining)} /> : undefined}
+    <>
+      <AmbientBackdrop />
+      <AppShell
+        variant="elevated"
+        contentPadding={0}
+        sideNav={
+          <SideNav
+            className="app-frame__nav"
+            collapsible
+            header={
+              <SideNavHeading
+                heading="EVAde"
+                subheading={`${CREW.mission} · Day ${CREW.missionDay}`}
+                icon={<NavIcon icon={<BrandMark size="sm" />} />}
+                headingHref="/dashboard"
               />
-            ))}
-          </SideNavSection>
-        </SideNav>
-      }>
-      <Suspense fallback={<PageLoader />}>
-        <VStack className="app-frame__page" key={pathname}>
-          <Outlet />
-        </VStack>
-      </Suspense>
-    </AppShell>
+            }
+            footer={
+              <VStack gap={2}>
+                <LevelMeter />
+                <Divider />
+                <HStack gap={1} vAlign="center" hAlign="between">
+                  <SideNavItem label="Sign out" icon={ArrowLeftStartOnRectangleIcon} href="/" />
+                  <HStack gap={0.5}>
+                    <MotionToggle size="sm" />
+                    <ThemeToggle size="sm" />
+                  </HStack>
+                </HStack>
+              </VStack>
+            }>
+            <SideNavSection title="Mission control" isHeaderHidden>
+              {NAV_ITEMS.map(item => (
+                <SideNavItem
+                  key={item.href}
+                  label={item.label}
+                  href={item.href}
+                  icon={item.icon}
+                  selectedIcon={item.selectedIcon}
+                  isSelected={pathname === item.href}
+                  endContent={item.href === '/tasks' && remaining > 0 ? <Badge variant="purple" label={String(remaining)} /> : undefined}
+                />
+              ))}
+            </SideNavSection>
+          </SideNav>
+        }>
+        <Suspense fallback={<PageLoader />}>
+          <VStack className="app-frame__page" key={pathname}>
+            <Outlet />
+          </VStack>
+        </Suspense>
+      </AppShell>
+    </>
   );
 }
