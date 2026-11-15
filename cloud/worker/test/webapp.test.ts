@@ -94,6 +94,116 @@ async function call(method: string, path: string, { token = "astro", body, origi
 
 const today = () => new Date().toISOString().slice(0, 10);
 
+describe("AI companion routes", () => {
+  async function staffSession() {
+    Object.assign(env, { ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com", ACCESS_AUD: "crew", ACCESS_STAFF_AUD: "staff" });
+    await env.SESSIONS.put("sess:" + await sha256("companion-staff"), JSON.stringify({
+      user_id: SURGEON, role: "flight_surgeon", provider: "cloudflare_access_staff", audience: "staff",
+    }));
+    return "companion-staff";
+  }
+
+  it("uses the configured model, persists only the user's private turns and handles retries and deletion", async () => {
+    const run = vi.fn(async () => ({ response: '{"crisis":false,"tone":1,"next":0}' }));
+    Object.assign(env, { AI: { run }, COMPANION_MODEL: "test-instruct-model" });
+    const body = { id: crypto.randomUUID(), message: "It was a long day." };
+    const created = await call("POST", "/journal/chat", { body });
+    expect(created.status).toBe(201);
+    expect(created.data.reply.content).toContain("How much did you sleep");
+    expect(run).toHaveBeenCalledWith("test-instruct-model", expect.objectContaining({ max_tokens: 64 }));
+    expect((await call("POST", "/journal/chat", { body })).data.reply).toEqual(created.data.reply);
+    const path = "/users/" + ASTRONAUT + "/journal/messages";
+    expect((await call("GET", path)).data).toHaveLength(2);
+    expect((await call("GET", path, { token: "other" })).status).toBe(403);
+    const staff = await staffSession();
+    expect((await call("GET", path, { token: staff })).status).toBe(403);
+    const staffJournal = await call("GET", "/admin/astronauts/" + ASTRONAUT + "/journal", { token: staff });
+    expect(staffJournal.status).toBe(200);
+    expect(JSON.stringify(staffJournal.data)).not.toContain(body.message);
+    env.EVADE_API_KEY = crypto.randomUUID();
+    const maintenance = await worker.fetch(new Request(API + path, { headers: { "X-EVAde-Key": env.EVADE_API_KEY } }), env, ctx);
+    expect(maintenance.status).toBe(200);
+    expect(await maintenance.json()).toEqual([]);
+    expect((await call("DELETE", "/me", { body: { confirm: "DELETE" } })).status).toBe(200);
+    expect(env.DB.raw.prepare("SELECT 1 FROM journal_messages WHERE user_id=?").get(ASTRONAUT)).toBeUndefined();
+  });
+
+  it("sends crisis guidance, skips the model, and records one staff emergency without copying the text", async () => {
+    const run = vi.fn();
+    env.AI = { run };
+    const marker = "private-companion-test-marker";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await call("POST", "/journal/chat", { body: { message: "I want to die and I can't stay safe. " + marker } });
+      expect(result.status).toBe(201);
+      expect(result.data.reply.content).toContain("call or text 988");
+    }
+    expect(run).not.toHaveBeenCalled();
+    const alerts = env.DB.raw.prepare("SELECT level,message FROM alerts WHERE user_id=? AND metric='emergency'").all(ASTRONAUT);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({ level: "red" });
+    expect(alerts[0].message).not.toContain("want to die");
+    expect(env.DB.raw.prepare("SELECT COUNT(*) n FROM emergencies WHERE user_id=?").get(ASTRONAUT).n).toBe(1);
+    const staff = await staffSession();
+    const visible = await call("GET", "/admin/astronauts/" + ASTRONAUT + "/alerts", { token: staff });
+    expect(visible.status).toBe(200);
+    expect(visible.data).toEqual(expect.arrayContaining([expect.objectContaining({ level: "red", metric: "emergency" })]));
+    expect(JSON.stringify(visible.data)).not.toContain("want to die");
+    const astro = "/admin/astronauts/" + ASTRONAUT;
+    const emergencies = await call("GET", "/admin/emergencies", { token: staff });
+    expect(emergencies.status).toBe(200);
+    expect(emergencies.data).toEqual([expect.objectContaining({ message: "The journal companion flagged a safety concern." })]);
+    for (const path of [astro + "/journal", astro + "/mood", astro + "/alerts", "/admin/therapist-feed", "/admin/alerts", "/admin/notifications"]) {
+      const result = await call("GET", path, { token: staff });
+      expect(result.status, path).toBe(200);
+      expect(JSON.stringify(result.data), path).not.toContain(marker);
+    }
+  });
+
+  it("uses the per-user limiter and falls back after 15 seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      const limit = vi.fn(async () => ({ success: true }));
+      env.AUTH_RATE_LIMITER = { limit };
+      let modelStarted!: () => void;
+      const started = new Promise<void>(resolve => { modelStarted = resolve; });
+      env.AI = { run: () => { modelStarted(); return new Promise(() => {}); } };
+      const request = call("POST", "/journal/chat", { body: { message: "Good morning" } });
+      await started;
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect((await request).data.reply.content).toContain("contact your flight surgeon or therapist");
+      expect(limit).toHaveBeenCalledWith({ key: "journal-chat:" + ASTRONAUT });
+      limit.mockResolvedValue({ success: false });
+      expect((await call("POST", "/journal/chat", { body: { message: "Another update" } })).status).toBe(429);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("restricts summaries to staff and sends only scoped, structured data to Workers AI", async () => {
+    const raw: DatabaseSync = env.DB.raw;
+    const ts = new Date().toISOString();
+    const insert = raw.prepare("INSERT INTO observations (user_id,metric,value,unit,ts) VALUES (?,'heart_rate',?,?,?)");
+    insert.run(ASTRONAUT, 70, "private@example.test", ts);
+    insert.run(OTHER, 9876, "other@example.test", ts);
+    raw.prepare("INSERT INTO journal_entries (user_id,ts,content,sentiment) VALUES (?,?,?,?)")
+      .run(ASTRONAUT, ts, "private journal content", 0.25);
+    expect((await call("POST", "/journal/chat", { body: { message: "private companion content" } })).status).toBe(201);
+    const run = vi.fn(async () => ({ response: '{"bullets":["Vitals recorded.","No alerts.","Mood score recorded."]}' }));
+    env.AI = { run };
+    const path = "/admin/astronauts/" + ASTRONAUT + "/summary";
+    expect((await call("GET", path)).status).toBe(403);
+    const result = await call("GET", path, { token: await staffSession() });
+    expect(result.status).toBe(200);
+    expect(result.data.label).toBe("AI summary, verify against the data, not a diagnosis");
+    expect(result.data.bullets).toHaveLength(3);
+    const modelInput = JSON.stringify(run.mock.calls);
+    expect(modelInput).toContain("journal_samples");
+    for (const excluded of ["example.test", "9876", "private journal content", "private companion content", ASTRONAUT, OTHER]) {
+      expect(modelInput).not.toContain(excluded);
+    }
+  });
+});
+
 // ---------- helpers ----------
 describe("pure helpers", () => {
   it("counts a streak that ends today or yesterday", () => {

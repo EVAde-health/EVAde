@@ -357,6 +357,25 @@ async function threadFor(env: OpsDb, who: Principal, threadId: number) {
   return thread;
 }
 
+export async function raiseEmergency(db: D1Database, userId: string, ts: string, message: string | null) {
+  const [, created] = await db.batch([
+    db.prepare(
+      `INSERT INTO alerts (user_id, ts, level, metric, message, action, escalate)
+       SELECT ?,?, 'red', 'emergency', ?, 'Contact this astronaut now.', 1
+       WHERE NOT EXISTS (SELECT 1 FROM emergencies WHERE user_id=? AND status!='resolved')`
+    ).bind(userId, ts, message ? `Emergency: ${message}` : "The astronaut pressed the emergency control.", userId),
+    db.prepare(
+      `INSERT INTO emergencies (user_id, message, alert_id, created_at)
+       SELECT ?,?, (SELECT id FROM alerts WHERE user_id=? AND ts=? AND metric='emergency' ORDER BY id DESC LIMIT 1),?
+       WHERE NOT EXISTS (SELECT 1 FROM emergencies WHERE user_id=? AND status!='resolved')
+       RETURNING *`
+    ).bind(userId, message, userId, ts, ts, userId),
+  ]);
+  if (created.results[0]) return { emergency: created.results[0], already: false };
+  const existing = await db.prepare("SELECT * FROM emergencies WHERE user_id=? ORDER BY id DESC LIMIT 1").bind(userId).first();
+  return { emergency: existing, already: true };
+}
+
 export function registerOps(route: (method: string, path: string, handler: Handler) => void, deps: {
   json: (data: unknown, status?: number) => Response;
   body: <T = any>(req: Request) => Promise<T>;
@@ -670,26 +689,8 @@ export function registerOps(route: (method: string, path: string, handler: Handl
     }
     const input = await body(req);
     const message = text(input?.message, "message", 500, false);
-    const ts = now();
-    const userId = who.user_id!;
-    const [, created] = await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO alerts (user_id, ts, level, metric, message, action, escalate)
-         SELECT ?,?, 'red', 'emergency', ?, 'Contact this astronaut now.', 1
-         WHERE NOT EXISTS (SELECT 1 FROM emergencies WHERE user_id=? AND status!='resolved')`
-      ).bind(userId, ts, message ? `Emergency: ${message}` : "The astronaut pressed the emergency control.", userId),
-      env.DB.prepare(
-        `INSERT INTO emergencies (user_id, message, alert_id, created_at)
-         SELECT ?,?, (SELECT id FROM alerts WHERE user_id=? AND ts=? AND metric='emergency' ORDER BY id DESC LIMIT 1),?
-         WHERE NOT EXISTS (SELECT 1 FROM emergencies WHERE user_id=? AND status!='resolved')
-         RETURNING *`
-      ).bind(userId, message, userId, ts, ts, userId),
-    ]);
-    if (created.results[0]) return json({ emergency: created.results[0], already: false }, 201);
-    const existing = await env.DB.prepare(
-      "SELECT * FROM emergencies WHERE user_id=? ORDER BY id DESC LIMIT 1"
-    ).bind(userId).first();
-    return json({ emergency: existing, already: true });
+    const result = await raiseEmergency(env.DB, who.user_id!, now(), message);
+    return json(result, result.already ? 200 : 201);
   });
 
   route("GET", "/emergencies/mine", async (_r, env, _p, _u, _c, who) => {

@@ -50,7 +50,8 @@
     // "true" shows a no-OAuth test login. Keep "false" in production.
     "DEV_LOGIN": "false",
     // Optional AI Gateway id (create one named "evade" in the dashboard for logs + caching of AI calls)
-    "AI_GATEWAY": ""
+    "AI_GATEWAY": "",
+    "COMPANION_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
   }
   // Secrets (set with `npx wrangler secret put <NAME>`):
   //   EVADE_API_KEY  server-side service key for the X-EVAde-Key header
