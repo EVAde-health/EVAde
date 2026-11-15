@@ -1,0 +1,10 @@
+.nebula-canvas {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  display: block;
+  background:
+    radial-gradient(ellipse at 70% 40%, color-mix(in oklab, var(--color-accent) 35%, transparent), transparent 60%),
+    var(--color-background-body);
+}

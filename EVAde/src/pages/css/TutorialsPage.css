@@ -1,0 +1,71 @@
+.tutorials__progress {
+  min-inline-size: 12rem;
+}
+
+.tutorial-card {
+  overflow: hidden;
+}
+
+.tutorial-card__poster {
+  --tone: var(--color-accent);
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 20% 20%, color-mix(in oklab, var(--tone) 55%, transparent), transparent 55%),
+    radial-gradient(circle at 90% 90%, color-mix(in oklab, var(--color-accent) 40%, transparent), transparent 60%),
+    linear-gradient(135deg, var(--color-background-muted), var(--color-background-surface));
+  transition: background-size var(--duration-slow, 400ms);
+}
+
+.tutorial-card__poster::before {
+  content: '';
+  position: absolute;
+  inset: -50%;
+  background: conic-gradient(from 0deg, transparent, color-mix(in oklab, var(--tone) 25%, transparent), transparent 30%);
+  animation: poster-sweep 10s linear infinite;
+  opacity: 0;
+  transition: opacity var(--duration-medium, 250ms);
+}
+
+.tutorial-card:hover .tutorial-card__poster::before {
+  opacity: 1;
+}
+
+@keyframes poster-sweep {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tutorial-card__poster--blue { --tone: var(--color-data-categorical-blue); }
+.tutorial-card__poster--pink { --tone: var(--color-data-categorical-pink); }
+.tutorial-card__poster--orange { --tone: var(--color-data-categorical-orange); }
+.tutorial-card__poster--yellow { --tone: var(--color-data-yellow-3); }
+.tutorial-card__poster--purple { --tone: var(--color-data-categorical-purple); }
+
+.tutorial-card__play {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  inline-size: var(--spacing-12);
+  block-size: var(--spacing-12);
+  border-radius: var(--radius-full);
+  translate: -50% -50%;
+  color: var(--color-on-accent);
+  background: var(--color-accent);
+  box-shadow: 0 0 0 var(--spacing-2) color-mix(in oklab, var(--color-accent) 25%, transparent);
+  transition: transform var(--duration-medium, 250ms) var(--ease-standard, ease);
+}
+
+.tutorial-card:hover .tutorial-card__play {
+  transform: scale(1.12);
+}
+
+.tutorial-card__duration {
+  position: absolute;
+  inset: auto var(--spacing-2) var(--spacing-2) auto;
+  padding: var(--spacing-0-5) var(--spacing-2);
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--color-background-surface) 75%, transparent);
+  backdrop-filter: blur(var(--spacing-2));
+}

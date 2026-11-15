@@ -1,0 +1,65 @@
+.level-meter {
+  border-radius: var(--radius-container);
+  background:
+    linear-gradient(135deg, color-mix(in oklab, var(--color-accent) 18%, transparent), transparent 70%),
+    var(--color-background-muted);
+  border: 1px solid color-mix(in oklab, var(--color-accent) 25%, var(--color-border));
+}
+
+.level-meter__streak {
+  padding: var(--spacing-0-5) var(--spacing-1-5);
+  border-radius: var(--radius-full);
+  background: var(--color-warning-muted);
+}
+
+.level-meter .astryx-progress-bar [data-part='fill'],
+.level-meter [role='progressbar'] > * {
+  background-image: linear-gradient(90deg, var(--color-data-categorical-cyan), var(--color-accent), var(--color-data-categorical-pink));
+}
+
+.level-meter {
+  position: relative;
+  overflow: hidden;
+  animation: nav-item-in 600ms 440ms var(--ease-entrance, ease-out) both;
+}
+
+/* Periodic light sweep across the XP card. */
+.level-meter::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(110deg, transparent 30%, color-mix(in oklab, white 18%, transparent) 50%, transparent 70%);
+  translate: -100% 0;
+  animation: level-sweep 5s 1.2s ease-in-out infinite;
+}
+
+.level-meter .astryx-progress-bar [data-part='fill'],
+.level-meter [role='progressbar'] > * {
+  background-size: 200% 100%;
+  animation: level-flow 3s linear infinite;
+}
+
+.level-meter__streak svg {
+  animation: flame-flicker 1.6s ease-in-out infinite;
+  transform-origin: 50% 90%;
+}
+
+@keyframes level-sweep {
+  40%,
+  100% {
+    translate: 100% 0;
+  }
+}
+
+@keyframes level-flow {
+  to {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes flame-flicker {
+  50% {
+    transform: scale(1.15, 0.92) rotate(-4deg);
+  }
+}

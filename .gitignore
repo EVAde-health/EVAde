@@ -1,3 +1,5 @@
+# Staging area for deploy/deploy.mjs (build output + Worker checkout)
+.deploy/
 .env
 data/
 __pycache__/
