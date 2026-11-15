@@ -12,10 +12,10 @@ import {
   Level,
 } from "./health";
 import {
-  AuthEnv, clearSessionCookie, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, sessionReference, sha256hex, STAFF_ACCESS_PROVIDER, STAFF_ROLES, trustedOrigin,
+  clearSessionCookie, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, sessionReference, sha256hex, STAFF_ACCESS_PROVIDER, STAFF_ROLES, trustedOrigin,
 } from "./auth";
 import { analyzeJournal, dailyBriefing, transcribe, TEXT_MODEL } from "./ai";
-import { registerCompanion } from "./companion";
+import { registerCompanion, type CompanionEnv } from "./companion";
 import type { LiveEvent } from "./live";
 import {
   callModelApi, deleteModelUser, isMock, ModelApiError, ModelEnv, modelsConfigured, modelUserId, PREDICT_KINDS, PredictKind,
@@ -29,9 +29,8 @@ import { registerMessaging } from "./messages";
 import { awardDaily, materializeTasks, registerWebAppRoutes, type WebAppEnv } from "./webapp";
 export { CrewFeed } from "./live";
 
-export interface Env extends AuthEnv, ModelEnv, WebAppEnv {
+export interface Env extends CompanionEnv, ModelEnv, WebAppEnv {
   DB: D1Database;
-  AI?: Ai; // Workers AI
   AI_GATEWAY?: string; // optional AI Gateway id
   MEDIA?: R2Bucket; // R2 bucket evade-media
   LIVE?: DurableObjectNamespace; // CrewFeed Durable Object
@@ -1136,7 +1135,9 @@ async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Reque
       throw new HttpError(403, "Cross-origin request blocked");
   }
   if (session.demo) {
-    if (req.method !== "GET") throw new HttpError(403, "Use a personal account to save changes");
+    if (req.method !== "GET" && !(req.method === "POST" && path === "/journal/chat")) {
+      throw new HttpError(403, "Use a personal account to save changes");
+    }
     if (path === "/leaderboard" || path === "/live") {
       throw new HttpError(403, "Use a personal account to view crew activity");
     }

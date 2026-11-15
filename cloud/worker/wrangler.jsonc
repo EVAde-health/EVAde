@@ -28,7 +28,8 @@
   // Sessions + OAuth state (Workers KV)
   "kv_namespaces": [{ "binding": "SESSIONS", "id": "784305dfc43442a78ccc2aac162e5811" }],
   "ratelimits": [
-    { "name": "AUTH_RATE_LIMITER", "namespace_id": "11340105", "simple": { "limit": 20, "period": 60 } }
+    { "name": "AUTH_RATE_LIMITER", "namespace_id": "11340105", "simple": { "limit": 20, "period": 60 } },
+    { "name": "DEMO_CHAT_RATE_LIMITER", "namespace_id": "11340106", "simple": { "limit": 10, "period": 60 } }
   ],
   // Pull NOAA space weather every 15 minutes into the space_weather table
   "triggers": { "crons": ["*/15 * * * *"] },

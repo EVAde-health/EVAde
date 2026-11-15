@@ -83,8 +83,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function call(method: string, path: string, { token = "astro", body, origin = FRONTEND }: { token?: string | null; body?: unknown; origin?: string } = {}) {
+async function call(method: string, path: string, { token = "astro", body, origin = FRONTEND, ip }: { token?: string | null; body?: unknown; origin?: string; ip?: string } = {}) {
   const headers = new Headers({ Origin: origin });
+  if (ip) headers.set("CF-Connecting-IP", ip);
   if (token) headers.set("Cookie", `__Host-evade_session=${token}`);
   if (body !== undefined) headers.set("Content-Type", "application/json");
   const res = await worker.fetch(new Request(API + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }), env, ctx);
@@ -95,6 +96,15 @@ async function call(method: string, path: string, { token = "astro", body, origi
 const today = () => new Date().toISOString().slice(0, 10);
 
 describe("AI companion routes", () => {
+  async function demoSession() {
+    env.DEMO_LOGIN = "true";
+    const login = await worker.fetch(new Request(API + "/auth/demo"), env, ctx);
+    expect(login.status).toBe(302);
+    return /__Host-evade_session=([^;]+)/.exec(login.headers.get("Set-Cookie")!)![1];
+  }
+
+  const dbChanges = () => env.DB.raw.prepare("SELECT total_changes() AS n").get().n;
+
   async function staffSession() {
     Object.assign(env, { ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com", ACCESS_AUD: "crew", ACCESS_STAFF_AUD: "staff" });
     await env.SESSIONS.put("sess:" + await sha256("companion-staff"), JSON.stringify({
@@ -126,6 +136,73 @@ describe("AI companion routes", () => {
     expect(await maintenance.json()).toEqual([]);
     expect((await call("DELETE", "/me", { body: { confirm: "DELETE" } })).status).toBe(200);
     expect(env.DB.raw.prepare("SELECT 1 FROM journal_messages WHERE user_id=?").get(ASTRONAUT)).toBeUndefined();
+  });
+
+  it("uses the same model for demo chat and leaves all database rows untouched", async () => {
+    const token = await demoSession();
+    const run = vi.fn()
+      .mockResolvedValueOnce({ response: '{"crisis":false,"tone":1,"next":0}' })
+      .mockRejectedValueOnce(new Error("Model unavailable"));
+    Object.assign(env, { AI: { run }, COMPANION_MODEL: "test-instruct-model", DEMO_CHAT_RATE_LIMITER: { limit: async () => ({ success: true }) } });
+    const before = dbChanges();
+    const body = { id: crypto.randomUUID(), message: "It was a long day." };
+    const first = await call("POST", "/journal/chat", { token, body });
+    expect(first).toMatchObject({
+      status: 200,
+      data: {
+        demo: true, saved: false,
+        reply: { id: "companion:" + body.id, sender: "assistant", content: "That sounds difficult. Thank you for sharing it. How much did you sleep, and how rested do you feel?" },
+      },
+    });
+    expect(run).toHaveBeenCalledWith("test-instruct-model", expect.objectContaining({ max_tokens: 64 }));
+    expect(JSON.parse(run.mock.calls[0][1].messages[1].content)).toEqual({ recentQuestions: [], message: body.message });
+    const second = await call("POST", "/journal/chat", { token, body });
+    expect(second).toMatchObject({
+      status: 200, data: { demo: true, saved: false, reply: { content: "Thanks for checking in. If something is concerning, please contact your flight surgeon or therapist." } },
+    });
+    expect(dbChanges()).toBe(before);
+    expect((await call("POST", "/journal/chat", { token, body, origin: "https://elsewhere.test" })).status).toBe(403);
+    expect((await call("POST", "/journal", { token, body })).status).toBe(403);
+  });
+
+  it("returns fixed demo crisis guidance for both keyword and model flags without staff escalation", async () => {
+    const token = await demoSession();
+    const run = vi.fn().mockResolvedValue({ response: '{"crisis":true,"tone":0,"next":0}' });
+    Object.assign(env, { AI: { run }, DEMO_CHAT_RATE_LIMITER: { limit: async () => ({ success: true }) } });
+    const before = dbChanges();
+    const explicit = await call("POST", "/journal/chat", { token, body: { message: "I want to die and I can’t stay safe." } });
+    expect(explicit).toMatchObject({ status: 200, data: { demo: true, saved: false, reply: { content: expect.stringContaining("call or text 988") } } });
+    expect(explicit.data.reply.content).not.toContain("flagged this for staff");
+    expect(run).not.toHaveBeenCalled();
+    const inferred = await call("POST", "/journal/chat", { token, body: { message: "I have something difficult to share." } });
+    expect(inferred).toMatchObject({ status: 200, data: { demo: true, saved: false, reply: { content: explicit.data.reply.content } } });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(dbChanges()).toBe(before);
+  });
+
+  it("requires capacity from both the demo session and the connecting IP before calling AI", async () => {
+    const token = await demoSession();
+    const anotherToken = await demoSession();
+    const run = vi.fn().mockResolvedValue({ response: '{"next":0}' });
+    const counts = new Map<string, number>();
+    const limit = vi.fn(async ({ key }: { key: string }) => {
+      const count = (counts.get(key) ?? 0) + 1;
+      counts.set(key, count);
+      return { success: count <= 10 };
+    });
+    Object.assign(env, { AI: { run }, DEMO_CHAT_RATE_LIMITER: { limit } });
+    const body = { message: "Good morning." };
+    const ip = "192.0.2.1";
+    const otherIp = "192.0.2.2";
+    for (let i = 0; i < 10; i++) expect((await call("POST", "/journal/chat", { token, ip, body })).status).toBe(200);
+    expect((await call("POST", "/journal/chat", { token: anotherToken, ip, body })).status).toBe(429);
+    expect((await call("POST", "/journal/chat", { token, ip: otherIp, body })).status).toBe(429);
+    const crisis = await call("POST", "/journal/chat", { token, ip, body: { message: "I want to die." } });
+    expect(crisis).toMatchObject({ status: 429, data: { error: expect.stringContaining("call or text 988"), demo: true, saved: false } });
+    expect(run).toHaveBeenCalledTimes(10);
+    expect(limit).toHaveBeenCalledWith({ key: "sess:" + await sha256(token) });
+    expect(limit).toHaveBeenCalledWith({ key: "ip:" + ip });
+    expect((await call("POST", "/journal/chat", { token: anotherToken, ip: otherIp, body })).status).toBe(200);
   });
 
   it("sends crisis guidance, skips the model, and records one staff emergency without copying the text", async () => {
