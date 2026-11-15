@@ -79,3 +79,8 @@
     transform: translateY(calc(var(--spacing-1) * -1));
   }
 }
+
+/* Keep the companion's paragraph breaks (summary, mood line, support line). */
+.journal__bubble {
+  white-space: pre-line;
+}

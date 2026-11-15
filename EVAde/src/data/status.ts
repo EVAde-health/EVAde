@@ -41,3 +41,8 @@ export function worstStatus(statuses: HealthStatus[]): HealthStatus {
   if (statuses.includes('critical')) return 'critical';
   return statuses.includes('caution') ? 'caution' : 'nominal';
 }
+
+// Status for a yes/no "is it in range" signal with no catalogue band.
+export function statusFromScore(score: number): HealthStatus {
+  return classify(score, [85, 100], [65, 100]);
+}

@@ -30,17 +30,34 @@ function macroLine(macros: { kcal: number; protein: number; carbs: number; fat: 
 export default function MealLogger() {
   const [selected, setSelected] = useState<FoodItem | null>(null);
   const [grams, setGrams] = useState(DEFAULT_GRAMS);
-  const { meals, addMeal, removeMeal } = useMission();
+  const [saving, setSaving] = useState(false);
+  const { meals, addMeal, removeMeal, loading } = useMission();
   const showToast = useToast();
   const portion = selected?.auxiliaryData ? macrosForPortion(selected.auxiliaryData.per100g, grams) : null;
 
   // Saves the chosen food and portion as a meal entry.
-  function logMeal() {
-    if (!selected || !portion) return;
-    addMeal({ name: selected.label, grams, macros: portion }, MEAL_XP);
-    showToast({ body: `🍽️ Logged ${selected.label} · +${MEAL_XP} XP` });
-    setSelected(null);
-    setGrams(DEFAULT_GRAMS);
+  async function logMeal() {
+    if (!selected || !portion || saving) return;
+    setSaving(true);
+    try {
+      const xp = await addMeal({ name: selected.label, grams, macros: portion });
+      showToast({ body: xp ? `🍽️ Logged ${selected.label} · +${xp} XP` : `🍽️ Logged ${selected.label}` });
+      setSelected(null);
+      setGrams(DEFAULT_GRAMS);
+    } catch {
+      showToast({ body: 'The meal could not be saved. Try again.' });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Removes a logged meal, reporting failures with a toast.
+  async function deleteMeal(id: string) {
+    try {
+      await removeMeal(id);
+    } catch {
+      showToast({ body: 'The meal could not be removed. Try again.' });
+    }
   }
 
   return (
@@ -53,7 +70,6 @@ export default function MealLogger() {
           value={selected}
           onChange={setSelected}
           startIcon={MagnifyingGlassIcon}
-          hasEntriesOnFocus
           minQueryLength={2}
           debounceMs={300}
           emptySearchText="No foods found — try a simpler name"
@@ -72,12 +88,12 @@ export default function MealLogger() {
           <StackItem size="fill">
             <Text type="supporting">{macroLine(portion)}</Text>
           </StackItem>
-          <Button label={`Log meal · +${MEAL_XP} XP`} variant="primary" icon={<Icon icon={PlusIcon} />} onClick={logMeal} />
+          <Button label={`Log meal · +${MEAL_XP} XP`} variant="primary" icon={<Icon icon={PlusIcon} />} onClick={logMeal} isLoading={saving} isDisabled={loading} />
         </HStack>
       )}
 
       {meals.length === 0 ? (
-        <EmptyState isCompact title="No meals logged yet" description="Your first meal of the day earns bonus XP." />
+        <EmptyState isCompact title="No meals logged yet" description={`Each meal you log earns +${MEAL_XP} XP (up to 6 a day).`} />
       ) : (
         <List hasDividers edge="flush" density="compact">
           {meals.map(meal => (
@@ -93,7 +109,7 @@ export default function MealLogger() {
               endContent={
                 <HStack gap={2} vAlign="center">
                   <Token label={`${meal.grams} g`} size="sm" />
-                  <IconButton label={`Remove ${meal.name}`} size="sm" variant="ghost" icon={<Icon icon={TrashIcon} />} onClick={() => removeMeal(meal.id)} />
+                  <IconButton label={`Remove ${meal.name}`} size="sm" variant="ghost" icon={<Icon icon={TrashIcon} />} onClick={() => deleteMeal(meal.id)} isDisabled={loading} />
                 </HStack>
               }
             />

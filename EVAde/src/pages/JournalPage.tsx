@@ -22,10 +22,9 @@ import BrandMark from '../components/BrandMark';
 import PageHeader from '../components/PageHeader';
 import VoiceJournal from '../components/VoiceJournal';
 import type { VoiceTurn } from '../hooks/useVoiceAgent';
-import { usePersistentState } from '../hooks/usePersistentState';
 import { useMission } from '../context/MissionContext';
-import { CREW, MOOD_LABELS } from '../data/mission';
-import { createMessage, getAssistantReply, type JournalMessage } from '../services/journalAssistant';
+import { MOOD_EMOJI, MOOD_LABELS } from '../data/health';
+import { createMessage, getAssistantReply, loadJournal, type JournalMessage } from '../services/journalAssistant';
 import type { VoiceCheckin } from '../services/voiceAgent';
 import './css/JournalPage.css';
 
@@ -36,10 +35,36 @@ const PROMPTS = [
   'I miss home today',
 ];
 
-const MOOD_EMOJI = ['😣', '😕', '😐', '🙂', '😄'];
-const MOOD_TASK = { id: 'p-mood', xp: 25 };
-// Crew ID the voice agent files check-ins under (GET /api/checkins/latest?crew_id=…).
-const VOICE_CREW = `crew-${CREW.callSign.toLowerCase()}`;
+
+const MAX_ENTRY_LENGTH = 5000;
+
+// One-line summary of what the voice agent recorded in a check-in.
+function checkinSummary(checkin: VoiceCheckin) {
+  const facts: string[] = [];
+  if (checkin.sleep_hours != null) facts.push(`Sleep ${checkin.sleep_hours} h`);
+  if (checkin.mood != null) facts.push(`Mood ${checkin.mood}/5`);
+  if (checkin.systolic != null && checkin.diastolic != null) facts.push(`BP ${checkin.systolic}/${checkin.diastolic}`);
+  if (checkin.temperature_c != null) facts.push(`Temp ${checkin.temperature_c} °C`);
+  if (checkin.blood_sugar_mg_dl != null) facts.push(`Sugar ${checkin.blood_sugar_mg_dl} mg/dL`);
+  if (checkin.symptoms?.length) facts.push(`Symptoms: ${checkin.symptoms.join(', ')}`);
+  const level = checkin.level ? String(checkin.level).toUpperCase() : 'SAVED';
+  return [`🎙️ Voice check-in: ${level}`, ...facts].join(' · ');
+}
+
+// The agent's reasons, actions and reminder as one advice message.
+function checkinAdvice(checkin: VoiceCheckin) {
+  return [
+    ...(checkin.reasons ?? []).map(reason => `• ${reason}`),
+    ...(checkin.actions ?? []).map(action => `→ ${action}`),
+    ...(checkin.reminder ? [checkin.reminder] : []),
+  ].join('\n');
+}
+
+// Voice transcript turns as one labelled journal entry, within the API's size limit.
+function transcriptEntry(turns: VoiceTurn[]) {
+  const text = turns.map(turn => `${turn.role === 'agent' ? 'EVAde' : 'Me'}: ${turn.text.trim()}`).join('\n');
+  return `🎙️ Voice check-in\n${text}`.slice(0, MAX_ENTRY_LENGTH);
+}
 
 // Animated three-dot "typing" indicator.
 function TypingDots() {
@@ -52,83 +77,95 @@ function TypingDots() {
   );
 }
 
-// Private journal with mood check-in and an AI companion chat.
+// Private journal saved to D1, with mood check-in and the companion's replies.
 export default function JournalPage() {
-  const [messages, setMessages] = usePersistentState<JournalMessage[]>('evade:journal', []);
+  const [messages, setMessages] = useState<JournalMessage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [historyError, setHistoryError] = useState(false);
   const [draft, setDraft] = useState('');
   const [isReplying, setIsReplying] = useState(false);
   const [mood, setMood] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const { completed, toggleTask } = useMission();
+  const failedRef = useRef<{ id: string; text: string } | null>(null);
+  const { user, logMood: saveMood } = useMission();
   const showToast = useToast();
+  const userId = user.user_id;
 
   useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => {
+    const controller = new AbortController();
+    loadJournal(userId, controller.signal)
+      .then(history => {
+        if (!controller.signal.aborted) setMessages(previous => [...history, ...previous]);
+      })
+      .catch(() => { if (!controller.signal.aborted) setHistoryError(true); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [userId]);
 
   // Sends the user's entry and appends the assistant reply.
   async function sendMessage(text: string) {
     const trimmed = text.trim();
-    if (!trimmed || isReplying) return;
-    const history = [...messages, createMessage('user', trimmed)];
-    setMessages(history);
+    if (!trimmed || loading || abortRef.current) return;
+    const retryId = failedRef.current?.text === trimmed ? failedRef.current.id : undefined;
+    const entry = createMessage('user', trimmed, retryId);
+    failedRef.current = null;
+    setMessages(previous => [...previous, entry]);
     setDraft('');
     setIsReplying(true);
-    abortRef.current = new AbortController();
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      const reply = await getAssistantReply(history, abortRef.current.signal);
-      setMessages(current => [...current, createMessage('assistant', reply)]);
+      const reply = await getAssistantReply(entry, controller.signal);
+      if (!controller.signal.aborted && reply) setMessages(current => [...current, reply]);
     } catch {
-      // Aborted on unmount or stop.
+      if (!controller.signal.aborted) {
+        failedRef.current = { id: entry.id, text: trimmed };
+        setMessages(current => current.filter(message => message.id !== entry.id));
+        setDraft(current => current || trimmed);
+        showToast({ body: 'Your entry did not finish saving. Send it again — it won’t be duplicated.' });
+      }
     } finally {
-      setIsReplying(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        if (!controller.signal.aborted) setIsReplying(false);
+      }
     }
   }
 
   // Cancels an in-flight assistant reply.
   function stopReply() {
     abortRef.current?.abort();
+    abortRef.current = null;
     setIsReplying(false);
   }
 
-  // Logs today's mood and completes the check-in protocol once.
-  function logMood(score: number) {
+  // Saves today's mood to D1; the Worker completes the check-in task.
+  async function logMood(score: number) {
+    const previous = mood;
     setMood(score);
-    setMessages(current => [...current, createMessage('system', `Mood logged: ${MOOD_EMOJI[score - 1]} ${MOOD_LABELS[score - 1]}`)]);
-    if (!completed.includes(MOOD_TASK.id) && toggleTask(MOOD_TASK.id, MOOD_TASK.xp)) {
-      showToast({ body: `🧠 Behavioral check-in complete · +${MOOD_TASK.xp} XP` });
+    try {
+      await saveMood(score);
+      setMessages(current => [...current, createMessage('system', `Mood logged: ${MOOD_EMOJI[score - 1]} ${MOOD_LABELS[score - 1]}`)]);
+      showToast({ body: `🧠 Mood check-in saved · ${MOOD_LABELS[score - 1]}` });
+    } catch {
+      setMood(previous);
+      showToast({ body: 'Your mood could not be saved. Try again.' });
     }
   }
 
-  // Turns a check-in saved by the voice agent into journal entries and logs its mood.
+  // Shows the agent's saved check-in and stores its mood rating in D1.
   function handleVoiceCheckin(checkin: VoiceCheckin) {
-    const facts: string[] = [];
-    if (checkin.sleep_hours != null) facts.push(`Sleep ${checkin.sleep_hours} h`);
-    if (checkin.mood != null) facts.push(`Mood ${checkin.mood}/5`);
-    if (checkin.systolic != null && checkin.diastolic != null) facts.push(`BP ${checkin.systolic}/${checkin.diastolic}`);
-    if (checkin.temperature_c != null) facts.push(`Temp ${checkin.temperature_c} °C`);
-    if (checkin.blood_sugar_mg_dl != null) facts.push(`Sugar ${checkin.blood_sugar_mg_dl} mg/dL`);
-    if (checkin.symptoms?.length) facts.push(`Symptoms: ${checkin.symptoms.join(', ')}`);
-    const level = checkin.level ? String(checkin.level).toUpperCase() : 'SAVED';
-    const entries = [createMessage('system', [`🎙️ Voice check-in: ${level}`, ...facts].join(' · '))];
-    if (checkin.notes?.trim()) entries.push(createMessage('user', checkin.notes.trim()));
-    const advice = [
-      ...(checkin.reasons ?? []).map(reason => `• ${reason}`),
-      ...(checkin.actions ?? []).map(action => `→ ${action}`),
-      ...(checkin.reminder ? [checkin.reminder] : []),
-    ];
-    if (advice.length) entries.push(createMessage('assistant', advice.join('\n')));
-    setMessages(current => [...current, ...entries]);
+    const advice = checkinAdvice(checkin);
+    setMessages(current => [...current, createMessage('system', checkinSummary(checkin)), ...(advice ? [createMessage('assistant', advice)] : [])]);
     const voiceMood = Number(checkin.mood);
-    if (Number.isInteger(voiceMood) && voiceMood >= 1 && voiceMood <= 5) logMood(voiceMood);
+    if (Number.isInteger(voiceMood) && voiceMood >= 1 && voiceMood <= 5) void logMood(voiceMood);
   }
 
-  // Copies finished voice transcript turns into the journal conversation.
+  // Saves the finished voice transcript as a journal entry (analysed like typed entries).
   function addVoiceTurns(turns: VoiceTurn[]) {
-    const entries = turns.map(turn => ({
-      ...createMessage(turn.role === 'agent' ? 'assistant' : 'user', turn.text.trim()),
-      sentAt: turn.at,
-    }));
-    setMessages(current => [...current, ...entries]);
-    showToast({ body: `🎙️ Added ${entries.length} voice ${entries.length === 1 ? 'entry' : 'entries'} to your journal` });
+    if (!turns.length) return;
+    void sendMessage(transcriptEntry(turns));
   }
 
   return (
@@ -136,9 +173,10 @@ export default function JournalPage() {
       <PageHeader
         eyebrow="Private journal"
         title="How are you, really?"
-        description="Only you can read this. Your companion will learn to spot patterns in how you’re feeling."
+        description="Entries are saved privately to your EVAde account. Your companion replies with a short summary."
         actions={<Token label="AI companion · preview" color="purple" icon={<Icon icon={SparklesIcon} size="sm" />} />}
       />
+      {historyError && <Text role="alert">Journal history could not load.</Text>}
 
       <Card padding={4} className="journal__mood rise-in">
         <HStack gap={4} wrap="wrap" vAlign="center" hAlign="between">
@@ -161,7 +199,7 @@ export default function JournalPage() {
         </HStack>
       </Card>
 
-      <VoiceJournal crew={VOICE_CREW} onCheckinSaved={handleVoiceCheckin} onAddToJournal={addVoiceTurns} />
+      <VoiceJournal crew={`crew-${userId}`} onCheckinSaved={handleVoiceCheckin} onAddToJournal={addVoiceTurns} />
 
       <StackItem size="fill" className="journal__chat">
         <ChatLayout
@@ -178,8 +216,8 @@ export default function JournalPage() {
           emptyState={
             <EmptyState
               icon={<BrandMark size="lg" />}
-              title={`Hi ${CREW.name.split(' ')[0]}, what’s on your mind?`}
-              description="Pick a prompt or start writing."
+              title={`Hi ${(user.full_name ?? user.display_name).split(' ')[0]}, what’s on your mind?`}
+              description={loading ? 'Loading your journal…' : 'Pick a prompt or start writing.'}
               actions={
                 <HStack gap={2} wrap="wrap" hAlign="center">
                   {PROMPTS.map(prompt => (
@@ -200,7 +238,7 @@ export default function JournalPage() {
                     sender={message.sender}
                     avatar={message.sender === 'assistant' ? <Avatar name="EVA companion" size="sm" /> : undefined}
                     metadata={<Timestamp value={message.sentAt} />}>
-                    <ChatMessageBubble>{message.text}</ChatMessageBubble>
+                    <ChatMessageBubble className="journal__bubble">{message.text}</ChatMessageBubble>
                   </ChatMessage>
                 ),
               )}
