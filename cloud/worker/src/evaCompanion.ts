@@ -44,8 +44,9 @@ their own health: explain things simply.
 - Never diagnose or prescribe medication. Never make up readings they did not give you.
 
 # Text chat
-- You cannot send or queue messages yourself here: for an emergency, tell them to alert their crewmates now and
-  contact the flight surgeon directly.
+- Only the app forwards messages to the flight surgeon. A note at the end of these instructions says whether this
+  message was forwarded. Never say you contacted, notified or forwarded anything unless that note says it was.
+  For an emergency, still tell them to alert their crewmates now.
 - If they mention wanting to hurt themselves or not wanting to live, respond with care, tell them they are not
   alone, and urge them to talk to a crewmate and the crew support team right now.
 `;
@@ -60,7 +61,7 @@ export interface ChatTurn { sender: "user" | "assistant"; content: string }
 const isOldSummary = (t: ChatTurn) => t.sender === "assistant" && (/^Saved to your journal\.?$/.test(t.content) || /\n\nMood: \w+/.test(t.content));
 
 /** The model's chat messages: system prompt plus the recent thread (oldest first), ending with the user's turn. */
-export function companionMessages(history: ChatTurn[], now = new Date()) {
+export function companionMessages(history: ChatTurn[], now = new Date(), note?: string) {
   const turns = history.filter((t) => t.content.trim() && !isOldSummary(t)).slice(-24);
   // The thread must start with the user and alternate; merge consecutive turns from the same side.
   const merged: ChatTurn[] = [];
@@ -69,7 +70,7 @@ export function companionMessages(history: ChatTurn[], now = new Date()) {
     if (last && last.sender === t.sender) last.content += `\n${t.content}`;
     else if (merged.length || t.sender === "user") merged.push({ ...t });
   }
-  const system = `${COMPANION_INSTRUCTIONS}\nCurrent time (UTC): ${now.toISOString().slice(0, 16).replace("T", " ")}.`;
+  const system = `${COMPANION_INSTRUCTIONS}\nCurrent time (UTC): ${now.toISOString().slice(0, 16).replace("T", " ")}.${note ? `\nNote: ${note}` : ""}`;
   return [{ role: "system", content: system }, ...merged.map((t) => ({ role: t.sender, content: t.content.slice(0, 4000) }))];
 }
 
@@ -82,10 +83,10 @@ function cleanReply(text: string) {
  * unavailable the user gets a short fallback (their message is saved either way). Safety language that must always
  * reach a person adds the crew-support line, independent of the model.
  */
-export async function companionReply(env: AiEnv, history: ChatTurn[]): Promise<{ content: string; model: string | null }> {
+export async function companionReply(env: AiEnv, history: ChatTurn[], note?: string): Promise<{ content: string; model: string | null }> {
   const latest = [...history].reverse().find((t) => t.sender === "user")?.content ?? "";
   const withSupport = (text: string) => (keywordFlag(latest) && !text.includes(SUPPORT_LINE) ? `${text}\n\n${SUPPORT_LINE}` : text);
-  const r = await grok(env, { messages: companionMessages(history), max_tokens: 300, temperature: 0.5 }, (t) => cleanReply(t) || null, "companion reply");
+  const r = await grok(env, { messages: companionMessages(history, new Date(), note), max_tokens: 300, temperature: 0.5 }, (t) => cleanReply(t) || null, "companion reply");
   if (r) return { content: withSupport(r.value), model: r.model };
   return { content: withSupport(FALLBACK_REPLY), model: null };
 }

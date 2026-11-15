@@ -49,6 +49,8 @@
 .emergency-drop__text {
   flex: 1 1 18rem;
   min-inline-size: 0;
+  display: grid;
+  gap: var(--spacing-0-5, 2px);
 }
 
 .emergency-drop__siren {
@@ -90,6 +92,36 @@
   border-radius: var(--radius-lg, 14px);
   animation: rise-in 520ms var(--ease-entrance, ease-out) both;
   animation-delay: calc(min(var(--i, 0), 12) * 40ms);
+}
+
+/* Loading crew cards: same entrance as real cards plus a light sweep across each card. */
+.crew-card--loading {
+  position: relative;
+  overflow: hidden;
+}
+
+.crew-card--loading::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 30%, color-mix(in oklab, var(--color-accent) 14%, transparent) 50%, transparent 70%);
+  transform: translateX(-100%);
+  animation: crew-sweep 1.6s ease-in-out infinite;
+  animation-delay: calc(min(var(--i, 0), 12) * 90ms);
+}
+
+@keyframes crew-sweep {
+  to { transform: translateX(100%); }
+}
+
+.crew-sync {
+  animation: rise-in 320ms var(--ease-entrance, ease-out) both;
+}
+
+:root[data-motion='reduced'] .crew-card--loading::after {
+  animation: none;
+  opacity: 0;
 }
 
 .crew-card > a {
@@ -142,9 +174,26 @@
     radial-gradient(closest-side, var(--color-background-card) 76%, transparent 78%),
     conic-gradient(var(--color-accent) calc(var(--p, 0) * 1%), color-mix(in oklab, var(--color-text-primary) 10%, transparent) 0);
   transition: --p 600ms ease;
+  animation: goal-fill 900ms var(--ease-entrance, ease-out) both;
+  animation-delay: calc(min(var(--i, 0), 12) * 40ms + 200ms);
   font-variant-numeric: tabular-nums;
   font-size: 0.8rem;
   font-weight: 600;
+}
+
+/* Registered so the goal ring's conic gradient can animate (fills from 0 when a card appears). */
+@property --p {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
+@keyframes goal-fill {
+  from { --p: 0; }
+}
+
+:root[data-motion='reduced'] .goal-ring {
+  animation: none;
 }
 
 /* Messages */
@@ -304,4 +353,27 @@
 .audit-strike {
   text-decoration: line-through;
   opacity: 0.7;
+}
+
+/* What is wrong with a critical astronaut, on their crew card. Pulses gently while an emergency is open. */
+.crew-issue {
+  padding: var(--spacing-2) var(--spacing-3);
+  border-radius: var(--radius-md, 10px);
+  border-inline-start: 3px solid var(--color-error, #d93025);
+  background: color-mix(in oklab, var(--color-error, #d93025) 16%, transparent);
+  animation: rise-in 420ms var(--ease-entrance, ease-out) both;
+}
+
+.crew-issue[data-kind='emergency'] {
+  animation: rise-in 420ms var(--ease-entrance, ease-out) both, issue-pulse 2s ease-in-out 420ms infinite;
+}
+
+@keyframes issue-pulse {
+  50% {
+    background: color-mix(in oklab, var(--color-error, #d93025) 26%, transparent);
+  }
+}
+
+:root[data-motion='reduced'] .crew-issue[data-kind='emergency'] {
+  animation: none;
 }

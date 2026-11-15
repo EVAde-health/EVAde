@@ -36,7 +36,7 @@ export default function BonePanel() {
   const status = leadValue === null ? undefined : classify(leadValue, [-3, 100], [-6, 100]);
 
   return (
-    <PanelCard title="Bone density" subtitle="Ultrasound scans · % change from preflight" icon={BoltIcon} status={status}>
+    <PanelCard logMetric="bone_density_change_pct" title="Bone density" subtitle="Ultrasound scans · % change from preflight" icon={BoltIcon} status={status}>
       {!lead ? (
         <NoReadings what="Bone density scans" hint="Your weekly heel and hip ultrasound results will chart here." />
       ) : (

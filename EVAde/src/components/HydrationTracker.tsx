@@ -3,7 +3,7 @@ import { Button } from '@astryxdesign/core/Button';
 import { HStack, Stack, VStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
 import { Icon } from '@astryxdesign/core/Icon';
-import { useToast } from '@astryxdesign/core/Toast';
+import { useToast } from '../context/ToastCenterContext';
 import { BeakerIcon, MinusIcon, PlusIcon } from '@heroicons/react/24/outline';
 import { useMission } from '../context/MissionContext';
 import { WATER_XP } from '../data/tasks';

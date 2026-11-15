@@ -14,8 +14,9 @@ import {
 import {
   AuthEnv, clearSessionCookie, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, sessionReference, sha256hex, STAFF_ACCESS_PROVIDER, STAFF_ROLES, trustedOrigin,
 } from "./auth";
-import { aiConfigured, analyzeJournal, dailyBriefing, transcribe, type AiEnv } from "./ai";
+import { aiConfigured, analyzeJournal, dailyBriefing, journalOverview, transcribe } from "./ai";
 import { registerCompanion } from "./companion";
+import { predict, WINDOW_DAYS, type PredictionEnv } from "./prediction";
 import type { LiveEvent } from "./live";
 import {
   callModelApi, deleteModelUser, isMock, ModelApiError, ModelEnv, modelsConfigured, modelUserId, PREDICT_KINDS, PredictKind,
@@ -30,7 +31,7 @@ import { awardDaily, voiceSavedReply, materializeTasks, registerWebAppRoutes, ty
 import { extractHealth, rowsFor, stableId, type CheckinIn, type Extraction } from "./journalParse";
 export { CrewFeed } from "./live";
 
-export interface Env extends AuthEnv, ModelEnv, WebAppEnv, AiEnv {
+export interface Env extends AuthEnv, ModelEnv, WebAppEnv, PredictionEnv {
   DB: D1Database;
   MEDIA?: R2Bucket; // R2 bucket evade-media
   LIVE?: DurableObjectNamespace; // CrewFeed Durable Object
@@ -519,7 +520,7 @@ route("GET", "/users/:id", async (_r, env, p) => json(await requireUser(env, p.i
 route("POST", "/auth/identities", async (req, env) => {
   const b = await body(req);
   if (!b.provider || !b.subject) throw new HttpError(422, "provider and subject are required");
-  if (b.provider === STAFF_ACCESS_PROVIDER) throw new HttpError(403, "Staff enrollment requires the staff Access application");
+  if (b.provider === STAFF_ACCESS_PROVIDER) throw new HttpError(403, "Staff accounts sign in with Cloudflare Access");
   if (b.user_id) await requireUser(env, b.user_id);
   return json(await linkIdentity(env, b, (id) => seedTasks(env, id)), 201);
 });
@@ -548,14 +549,17 @@ route("POST", "/observations", async (req, env, _p, _u, ctx) => {
   await requireUser(env, b.user_id);
   const items: ObsIn[] = Array.isArray(b.observations) ? b.observations : [b];
   if (items.length > 500) throw new HttpError(413, "Max 500 observations per call");
+  const pointsOf = async () => (await env.DB.prepare("SELECT points FROM users WHERE user_id=?").bind(b.user_id).first<{ points: number }>())?.points ?? 0;
+  const before = await pointsOf();
   const stored = await ingestObservations(env, b.user_id, items);
+  const pointsAwarded = Math.max(0, (await pointsOf()) - before);
   const fresh = stored.filter((o) => Date.now() - Date.parse(o.ts) < 48 * 3600_000);
   if (fresh.length) {
     publish(env, ctx, { type: "observation", user_id: b.user_id, data: fresh });
     const flagged = fresh.filter((o) => o.level !== "green");
     if (flagged.length) publish(env, ctx, { type: "alert", user_id: b.user_id, data: flagged });
   }
-  return json({ stored }, 201);
+  return json({ stored, points_awarded: pointsAwarded }, 201);
 });
 route("GET", "/users/:id/observations", async (_r, env, p, url) => {
   await requireUser(env, p.id);
@@ -779,15 +783,25 @@ route("POST", "/radiation", async (req, env) => {
   const b = await body(req);
   await requireUser(env, b.user_id);
   const ts = b.ts ?? now();
+  // A daily dose without a mission total (typed in the app) continues the running total.
+  let cumulative = typeof b.cumulative_msv === "number" ? b.cumulative_msv : null;
+  if (cumulative === null && typeof b.daily_dose_msv === "number") {
+    const last = await env.DB.prepare("SELECT cumulative_msv FROM radiation_doses WHERE user_id=? AND cumulative_msv IS NOT NULL ORDER BY ts DESC LIMIT 1")
+      .bind(b.user_id).first<{ cumulative_msv: number }>();
+    cumulative = Math.round(((last?.cumulative_msv ?? 0) + b.daily_dose_msv) * 1000) / 1000;
+  }
+  const before = (await env.DB.prepare("SELECT points FROM users WHERE user_id=?").bind(b.user_id).first<{ points: number }>())?.points ?? 0;
   await env.DB.prepare(
     `INSERT INTO radiation_doses (client_id,user_id,ts,dose_rate_usv_h,daily_dose_msv,cumulative_msv,spe_flag,location,source)
      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(client_id) DO NOTHING`
-  ).bind(b.client_id ?? null, b.user_id, ts, b.dose_rate_usv_h ?? null, b.daily_dose_msv ?? null, b.cumulative_msv ?? null,
+  ).bind(b.client_id ?? null, b.user_id, ts, b.dose_rate_usv_h ?? null, b.daily_dose_msv ?? null, cumulative,
     b.spe_flag ? 1 : 0, b.location ?? null, b.source ?? "dosimeter").run();
+  const obsSource = b.source === "synthetic" ? "synthetic" : b.source === "manual" ? "manual" : "device";
   const levels = b.daily_dose_msv !== undefined
-    ? await ingestObservations(env, b.user_id, [{ metric: "daily_radiation_msv", value: b.daily_dose_msv, ts, source: b.source === "synthetic" ? "synthetic" : "device" }])
+    ? await ingestObservations(env, b.user_id, [{ metric: "daily_radiation_msv", value: b.daily_dose_msv, ts, source: obsSource }])
     : [];
-  return json({ ok: true, levels }, 201);
+  const after = (await env.DB.prepare("SELECT points FROM users WHERE user_id=?").bind(b.user_id).first<{ points: number }>())?.points ?? 0;
+  return json({ ok: true, levels, stored: levels, cumulative_msv: cumulative, points_awarded: Math.max(0, after - before) }, 201);
 });
 
 // Space weather
@@ -858,6 +872,87 @@ route("GET", "/users/:id/briefing", async (_r, env, p, url, _c, who) => {
 });
 route("GET", "/users/:id/risk/history", async (_r, env, p) =>
   json((await env.DB.prepare("SELECT ts,r,band,mdtr,domains FROM risk_scores WHERE user_id=? ORDER BY ts DESC LIMIT 200").bind(p.id).all()).results));
+
+// Return-to-Earth forecast: metric trends, days until return and the most concerning metric (prediction.ts).
+// Seen by the astronaut and by staff. Cached in KV until new readings arrive or 30 minutes pass.
+route("GET", "/users/:id/prediction", async (_r, env, p, url, _c, who) => {
+  const user = await requireUser(env, p.id);
+  const since = new Date(Date.now() - WINDOW_DAYS * 864e5).toISOString();
+  const marker = await env.DB.prepare(
+    `SELECT (SELECT MAX(ts) FROM observations WHERE user_id=?1) AS obs, (SELECT MAX(ts) FROM radiation_doses WHERE user_id=?1) AS dose`
+  ).bind(p.id).first<{ obs: string | null; dose: string | null }>();
+  const cacheKey = `pred:v1:${p.id}:${marker?.obs ?? "-"}:${marker?.dose ?? "-"}:${env.PREDICTION_PROVIDER ?? "ai"}`;
+  if (url.searchParams.get("refresh") !== "1") {
+    const cached = await env.SESSIONS?.get(cacheKey, "json");
+    if (cached) return json({ ...(cached as object), cached: true });
+  }
+  const [defs, { results: observations }, { results: doses }, risk] = await Promise.all([
+    metricDefs(env),
+    env.DB.prepare("SELECT metric, value, ts FROM observations WHERE user_id=? AND ts>=? ORDER BY ts").bind(p.id, since)
+      .all<{ metric: string; value: number; ts: string }>(),
+    env.DB.prepare("SELECT ts, cumulative_msv, daily_dose_msv FROM radiation_doses WHERE user_id=? AND ts>=? ORDER BY ts").bind(p.id, since)
+      .all<{ ts: string; cumulative_msv: number | null; daily_dose_msv: number | null }>(),
+    riskFor(env, p.id, false),
+  ]);
+  const start = user.mission_start ? Date.parse(user.mission_start) : NaN;
+  const scheduledDaysLeft = Number.isFinite(start) && user.mission_length_days
+    ? Math.max(0, Math.round(start / 864e5 + user.mission_length_days - Date.now() / 864e5)) : null;
+  const out = await predict(who.demo ? { ...env, XAI_API_KEY: undefined } : env, p.id, {
+    defs, observations, doses, radiationLimitMsv: user.radiation_limit_msv ?? 600,
+    riskMdtrDays: observations.length ? risk.mdtr_days : null, scheduledDaysLeft,
+  });
+  await env.SESSIONS?.put(cacheKey, JSON.stringify(out), { expirationTtl: 1800 });
+  return json(out);
+});
+
+// Staff-only overview of an astronaut's condition from journal summaries and check-ins (/admin/* is staff-only in
+// authorize()). The astronaut never sees it, so the journal stays a place to talk rather than an assessment.
+route("GET", "/admin/astronauts/:id/journal/overview", async (_r, env, p, url) => {
+  const user = await requireUser(env, p.id);
+  if (user.role !== "astronaut") throw new HttpError(404, "Astronaut not found");
+  const days = Math.max(3, Math.min(Number(url.searchParams.get("days")) || 14, 60));
+  const since = new Date(Date.now() - days * 864e5).toISOString();
+  const [{ results: entries }, { results: checkins }] = await Promise.all([
+    env.DB.prepare(
+      `SELECT id, ts, source, mood_label, concern_level, sentiment, ai_summary, substr(content,1,300) AS excerpt
+       FROM journal_entries WHERE user_id=? AND ts>=? ORDER BY ts LIMIT 80`
+    ).bind(p.id, since).all<any>(),
+    env.DB.prepare(
+      "SELECT id, ts, mood, stress, fatigue, sleep_quality, sleep_hours, symptoms FROM self_reports WHERE user_id=? AND ts>=? ORDER BY ts LIMIT 120"
+    ).bind(p.id, since).all<any>(),
+  ]);
+  const sentiments = entries.map((e) => e.sentiment).filter((s): s is number => typeof s === "number");
+  const half = Math.floor(sentiments.length / 2);
+  const mean = (a: number[]) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : null);
+  const stats = {
+    days, entries: entries.length, checkins: checkins.length,
+    high_concern: entries.filter((e) => e.concern_level === "high").length,
+    moderate_concern: entries.filter((e) => e.concern_level === "moderate").length,
+    sentiment_earlier: half ? mean(sentiments.slice(0, half)) : null,
+    sentiment_recent: half ? mean(sentiments.slice(half)) : mean(sentiments),
+    last_entry_at: entries.at(-1)?.ts ?? null,
+  };
+  if (!entries.length && !checkins.length) return json({ ...stats, overview: null, generated_at: now() });
+  const cacheKey = `jov:v1:${p.id}:${days}:${entries.at(-1)?.id ?? "-"}:${checkins.at(-1)?.id ?? "-"}`;
+  if (url.searchParams.get("refresh") !== "1") {
+    const cached = await env.SESSIONS?.get(cacheKey, "json");
+    if (cached) return json({ ...(cached as object), cached: true });
+  }
+  const ai = await journalOverview(env, {
+    period_days: days,
+    journal: entries.map((e) => ({
+      ts: e.ts.slice(0, 16), mood: e.mood_label, concern_level: e.concern_level, sentiment: e.sentiment,
+      summary: e.ai_summary ?? e.excerpt,
+    })),
+    checkins: checkins.map((c) => ({
+      ts: c.ts.slice(0, 16), mood: c.mood, stress: c.stress, fatigue: c.fatigue, sleep_quality: c.sleep_quality,
+      sleep_hours: c.sleep_hours, symptoms: c.symptoms,
+    })),
+  });
+  const out = { ...stats, overview: ai, generated_at: now() };
+  if (ai) await env.SESSIONS?.put(cacheKey, JSON.stringify(out), { expirationTtl: 6 * 3600 });
+  return json(out);
+});
 
 // Dashboard: one call for the frontend home screen
 route("GET", "/users/:id/dashboard", async (_r, env, p) => {
@@ -1294,7 +1389,7 @@ async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Reque
   const path = url.pathname.replace(/\/$/, "");
   const key = req.headers.get("X-EVAde-Key");
   if (env.EVADE_API_KEY && key === env.EVADE_API_KEY) {
-    if (path.startsWith("/admin/")) throw new HttpError(403, "Staff sign-in required");
+    if (path.startsWith("/admin/")) throw new HttpError(403, "Flight surgeon / admin access only");
     return { req, principal: { kind: "service" } };
   }
   const session = await getSessionPrincipal(req, env);

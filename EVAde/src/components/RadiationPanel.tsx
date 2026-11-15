@@ -23,7 +23,7 @@ export default function RadiationPanel() {
   const share = summary ? Math.round((summary.total / summary.limit) * 100) : 0;
 
   return (
-    <PanelCard title="Radiation exposure" subtitle="Personal dosimeter · millisieverts (mSv)" icon={ShieldExclamationIcon} status={status}>
+    <PanelCard logMetric="daily_radiation_msv" title="Radiation exposure" subtitle="Personal dosimeter · millisieverts (mSv)" icon={ShieldExclamationIcon} status={status}>
       {!summary ? (
         <NoReadings what="Dosimeter readings" hint="Dock your dosimeter to log today's dose and start your mission total." />
       ) : (

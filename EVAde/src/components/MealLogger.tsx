@@ -11,7 +11,7 @@ import { Token } from '@astryxdesign/core/Token';
 import { Typeahead, TypeaheadItem } from '@astryxdesign/core/Typeahead';
 import { Timestamp } from '@astryxdesign/core/Timestamp';
 import { Icon } from '@astryxdesign/core/Icon';
-import { useToast } from '@astryxdesign/core/Toast';
+import { useToast } from '../context/ToastCenterContext';
 import { CakeIcon, MagnifyingGlassIcon, PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { createFoodSearchSource, macrosForPortion, type FoodItem } from '../services/foodSearch';
 import { useMission } from '../context/MissionContext';

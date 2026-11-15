@@ -3,7 +3,6 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 export interface AccessEnv {
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
-  ACCESS_STAFF_AUD?: string;
 }
 
 const teamHost = (env: AccessEnv) => {
@@ -11,8 +10,6 @@ const teamHost = (env: AccessEnv) => {
   return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.cloudflareaccess\.com$/.test(host) ? host : null;
 };
 export const accessConfigured = (env: AccessEnv) => Boolean(teamHost(env) && env.ACCESS_AUD);
-export const staffAudience = (env: AccessEnv) =>
-  accessConfigured(env) && env.ACCESS_STAFF_AUD && env.ACCESS_STAFF_AUD !== env.ACCESS_AUD ? env.ACCESS_STAFF_AUD : null;
 
 export function accessLogoutUrl(env: AccessEnv) {
   const host = teamHost(env);

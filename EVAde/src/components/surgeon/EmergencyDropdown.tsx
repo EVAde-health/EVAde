@@ -2,7 +2,7 @@ import type { CSSProperties } from 'react';
 import { useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { Text } from '@astryxdesign/core/Text';
-import { useToast } from '@astryxdesign/core/Toast';
+import { useToast } from '../../context/ToastCenterContext';
 import { useSurgeon } from '../../context/SurgeonContext';
 import { acknowledgeEmergency, ago, personName, resolveEmergency, responseRows, type Emergency } from '../../services/surgeon';
 

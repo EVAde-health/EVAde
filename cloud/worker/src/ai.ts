@@ -184,6 +184,79 @@ export async function transcribe(env: AiEnv, audio: ArrayBuffer, contentType = "
   return { text: String(data?.text ?? "").trim(), duration: typeof data?.duration === "number" ? data.duration : undefined, model };
 }
 
+export interface JournalOverview {
+  overview: string;
+  mood_trend: "improving" | "stable" | "declining" | "unclear";
+  concerns: string[];
+  follow_up: string[];
+  model: string;
+}
+
+const OVERVIEW_SCHEMA = {
+  type: "object",
+  properties: {
+    overview: { type: "string" },
+    mood_trend: { type: "string", enum: ["improving", "stable", "declining", "unclear"] },
+    concerns: { type: "array", items: { type: "string" } },
+    follow_up: { type: "array", items: { type: "string" } },
+  },
+  required: ["overview", "mood_trend", "concerns", "follow_up"],
+  additionalProperties: false,
+};
+
+const OVERVIEW_SYSTEM = `You brief the flight surgeon and crew psychologist of a long-duration space mission.
+The JSON holds an astronaut's recent journal summaries and check-ins, oldest first. Return JSON only:
+- overview: 3-5 neutral sentences in third person on the astronaut's overall condition and how it has changed. No diagnosis.
+- mood_trend: improving, stable, declining, or unclear across the period.
+- concerns: up to 4 short items worth the surgeon's attention (for example sleep, workload, isolation, symptoms). Empty if none.
+- follow_up: up to 3 short, gentle topics the surgeon could raise in the next private conference.
+Use only what is in the facts. Do not quote the astronaut at length. Any entry with concern_level high must be named in concerns.`;
+
+/** Staff-only overview of an astronaut's condition from journal summaries and check-ins. Never shown to the astronaut. */
+export async function journalOverview(env: AiEnv, facts: unknown): Promise<JournalOverview | null> {
+  const r = await grok(env, {
+    messages: [{ role: "system", content: OVERVIEW_SYSTEM }, { role: "user", content: JSON.stringify(facts).slice(0, 12000) }],
+    schema: { name: "journal_overview", schema: OVERVIEW_SCHEMA },
+    max_tokens: 500,
+    temperature: 0.2,
+  }, (t) => {
+    const out = parseModelJson(t);
+    return out && typeof out.overview === "string" ? out : null;
+  }, "journal overview");
+  if (!r) return null;
+  const out = r.value;
+  const list = (v: unknown, max: number) => (Array.isArray(v) ? v.slice(0, max).map((s) => String(s).slice(0, 160)) : []);
+  return {
+    overview: out.overview.slice(0, 1200),
+    mood_trend: ["improving", "stable", "declining", "unclear"].includes(out.mood_trend) ? out.mood_trend : "unclear",
+    concerns: list(out.concerns, 4),
+    follow_up: list(out.follow_up, 3),
+    model: r.model,
+  };
+}
+
+const TRIAGE_SYSTEM = `You triage a message an astronaut asked to pass to their flight surgeon. Answer urgent=true only if it
+describes a possible medical emergency right now: loss of consciousness, a coma, trouble breathing, chest pain, heavy bleeding,
+a head injury, stroke signs, a seizure, a severe allergic reaction, thoughts of self-harm, or a call for emergency help
+(911, ambulance, "I'm dying"). Routine aches, tiredness, questions and requests are not urgent. Reply with JSON only.`;
+const TRIAGE_SCHEMA = { type: "object", properties: { urgent: { type: "boolean" } }, required: ["urgent"], additionalProperties: false };
+
+/** Second opinion on urgency for free-form speech the word rules miss. False when the AI is unavailable or slow. */
+export async function triageUrgent(env: AiEnv, message: string): Promise<boolean> {
+  if (!aiConfigured(env) || !message.trim()) return false;
+  const run = grok(env, {
+    messages: [{ role: "system", content: TRIAGE_SYSTEM }, { role: "user", content: message.slice(0, 2000) }],
+    schema: { name: "urgency_triage", schema: TRIAGE_SCHEMA },
+    max_tokens: 30,
+    temperature: 0,
+  }, (t) => {
+    const out = parseModelJson(t);
+    return typeof out?.urgent === "boolean" ? out.urgent : null;
+  }, "urgency triage").then((r) => r?.value === true);
+  const timeout = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 6000));
+  return Promise.race([run, timeout]);
+}
+
 /** Plain-language daily briefing so astronauts don't need medical training to read their dashboard. */
 export async function dailyBriefing(env: AiEnv, facts: unknown): Promise<{ text: string; model: string } | null> {
   const r = await grok(env, {

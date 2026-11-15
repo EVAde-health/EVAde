@@ -12,7 +12,7 @@ import { TextInput } from '@astryxdesign/core/TextInput';
 import { Thumbnail } from '@astryxdesign/core/Thumbnail';
 import { Switch } from '@astryxdesign/core/Switch';
 import { Icon } from '@astryxdesign/core/Icon';
-import { useToast } from '@astryxdesign/core/Toast';
+import { useToast } from '../context/ToastCenterContext';
 import { ArrowPathIcon, CameraIcon, CheckIcon, PhotoIcon, VideoCameraSlashIcon } from '@heroicons/react/24/outline';
 import PageHeader from '../components/PageHeader';
 import { useCamera } from '../hooks/useCamera';

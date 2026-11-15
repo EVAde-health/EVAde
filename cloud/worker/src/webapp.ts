@@ -4,9 +4,10 @@
 // filled in (or rejected) from the session, and cookie writes must come from an allowed origin.
 // Points are always read from D1 (task_templates, tutorials), never from the request.
 
-import type { AiEnv } from "./ai";
+import { triageUrgent, type AiEnv } from "./ai";
 import type { Principal } from "./auth";
 import { companionReply, SUPPORT_LINE, type ChatTurn } from "./evaCompanion";
+import { ASKS_FOR_SURGEON, deliverSurgeonRequest, describesEmergency } from "./ops";
 
 export interface WebAppEnv extends AiEnv {
   DB: D1Database;
@@ -363,8 +364,23 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
       ctx.waitUntil(d.journal(env, ctx, entry.id, userId, content, { parseText: parseTextFor(history, content) })
         .then(() => {}, (e) => console.error("journal analysis", e instanceof Error ? e.name : "Error")));
     }
-    const answer = await companionReply(env, history);
-    const reply = { id: crypto.randomUUID(), sender: "assistant", content: answer.content, ts: new Date(Date.parse(ts) + 1).toISOString() };
+    // Asking for the flight surgeon, or describing an emergency, forwards the message to the surgeon console now.
+    const forward = who.kind === "user" && who.role === "astronaut" && !who.demo && (ASKS_FOR_SURGEON.test(content) || describesEmergency(content));
+    // Forward first, so the companion is told what actually happened and never claims a contact that didn't occur.
+    const forwarded = forward
+      ? await deliverSurgeonRequest(env.DB, userId, {
+        clientId: `journal:${id}`, message: content.slice(0, 1000), priority: describesEmergency(content) ? "urgent" : "routine", source: "journal",
+      }, (message) => triageUrgent(env, message))
+      : null;
+    const note = forwarded
+      ? `The app has just forwarded this message to the flight surgeon${forwarded.urgent ? " as urgent" : ""}. A confirmation line is added after your reply; don't repeat it.`
+      : "This message was NOT forwarded to the flight surgeon. If they want the surgeon, tell them to ask you to contact the flight surgeon, or to use Messages.";
+    const answer = await companionReply(env, history, note);
+    const confirmation = forwarded
+      ? forwarded.urgent ? "I've alerted the flight surgeon as urgent with what you wrote." : "I've sent what you wrote to the flight surgeon's inbox."
+      : null;
+    const replyText = confirmation ? `${answer.content}\n\n${confirmation}` : answer.content;
+    const reply = { id: crypto.randomUUID(), sender: "assistant", content: replyText, ts: new Date(Date.parse(ts) + 1).toISOString() };
     await env.DB.prepare("INSERT INTO journal_messages (id,user_id,sender,content,ts,entry_id,model) VALUES (?,?,?,?,?,?,?)")
       .bind(reply.id, userId, reply.sender, reply.content, reply.ts, entry?.id ?? null, answer.model ?? "rules").run();
     return json({ message: { id, sender: "user", content, ts }, reply }, 201);

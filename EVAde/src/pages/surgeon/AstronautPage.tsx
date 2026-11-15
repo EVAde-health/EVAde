@@ -6,12 +6,16 @@ import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Grid } from '@astryxdesign/core/Grid';
+import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { HStack, StackItem, VStack } from '@astryxdesign/core/Stack';
 import { Tab, TabList } from '@astryxdesign/core/TabList';
 import { Heading, Text } from '@astryxdesign/core/Text';
-import { ChatBubbleLeftRightIcon, UserGroupIcon } from '@heroicons/react/24/outline';
+import { List, ListItem } from '@astryxdesign/core/List';
+import { Timestamp } from '@astryxdesign/core/Timestamp';
+import { ChatBubbleLeftRightIcon, SparklesIcon, UserGroupIcon } from '@heroicons/react/24/outline';
 import { Icon } from '@astryxdesign/core/Icon';
 import AstronautPicker from '../../components/surgeon/AstronautPicker';
+import ReturnForecast from '../../components/ReturnForecast';
 import StatusBadge from '../../components/StatusBadge';
 import { useSurgeon } from '../../context/SurgeonContext';
 import { bandStatus } from '../../services/clinic';
@@ -100,8 +104,19 @@ function Record({ id, section, onSection }: { id: string; section: Section; onSe
             <Stat label="Red signals" value={Array.isArray(data.latest) ? String(latest.filter(item => item.level === 'red').length) : '—'} />
           </Grid>
         )}
+        {!data && (
+          <Grid columns={{ minWidth: 150, max: 5 }} gap={3} role="status" aria-label="Loading astronaut record">
+            {[0, 1, 2, 3, 4].map(index => (
+              <VStack key={index} gap={1}>
+                <Skeleton width="55%" height={12} radius={1} index={index * 2} />
+                <Skeleton width="75%" height={22} radius={1} index={index * 2 + 1} />
+              </VStack>
+            ))}
+          </Grid>
+        )}
       </Card>
       <SummaryCard id={id} simulated={hasSimulatedData(user)} />
+      <ReturnForecast userId={id} />
       <TabList value={section} onChange={value => onSection(value as Section)} hasDivider>
         {SECTIONS.map(item => <Tab key={item.value} value={item.value} label={item.label} />)}
       </TabList>
@@ -115,17 +130,20 @@ function Record({ id, section, onSection }: { id: string; section: Section; onSe
   );
 }
 
+// On-demand AI bullet summary of the astronaut's last 24 hours (Grok over scoped aggregates, rules fallback).
+interface StaffSummary { label: string; bullets: string[]; since: string; until: string }
+
 function SummaryCard({ id, simulated }: { id: string; simulated: boolean }) {
-  const [bullets, setBullets] = useState<string[]>();
+  const [summary, setSummary] = useState<StaffSummary>();
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
 
+  // Fetches a fresh summary from the Worker.
   async function load() {
     setLoading(true);
     setFailed(false);
     try {
-      const result = await api<{ bullets: string[] }>('/admin/astronauts/' + encodeURIComponent(id) + '/summary');
-      setBullets(result.bullets);
+      setSummary(await api<StaffSummary>(`/admin/astronauts/${encodeURIComponent(id)}/summary`));
     } catch {
       setFailed(true);
     } finally {
@@ -137,15 +155,31 @@ function SummaryCard({ id, simulated }: { id: string; simulated: boolean }) {
     <Card padding={5}>
       <VStack gap={3}>
         <HStack gap={3} wrap="wrap" vAlign="center">
-          <Text weight="semibold">AI summary, verify against the data, not a diagnosis</Text>
+          <StackItem size="fill">
+            <VStack gap={0.5}>
+              <Heading level={3}>Last 24 hours</Heading>
+              <Text type="supporting">AI summary of vitals, sleep, alerts and journal mood. Verify against the data; not a diagnosis.</Text>
+            </VStack>
+          </StackItem>
           {simulated && <Badge variant="purple" label="Simulated data" />}
+          <Button variant={summary ? 'ghost' : 'primary'} icon={<Icon icon={SparklesIcon} />} label={loading ? 'Summarizing…' : summary ? 'Refresh summary' : 'Summarize the last 24 hours'} onClick={load} isDisabled={loading} />
         </HStack>
-        {loading && <Text role="status">Preparing the last 24 hours…</Text>}
+        {loading && (
+          <VStack gap={2} role="status" aria-label="Preparing the summary">
+            {[92, 78, 85, 64].map((width, index) => <Skeleton key={index} width={`${width}%`} height={14} radius={1} index={index * 3} />)}
+          </VStack>
+        )}
         {failed && <Text role="alert">The summary could not load. Try again.</Text>}
-        {bullets && <ul>{bullets.map((bullet, index) => <li key={index}><Text>{bullet}</Text></li>)}</ul>}
-        <HStack>
-          <Button variant="secondary" label={bullets ? 'Refresh summary' : 'Summarize the last 24 hours'} onClick={load} isDisabled={loading} />
-        </HStack>
+        {summary && !loading && (
+          <VStack gap={2} className="rise-in">
+            <List density="compact" edge="flush" hasDividers>
+              {summary.bullets.map((bullet, index) => <ListItem key={index} label={bullet} />)}
+            </List>
+            <Text type="supporting">
+              {summary.label} · <Timestamp value={summary.until} />
+            </Text>
+          </VStack>
+        )}
       </VStack>
     </Card>
   );

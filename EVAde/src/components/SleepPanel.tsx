@@ -38,6 +38,7 @@ export default function SleepPanel() {
 
   return (
     <PanelCard
+      logMetric="sleep_hours"
       title="Sleep"
       subtitle={average === null ? `Target ${target} h` : `7-night average ${average} h · target ${target} h`}
       icon={MoonIcon}

@@ -256,7 +256,7 @@ export default function MetricExplorer({ vital, onVitalChange }: { vital: string
   }
 
   return (
-    <PanelCard title="Metric explorer" subtitle={`${label} · ${meta.source}`} icon={PresentationChartLineIcon} className="explorer">
+    <PanelCard logMetric={meta.id} title="Metric explorer" subtitle={`${label} · ${meta.source}`} icon={PresentationChartLineIcon} className="explorer">
       <TabList role="tablist" value={meta.id} onChange={v => onVitalChange(String(v))} hasDivider>
         {EXPLORER_VITALS.map(v => (
           <Tab key={v.id} value={v.id} label={v.pair ? 'Blood pressure' : (defs.get(v.id)?.label ?? v.shortLabel)} />

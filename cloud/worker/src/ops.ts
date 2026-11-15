@@ -1,12 +1,100 @@
 // Flight-surgeon console, astronaut emergencies, and astronaut-to-staff chat.
-// Staff means a Cloudflare Access staff session whose D1 role is flight_surgeon, therapist, or admin.
+// Staff means a signed-in user whose D1 role is flight_surgeon, therapist, or admin (one sign-in for everyone).
 // Callers are already authenticated. These handlers still check the role before reading another person.
-import { Principal, STAFF_ACCESS_PROVIDER, STAFF_ROLES } from "./auth";
+import { triageUrgent, type AiEnv } from "./ai";
+import { Principal, STAFF_ROLES } from "./auth";
 import { HttpError } from "./http";
 import { levelFromThresholds, type MetricDef } from "./health";
 import { limitMessageSend, recordMessage } from "./messages";
 
-export interface OpsDb {
+// Physical emergencies in plain speech: symptoms, injuries and calls for help ("call 911", "they thought I was dying").
+const EMERGENCY_WORDS = String.raw`chest pain|chest tight\w*|heart attack|stroke|can'?t breathe|cannot breathe|not breathing|trouble breathing|difficulty breathing|short(ness)? of breath|chok(e|ed|ing)|faint(ed|ing)?|passed out|pass(ing)? out|black(ed)? out|unconscious|unresponsive|coma|seizure|convuls\w*|slurred|can'?t (feel|move) my|numb(ness)? (in|on) my|severe (pain|bleeding|headache)|bleeding (heavily|a lot|badly|won'?t stop)|cough(ing)? (up )?blood|vomit(ing)? blood|hit my head|head injury|concussion|allergic reaction|anaphyla\w*|throat (is )?(closing|swelling)|dying(?! to)|going to die|911|ambulance|mayday|medical emergency`;
+
+// Words that make a request to the flight surgeon urgent, whatever priority the caller gave: the voice agent's
+// emergency symptoms and the journal safety phrases (self-harm, not wanting to live).
+const URGENT_REQUEST = new RegExp(String.raw`\b(${EMERGENCY_WORDS}|confus\w*|emergency|urgent\w*|asap|immediately|suicid\w*|kill (myself|me)|end my life|self[- ]?harm|hurt(ing)? myself|don'?t want to (live|be alive|wake up))\b`, "i");
+
+// Typed journal messages that ask for the flight surgeon ("please tell the flight surgeon …").
+export const ASKS_FOR_SURGEON = /\b(contact|tell|message|notify|inform|alert|call|page|ping|get|reach|ask|let|loop in|flag (this|it) (to|for)|forward (this|it) to|forward to|report (this|it) to|talk to|speak (to|with)|send (this|it) to)\b[^.?!]{0,30}\b(flight surgeon|surgeon|doctor|medical team)\b/i;
+
+// Physical emergencies described in a typed journal message. Self-harm language is not here: the journal safety net
+// (ai.ts keywordFlag) already raises a red staff alert for it, so it is not escalated twice.
+const EMERGENCY_SYMPTOMS = new RegExp(String.raw`\b(${EMERGENCY_WORDS})\b`, "i");
+export const describesEmergency = (message: string) => EMERGENCY_SYMPTOMS.test(message);
+
+export interface SurgeonRequest {
+  clientId: string;
+  message: string;
+  priority: "routine" | "urgent";
+  source: "voice" | "journal";
+}
+
+/**
+ * Delivers an assistant's "contact the flight surgeon" for one astronaut: a message in their thread with every flight
+ * surgeon, plus a red alert and an open emergency when urgent (or a yellow alert if no surgeon account exists).
+ * Urgency is also decided from the words and from a red check-in in the last hour. Idempotent per clientId.
+ */
+export async function deliverSurgeonRequest(db: D1Database, userId: string, request: SurgeonRequest, triage?: (message: string) => Promise<boolean>) {
+  const seen = await db.prepare("SELECT detail FROM action_log WHERE user_id=? AND action='surgeon_request' AND detail LIKE ?")
+    .bind(userId, `${request.clientId}|%`).first<{ detail: string }>();
+  if (seen) return { ...JSON.parse(seen.detail.slice(request.clientId.length + 1)), duplicate: true };
+
+  const recentRed = await db.prepare("SELECT 1 FROM self_reports WHERE user_id=? AND checkin_level='red' AND ts>=? LIMIT 1")
+    .bind(userId, new Date(Date.now() - 3600_000).toISOString()).first();
+  // Rules first; the AI triage only reads what the rules call routine (free-form speech the word list misses).
+  const urgent = request.priority === "urgent" || URGENT_REQUEST.test(request.message) || !!recentRed || (triage ? await triage(request.message) : false);
+  const ts = new Date().toISOString();
+  const label = request.source === "voice" ? "Voice assistant" : "Journal assistant";
+  const bodyText = `${label} · ${urgent ? "URGENT" : "request"}: ${request.message}`.slice(0, 2000);
+
+  const { results: surgeons } = await db.prepare("SELECT user_id FROM users WHERE role='flight_surgeon'").all<{ user_id: string }>();
+  const statements: D1PreparedStatement[] = [];
+  for (const s of surgeons) {
+    statements.push(
+      db.prepare(
+        `INSERT INTO conversations (astronaut_id, surgeon_id, created_at, updated_at) VALUES (?,?,?,?)
+         ON CONFLICT(astronaut_id, surgeon_id) DO UPDATE SET updated_at=excluded.updated_at`
+      ).bind(userId, s.user_id, ts, ts),
+      db.prepare(
+        `INSERT INTO conversation_messages (conversation_id, sender_id, body, created_at)
+         SELECT id, ?, ?, ? FROM conversations WHERE astronaut_id=? AND surgeon_id=?`
+      ).bind(userId, bodyText, ts, userId, s.user_id),
+    );
+  }
+  if (urgent || !surgeons.length) {
+    statements.push(db.prepare(
+      "INSERT INTO alerts (user_id, ts, level, metric, message, action, escalate) VALUES (?,?,?, 'surgeon_request', ?, ?, ?)"
+    ).bind(userId, ts, urgent ? "red" : "yellow", `${label}: ${request.message}`.slice(0, 500),
+      urgent ? "Contact this astronaut now." : "Reply to the astronaut.", urgent ? 1 : 0));
+  }
+  if (urgent) {
+    // An emergency already open keeps its place but shows the newest issue; otherwise a new one opens.
+    statements.push(db.prepare("UPDATE emergencies SET message=? WHERE user_id=? AND status!='resolved'")
+      .bind(`${label}: ${request.message}`.slice(0, 500), userId));
+    statements.push(db.prepare(
+      `INSERT INTO emergencies (user_id, message, alert_id, created_at)
+       SELECT ?,?, (SELECT id FROM alerts WHERE user_id=? AND ts=? AND metric='surgeon_request' ORDER BY id DESC LIMIT 1),?
+       WHERE NOT EXISTS (SELECT 1 FROM emergencies WHERE user_id=? AND status!='resolved')`
+    ).bind(userId, `${label}: ${request.message}`.slice(0, 500), userId, ts, ts, userId));
+  }
+  if (statements.length) await db.batch(statements);
+  const emergency = urgent
+    ? await db.prepare("SELECT id FROM emergencies WHERE user_id=? AND status!='resolved' ORDER BY id DESC LIMIT 1").bind(userId).first<{ id: number }>()
+    : null;
+  const result = {
+    delivered_to: surgeons.length,
+    urgent,
+    emergency_id: emergency?.id ?? null,
+    summary: urgent
+      ? "The flight surgeon has been alerted as urgent and can see this now."
+      : surgeons.length ? "Sent to the flight surgeon's inbox." : "Logged for the medical team.",
+  };
+  await db.prepare("INSERT INTO action_log (user_id, ts, action, detail) VALUES (?,?, 'surgeon_request', ?)")
+    .bind(userId, ts, `${request.clientId}|${JSON.stringify(result)}`).run();
+  return { ...result, duplicate: false };
+}
+
+export interface OpsDb extends AiEnv {
   DB: D1Database;
   AUTH_RATE_LIMITER: RateLimit;
 }
@@ -47,6 +135,7 @@ type ActiveEmergency = {
 };
 type CrewSummary = {
   user_id: string; last_band: string | null; open_alerts: number; red_alerts: number; red_indicators: number;
+  red_message?: string | null; red_ts?: string | null;
 };
 
 const emptyVitals = (): CrewVitals => ({
@@ -167,6 +256,8 @@ export async function crewOverview(db: D1Database, staffId: string | null) {
               (SELECT value FROM v_latest_indicators v WHERE v.user_id=c.user_id AND v.metric='sleep_hours') AS sleep_hours,
               (SELECT value FROM v_latest_indicators v WHERE v.user_id=c.user_id AND v.metric='mood') AS mood,
               (SELECT COUNT(*) FROM alerts a WHERE a.user_id=c.user_id AND a.level='red' AND a.acknowledged=0) AS red_alerts,
+              (SELECT a.message FROM alerts a WHERE a.user_id=c.user_id AND a.level='red' AND a.acknowledged=0 ORDER BY a.ts DESC, a.id DESC LIMIT 1) AS red_message,
+              (SELECT a.ts FROM alerts a WHERE a.user_id=c.user_id AND a.level='red' AND a.acknowledged=0 ORDER BY a.ts DESC, a.id DESC LIMIT 1) AS red_ts,
               (SELECT MAX(j.ts) FROM journal_entries j WHERE j.user_id=c.user_id) AS last_journal_at,
               (SELECT COUNT(*) FROM conversations t JOIN conversation_messages m ON m.conversation_id=t.id
                WHERE t.astronaut_id=c.user_id AND t.surgeon_id=? AND m.sender_id=t.astronaut_id AND m.read_at IS NULL) AS unread_messages
@@ -226,6 +317,9 @@ export async function crewOverview(db: D1Database, staffId: string | null) {
     return {
       ...row, heart_rate: vitals.heart_rate?.value ?? null, heart_rate_level: vitals.heart_rate?.level ?? null,
       vitals, emergency, status: crewStatus(row, emergency, vitals),
+      // What is wrong, in words: the open emergency, else the newest unacknowledged red alert.
+      critical_issue: emergency?.message ? { message: emergency.message, ts: emergency.created_at, kind: "emergency" }
+        : row.red_message ? { message: row.red_message, ts: row.red_ts, kind: "alert" } : null,
       progress: { ...progress, goal_progress: goalProgress }, goal_progress: due.length ? Math.round(goalProgress * 100) : null,
       last_checkin: checkin ? { ts: checkin.ts, mood: checkin.mood, stress: checkin.stress, source: checkin.source, level: checkin.checkin_level } : null,
     };
@@ -693,6 +787,24 @@ export function registerOps(route: (method: string, path: string, handler: Handl
     return json(result, result.already ? 200 : 201);
   });
 
+  // The voice assistant (or journal) asked to contact the flight surgeon on the astronaut's behalf. The message goes
+  // into the astronaut's thread with every flight surgeon (an unread message on their console); urgent requests also
+  // open an emergency, which raises the console alert. Urgency is decided here too, never only by the caller.
+  // Idempotent per client_id, so a retried request is not delivered twice.
+  route("POST", "/surgeon-requests", async (req, env, _p, _u, _c, who) => {
+    if (who.kind !== "user" || who.role !== "astronaut" || who.demo) {
+      throw new HttpError(403, "Use your own astronaut account to contact the flight surgeon");
+    }
+    const input = await body(req);
+    const result = await deliverSurgeonRequest(env.DB, who.user_id!, {
+      clientId: text(input?.client_id, "client_id", 100, true)!,
+      message: text(input?.message, "message", 1000, false) ?? "The astronaut asked the voice assistant to contact the flight surgeon.",
+      priority: input?.priority === "urgent" ? "urgent" : "routine",
+      source: input?.source === "journal" ? "journal" : "voice",
+    }, (message) => triageUrgent(env, message));
+    return json(result, result.duplicate ? 200 : 201);
+  });
+
   // The signed-in user's notifications (the web app's notice bell). From main's API, kept for the web app on main.
   route("GET", "/me/notifications", async (_r, env, _p, url, _c, who) => {
     if (who.kind !== "user" || !who.user_id) throw new HttpError(403, "Sign in to see your notifications");
@@ -819,8 +931,8 @@ export function registerOps(route: (method: string, path: string, handler: Handl
   route("GET", "/staff", async (_r, env, _p, _u, _c, who) => {
     if (who.demo || who.kind !== "user") throw new HttpError(403, "Use your own account to see the staff directory");
     const { results } = await env.DB.prepare(
-      "SELECT u.* FROM users u WHERE u.role IN ('flight_surgeon','therapist','admin') AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id AND a.provider=?) ORDER BY u.role, u.display_name"
-    ).bind(STAFF_ACCESS_PROVIDER).all<CrewProfile>();
+      "SELECT u.* FROM users u WHERE u.role IN ('flight_surgeon','therapist','admin') AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id) ORDER BY u.role, u.display_name"
+    ).all<CrewProfile>();
     return json(results.map((row) => ({ ...displayProfile(row), role: row.role })));
   });
 
@@ -862,8 +974,8 @@ export function registerOps(route: (method: string, path: string, handler: Handl
       staffId = text(input?.staff_id, "staff_id", 80, true)!;
       astronautId = who.user_id;
       const staff = await env.DB.prepare(
-        "SELECT u.role FROM users u WHERE u.user_id=? AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id AND a.provider=?)"
-      ).bind(staffId, STAFF_ACCESS_PROVIDER).first<{ role: string }>();
+        "SELECT u.role FROM users u WHERE u.user_id=? AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id)"
+      ).bind(staffId).first<{ role: string }>();
       if (!staff || !STAFF_ROLES.has(staff.role)) throw new HttpError(422, "Choose a flight surgeon, therapist, or admin");
     }
     const ts = now();

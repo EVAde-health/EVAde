@@ -6,16 +6,18 @@ import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Grid } from '@astryxdesign/core/Grid';
 import { ProgressBar } from '@astryxdesign/core/ProgressBar';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
-import { Skeleton } from '@astryxdesign/core/Skeleton';
 import { HStack, StackItem, VStack } from '@astryxdesign/core/Stack';
+import { StatusDot } from '@astryxdesign/core/StatusDot';
 import { Text } from '@astryxdesign/core/Text';
 import { TextInput } from '@astryxdesign/core/TextInput';
-import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import { ExclamationTriangleIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import { Icon } from '@astryxdesign/core/Icon';
 import { Link } from 'react-router-dom';
 import PageHeader from '../../components/PageHeader';
+import CrewGridSkeleton from '../../components/surgeon/CrewCardSkeleton';
 import StatusBadge from '../../components/StatusBadge';
 import { usePoll } from '../../hooks/usePoll';
-import { ago, personName, responseRows, type CrewRow, type CrewStatus } from '../../services/surgeon';
+import { ago, personName, responseRows, splitIssue, type CrewRow, type CrewStatus } from '../../services/surgeon';
 import { hasSimulatedData } from '../../services/simulation';
 
 type Filter = 'all' | 'attention' | 'unread';
@@ -71,9 +73,13 @@ export default function CrewPage() {
       </HStack>
       {error && <Text role="alert">{error}</Text>}
       {loading && !data && (
-        <Grid columns={{ minWidth: 300, max: 4 }} gap={4}>
-          {Array.from({ length: 8 }, (_, i) => <Skeleton key={i} height={260} />)}
-        </Grid>
+        <VStack gap={3}>
+          <HStack gap={2} vAlign="center" className="crew-sync">
+            <StatusDot variant="accent" label="Syncing" isPulsing />
+            <Text type="supporting">Syncing crew telemetry…</Text>
+          </HStack>
+          <CrewGridSkeleton />
+        </VStack>
       )}
       {data && !crew.length && <EmptyState title="No crew records available" description="Astronauts appear here after their first sign-in." />}
       {!!crew.length && !rows.length && <EmptyState title="Nobody matches" description="Try another name or clear the filter." isCompact />}
@@ -101,6 +107,8 @@ function CrewCard({ row, status, index }: { row: CrewRow; status: CrewStatus | n
   ] as const;
   const redAlerts = row.red_alerts ?? 0;
   const unread = row.unread_messages ?? 0;
+  const issue = row.critical_issue ?? (row.emergency?.message ? { message: row.emergency.message, ts: row.emergency.created_at, kind: 'emergency' as const } : null);
+  const issueText = issue ? splitIssue(issue.message) : null;
   const percent = typeof row.goal_progress === 'number' && Number.isFinite(row.goal_progress) ? row.goal_progress : null;
   return (
     <div className={`crew-card hover-lift${status === 'critical' ? ' crew-card--critical' : ''}`} style={{ '--i': index } as CSSProperties}>
@@ -128,6 +136,19 @@ function CrewCard({ row, status, index }: { row: CrewRow; status: CrewStatus | n
               {redAlerts > 0 && <Badge variant="error" label={`${redAlerts} red alert${redAlerts > 1 ? 's' : ''}`} />}
               {unread > 0 && <Badge variant="purple" label={`${unread} unread`} />}
             </HStack>
+            {issue && (
+              <HStack gap={2} vAlign="start" className="crew-issue" data-kind={issue.kind} role="note">
+                <Icon icon={ExclamationTriangleIcon} size="sm" />
+                <StackItem size="fill">
+                  <VStack gap={0.5}>
+                    <Text weight="semibold" maxLines={3}>{issueText?.text}</Text>
+                    <Text type="supporting">
+                      {[issue.kind === 'emergency' ? 'Emergency' : 'Red alert', issueText?.source, ago(issue.ts)].filter(Boolean).join(' · ')}
+                    </Text>
+                  </VStack>
+                </StackItem>
+              </HStack>
+            )}
             <div className="crew-vitals">
               {tiles.map(tile => (
                 <div key={tile.label} className="crew-vital" data-level={tile.level ?? undefined}>

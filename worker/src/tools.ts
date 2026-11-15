@@ -124,7 +124,8 @@ export async function queueFlightSurgeonMessage(ctx: ToolContext, crewId: string
     )
     .bind(isoNow(now), crewId, priority, message, num(args.checkin_id, "int"), mode, status, arrivesAt)
     .first<{ id: number }>();
-  return { queue_id: row?.id ?? null, comms_mode: mode, status, arrives_at: arrivesAt, summary: SPOKEN[mode] };
+  // message + priority let the web app deliver the request to the surgeon console (evade-api POST /surgeon-requests).
+  return { queue_id: row?.id ?? null, comms_mode: mode, status, arrives_at: arrivesAt, summary: SPOKEN[mode], message, priority };
 }
 
 // ---------------------------------------------------------------- tool schemas

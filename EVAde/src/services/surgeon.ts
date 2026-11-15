@@ -40,11 +40,19 @@ export interface CrewRow {
   open_alerts: number;
   red_alerts?: number;
   unread_messages?: number;
+  critical_issue?: { message: string; ts: string; kind: 'emergency' | 'alert' } | null;
   vitals?: Partial<Record<'heart_rate' | 'systolic_bp' | 'diastolic_bp' | 'spo2' | 'body_temp' | 'respiration_rate', VitalReading | null>> | null;
   last_checkin?: { ts: string; mood: number | null; stress: number | null; source: string; level: Level } | null;
   last_journal_at: string | null;
   progress?: Partial<Record<'calories' | 'protein' | 'water_ml' | 'tasks', ProgressItem | null>> | null;
   goal_progress?: number | null;
+}
+
+// Splits "Voice assistant: Astronaut said: \"…\"" into where it came from and what was said.
+export function splitIssue(message: string) {
+  const match = /^(Voice assistant|Journal assistant):\s*(?:Astronaut said:\s*)?/.exec(message);
+  const text = match ? message.slice(match[0].length).replace(/^"(.*)"$/s, '$1') : message;
+  return { source: match?.[1] ?? null, text };
 }
 
 export interface AstronautOption {
@@ -141,6 +149,27 @@ export interface JournalData {
     source: string; sleep_hours: number | null; symptoms: string[]; checkin_level: Level;
   }[];
   journal: { ts: string; source: string; mood_label: string | null; concern_level: string | null; ai_summary: string | null }[];
+}
+
+// Staff-only AI overview of an astronaut's condition from recent journal entries and check-ins.
+export interface JournalOverview {
+  days: number;
+  entries: number;
+  checkins: number;
+  high_concern: number;
+  moderate_concern: number;
+  sentiment_earlier: number | null;
+  sentiment_recent: number | null;
+  last_entry_at: string | null;
+  generated_at: string;
+  cached?: boolean;
+  overview: {
+    overview: string;
+    mood_trend: 'improving' | 'stable' | 'declining' | 'unclear';
+    concerns: string[];
+    follow_up: string[];
+    model: string;
+  } | null;
 }
 
 export interface TasksData {

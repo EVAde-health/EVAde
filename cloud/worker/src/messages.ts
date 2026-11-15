@@ -1,4 +1,4 @@
-import { STAFF_ACCESS_PROVIDER, STAFF_ROLES, type AuthEnv, type Principal } from "./auth";
+import { STAFF_ROLES, type AuthEnv, type Principal } from "./auth";
 import { HttpError } from "./http";
 
 type MessagingEnv = Pick<AuthEnv, "DB" | "AUTH_RATE_LIMITER">;
@@ -9,8 +9,9 @@ type Conversation = { id: number; astronaut_id: string; surgeon_id: string; crea
 type Message = { id: number; conversation_id: number; sender_id: string; body: string; created_at: string; read_at: string | null };
 
 const CONTACT_FIELDS = "u.user_id, u.display_name, u.full_name, u.role, u.crew_role";
+// One sign-in for everyone: a staff contact has a staff D1 role and has signed in at least once.
 const STAFF_FILTER = `u.role IN (${[...STAFF_ROLES].map(() => "?").join(",")})
-  AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id AND a.provider=?)`;
+  AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id)`;
 
 function participant(who: Principal): Participant {
   if (who.kind !== "user" || !who.user_id || who.demo) throw new HttpError(403, "Use your own account to see conversations");
@@ -20,7 +21,7 @@ function participant(who: Principal): Participant {
 }
 
 function contactFilter(self: Participant) {
-  return self.staff ? { sql: "u.role='astronaut'", params: [] } : { sql: STAFF_FILTER, params: [...STAFF_ROLES, STAFF_ACCESS_PROVIDER] };
+  return self.staff ? { sql: "u.role='astronaut'", params: [] } : { sql: STAFF_FILTER, params: [...STAFF_ROLES] };
 }
 
 async function pairWith(db: D1Database, self: Participant, otherId: string) {

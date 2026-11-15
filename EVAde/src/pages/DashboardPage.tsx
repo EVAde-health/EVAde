@@ -14,6 +14,7 @@ import BehaviorPanel from '../components/BehaviorPanel';
 import BonePanel from '../components/BonePanel';
 import CardioPanel from '../components/CardioPanel';
 import HealthDataProvider from '../components/HealthDataProvider';
+import LogReadingButton from '../components/LogReadingButton';
 import MetricExplorer from '../components/MetricExplorer';
 import MoodPanel from '../components/MoodPanel';
 import NoReadings from '../components/NoReadings';
@@ -21,6 +22,7 @@ import NutritionPanel from '../components/NutritionPanel';
 import PageHeader from '../components/PageHeader';
 import PageLoader from '../components/PageLoader';
 import RadiationPanel from '../components/RadiationPanel';
+import ReturnForecast from '../components/ReturnForecast';
 import ScoreRing from '../components/ScoreRing';
 import SectionTitle from '../components/SectionTitle';
 import SleepPanel from '../components/SleepPanel';
@@ -131,10 +133,10 @@ function DashboardContent() {
               </HStack>
             )}
             <Button label="Refresh" variant="secondary" icon={<Icon icon={ArrowPathIcon} />} onClick={refresh} />
+            <LogReadingButton variant="primary" size="md" />
           </>
         }
       />
-
 
       {status === 'error' && (
         <Card padding={4} role="alert">
@@ -196,6 +198,8 @@ function DashboardContent() {
           </VStack>
         </Grid>
       </Card>
+
+      <ReturnForecast userId={user.user_id} />
 
       {alerts.length > 0 && (
         <VStack gap={4}>

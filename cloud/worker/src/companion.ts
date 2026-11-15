@@ -165,7 +165,7 @@ export function registerCompanion<E extends CompanionEnv>(route: (method: string
   });
 
   route("GET", "/admin/astronauts/:id/summary", async (_req, env, p, _url, _ctx, who) => {
-    if (who.kind !== "user" || !who.user_id || !STAFF_ROLES.has(who.role ?? "")) throw new HttpError(403, "Staff sign-in required");
+    if (who.kind !== "user" || !who.user_id || !STAFF_ROLES.has(who.role ?? "")) throw new HttpError(403, "Flight surgeon / admin access only");
     if (!(await env.AUTH_RATE_LIMITER.limit({ key: "staff-summary:" + who.user_id })).success) {
       throw new HttpError(429, "Too many summaries. Try again in a minute");
     }
