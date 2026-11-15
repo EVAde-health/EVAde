@@ -26,6 +26,7 @@ import { useMission } from '../context/MissionContext';
 import { MOOD_EMOJI, MOOD_LABELS } from '../data/health';
 import { createMessage, getAssistantReply, loadJournal, saveVoiceSession, type JournalMessage } from '../services/journalAssistant';
 import type { VoiceSessionCheckin } from '../services/healthApi';
+import { ApiError } from '../services/api';
 import type { VoiceCheckin } from '../services/voiceAgent';
 import './css/JournalPage.css';
 
@@ -123,12 +124,16 @@ export default function JournalPage() {
     try {
       const reply = await getAssistantReply(entry, controller.signal);
       if (!controller.signal.aborted && reply) setMessages(current => [...current, reply]);
-    } catch {
+    } catch (error) {
       if (!controller.signal.aborted) {
         failedRef.current = { id: entry.id, text: trimmed };
         setMessages(current => current.filter(message => message.id !== entry.id));
         setDraft(current => current || trimmed);
-        showToast({ body: 'Your entry did not finish saving. Send it again — it won’t be duplicated.' });
+        if (error instanceof ApiError && error.status === 429) {
+          setMessages(current => [...current, createMessage('system', error.message)]);
+        } else {
+          showToast({ body: 'Your entry did not finish saving. Try sending it again.' });
+        }
       }
     } finally {
       if (abortRef.current === controller) {
@@ -232,7 +237,7 @@ export default function JournalPage() {
           composer={
             <ChatComposer
               value={draft}
-              onChange={setDraft}
+              onChange={value => setDraft(value.slice(0, 2000))}
               onSubmit={sendMessage}
               onStop={stopReply}
               isStopShown={isReplying}

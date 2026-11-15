@@ -10,6 +10,7 @@ export interface SessionUser {
   full_name: string | null;
   role: string;
   demo?: boolean;
+  synthetic?: number;
   environment: string;
   mission_name: string | null;
   mission_start: string | null;
@@ -302,6 +303,9 @@ export const postJournalMessage = (id: string, content: string, { signal }: Sign
   api<{ message?: ApiJournalMessage; reply: ApiJournalMessage | null; duplicate?: boolean }>('/journal/messages', {
     method: 'POST', body: { id, content }, signal,
   });
+
+export const postJournalChat = (id: string, message: string, { signal }: Signal = {}) =>
+  api<{ reply: ApiJournalMessage | null }>('/journal/chat', { method: 'POST', body: { id, message }, signal });
 
 // One finished voice check-in: the transcript turns plus the agent's saved check-in (if any). The Worker stores the
 // entry and turns, then parses self-reports and readings. The session id makes retries safe (no duplicates).
