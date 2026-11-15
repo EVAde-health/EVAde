@@ -1,3 +1,5 @@
+import { fetchJournalMessages, postJournalMessage, type ApiJournalMessage } from './healthApi';
+
 export interface JournalMessage {
   id: string;
   sender: 'user' | 'assistant' | 'system';
@@ -5,21 +7,23 @@ export interface JournalMessage {
   sentAt: number;
 }
 
-const FAKE_LATENCY_MS = 900;
+// Maps a stored journal row onto the chat message shape.
+export function toJournalMessage(row: ApiJournalMessage): JournalMessage {
+  return { id: row.id, sender: row.sender, text: row.content, sentAt: Date.parse(row.ts) };
+}
 
-// Placeholder assistant; replace with the LLM worker call later.
-export async function getAssistantReply(_history: JournalMessage[], signal?: AbortSignal): Promise<string> {
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, FAKE_LATENCY_MS);
-    signal?.addEventListener('abort', () => {
-      clearTimeout(timer);
-      reject(new DOMException('Aborted', 'AbortError'));
-    });
-  });
-  return 'testing';
+// Loads the user's saved journal conversation, oldest first.
+export async function loadJournal(userId: string, signal: AbortSignal) {
+  return (await fetchJournalMessages(userId, { signal })).map(toJournalMessage);
+}
+
+// Saves an entry; the Worker analyses it and stores the assistant reply.
+export async function getAssistantReply(entry: JournalMessage, signal: AbortSignal): Promise<JournalMessage | null> {
+  const { reply } = await postJournalMessage(entry.id, entry.text, { signal });
+  return reply ? toJournalMessage(reply) : null;
 }
 
 // Creates a message with a fresh id and timestamp.
-export function createMessage(sender: JournalMessage['sender'], text: string): JournalMessage {
-  return { id: crypto.randomUUID(), sender, text, sentAt: Date.now() };
+export function createMessage(sender: JournalMessage['sender'], text: string, id: string = crypto.randomUUID()): JournalMessage {
+  return { id, sender, text, sentAt: Date.now() };
 }

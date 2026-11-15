@@ -1,5 +1,33 @@
 # React + TypeScript + Vite
 
+## EVAde sign-in and API
+
+The website reads and writes everything through the `evade-api` Worker (`../cloud/worker`, D1 `evade-db`).
+The only build setting is the public `VITE_API_URL` (see `.env.example`); never put secrets in `VITE_*` values,
+because they ship to every browser. The USDA key and Access settings live in the Worker.
+
+- **Sign-in:** Cloudflare Access is the only sign-in. When `GET /auth/providers` lists `cloudflare_access`, the
+  login page links to the Worker's `/auth/access` (Access verifies the person; first sign-in creates the account).
+  The session is an HttpOnly cookie. There is no demo or test login in the UI.
+- **Sign-out:** ends the EVAde session, then goes to the Access logout page the Worker returns, which ends the
+  Cloudflare Access session too.
+- **Signed-in routes:** `AppFrame` checks `/auth/me` and redirects to `/login` on 401.
+- **Points:** task, tutorial, meal, water and measurement XP is decided and capped by the Worker.
+- **Selfies:** stored privately in R2 through `/media` (shows a notice until the R2 bucket is enabled).
+- **New users:** panels show "No readings yet" until data syncs.
+
+### Local development
+
+1. `cd ../cloud/worker`, copy `.dev.vars.example` to `.dev.vars` (localhost origin), then
+   `npx wrangler d1 migrations apply evade-db --local` and
+   `npx wrangler dev --port 8787 --local-upstream localhost:8787 --upstream-protocol http`.
+2. Here: `VITE_API_URL=http://localhost:8787 npm run dev -- --port 5179`.
+
+Cloudflare Access can't sit in front of localhost, so the local site has no sign-in; signed-in pages are tested
+against the deployed API. Scripts can call the local API with the `X-EVAde-Key` header.
+
+Run `npm ci`, `npm run lint`, and `npm run build` from this folder. The website host should serve `index.html` for SPA routes, including `/login` and `/dashboard`.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:

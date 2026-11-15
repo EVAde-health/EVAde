@@ -1,5 +1,8 @@
-import { Suspense } from 'react';
-import { Outlet, useLocation } from 'react-router-dom';
+import { Suspense, useEffect, useState } from 'react';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { Button } from '@astryxdesign/core/Button';
+import { Text } from '@astryxdesign/core/Text';
+import { useToast } from '@astryxdesign/core/Toast';
 import { AppShell } from '@astryxdesign/core/AppShell';
 import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
 import { NavIcon } from '@astryxdesign/core/NavIcon';
@@ -21,13 +24,14 @@ import {
   PlayCircleIcon as PlayCircleSolid,
   Squares2X2Icon as Squares2X2Solid,
 } from '@heroicons/react/24/solid';
-import { CREW } from '../data/mission';
-import { BASIC_TASKS, PROTOCOL_TASKS } from '../data/tasks';
 import { useMission } from '../context/MissionContext';
+import { ApiError, SIGN_IN_REQUIRED } from '../services/api';
+import { fetchSession, signOut, type SessionUser } from '../services/healthApi';
 import AmbientBackdrop from './AmbientBackdrop';
 import BrandMark from './BrandMark';
 import LevelMeter from './LevelMeter';
 import MotionToggle from './MotionToggle';
+import MissionProvider from './MissionProvider';
 import PageLoader from './PageLoader';
 import ThemeToggle from './ThemeToggle';
 import './css/AppFrame.css';
@@ -40,13 +44,86 @@ const NAV_ITEMS = [
   { href: '/selfies', label: 'Selfies', icon: CameraIcon, selectedIcon: CameraSolid },
 ];
 
-const TASK_TOTAL = PROTOCOL_TASKS.length + BASIC_TASKS.length;
+type SessionState = SessionUser | 'loading' | 'signed-out' | 'error';
 
-// Authenticated app chrome: side navigation around the routed page.
+// Only follow provider logout links that are absolute HTTPS URLs.
+function safeLogoutUrl(url: string | undefined) {
+  if (!url) return null;
+  try {
+    return new URL(url).protocol === 'https:' ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+// Session gate: every app route renders only for a verified /auth/me user.
 export default function AppFrame() {
+  const [session, setSession] = useState<SessionState>('loading');
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    const expire = () => setSession('signed-out');
+    window.addEventListener(SIGN_IN_REQUIRED, expire);
+    return () => window.removeEventListener(SIGN_IN_REQUIRED, expire);
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchSession({ signal: controller.signal })
+      .then(({ user }) => {
+        if (!controller.signal.aborted) setSession(user?.user_id ? user : 'signed-out');
+      })
+      .catch(error => {
+        if (!controller.signal.aborted) setSession(error instanceof ApiError && error.status === 401 ? 'signed-out' : 'error');
+      });
+    return () => controller.abort();
+  }, [attempt]);
+
+  // Re-checks the session after a network or server failure.
+  function retry() {
+    setSession('loading');
+    setAttempt(previous => previous + 1);
+  }
+
+  if (session === 'signed-out') return <Navigate to="/login" replace />;
+  if (session === 'loading') return <PageLoader />;
+  if (session === 'error') {
+    return (
+      <VStack padding={6} gap={3}>
+        <Text role="alert">Your session could not be checked. The EVAde API may be unreachable.</Text>
+        <Button label="Try again" onClick={retry} />
+      </VStack>
+    );
+  }
+
+  return (
+    <MissionProvider key={session.user_id} user={session}>
+      <SignedInFrame onSignOut={() => setSession('signed-out')} />
+    </MissionProvider>
+  );
+}
+
+// Signed-in shell: side navigation, level meter, sign-out and the routed page.
+function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
+  const [signingOut, setSigningOut] = useState(false);
   const { pathname } = useLocation();
-  const { completed } = useMission();
-  const remaining = TASK_TOTAL - completed.length;
+  const { completed, tasks, user } = useMission();
+  const showToast = useToast();
+  const remaining = tasks.length - completed.length;
+
+  // Ends the server session, then follows the provider logout when given.
+  async function handleSignOut() {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      const logoutUrl = safeLogoutUrl((await signOut())?.logout_url);
+      if (logoutUrl) window.location.assign(logoutUrl);
+      else onSignOut();
+    } catch {
+      showToast({ body: 'Sign-out failed. Please try again.' });
+      setSigningOut(false);
+    }
+  }
 
   return (
     <>
@@ -61,7 +138,7 @@ export default function AppFrame() {
             header={
               <SideNavHeading
                 heading="EVAde"
-                subheading={`${CREW.mission} · Day ${CREW.missionDay}`}
+                subheading={user.mission_name ?? user.full_name ?? user.display_name}
                 icon={<NavIcon icon={<BrandMark size="sm" />} />}
                 headingHref="/dashboard"
               />
@@ -71,7 +148,7 @@ export default function AppFrame() {
                 <LevelMeter />
                 <Divider />
                 <HStack gap={1} vAlign="center" hAlign="between">
-                  <SideNavItem label="Sign out" icon={ArrowLeftStartOnRectangleIcon} href="/" />
+                  <SideNavItem label="Sign out" icon={ArrowLeftStartOnRectangleIcon} onClick={handleSignOut} isDisabled={signingOut} />
                   <HStack gap={0.5}>
                     <MotionToggle size="sm" />
                     <ThemeToggle size="sm" />

@@ -6,7 +6,6 @@ import { themes, defaultThemeSlug } from './astryx-themes';
 import { ColorModeContext } from './context/ColorModeContext';
 import { useColorMode } from './hooks/useColorMode';
 import AppFrame from './components/AppFrame';
-import MissionProvider from './components/MissionProvider';
 import PageLoader from './components/PageLoader';
 import RouterLink from './components/RouterLink';
 
@@ -27,7 +26,6 @@ export default function App() {
       <Theme theme={themes[defaultThemeSlug]} mode={colorMode.mode}>
         <BrowserRouter>
           <LinkProvider component={RouterLink}>
-            <MissionProvider>
               <Suspense fallback={<PageLoader />}>
                 <Routes>
                   <Route path="/" element={<LandingPage />} />
@@ -42,7 +40,6 @@ export default function App() {
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Suspense>
-            </MissionProvider>
           </LinkProvider>
         </BrowserRouter>
       </Theme>

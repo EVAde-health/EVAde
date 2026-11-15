@@ -23,6 +23,7 @@ interface TutorialPlayerProps {
 export default function TutorialPlayer({ tutorial, onClose }: TutorialPlayerProps) {
   const [checkedSteps, setCheckedSteps] = useState<string[]>([]);
   const [shownTutorial, setShownTutorial] = useState(tutorial);
+  const [saving, setSaving] = useState(false);
   const { watchedTutorials, completeTutorial } = useMission();
   const showToast = useToast();
   if (tutorial && tutorial !== shownTutorial) setShownTutorial(tutorial);
@@ -37,10 +38,19 @@ export default function TutorialPlayer({ tutorial, onClose }: TutorialPlayerProp
   }
 
   // Records completion and celebrates with an XP toast.
-  function handleComplete() {
-    if (!tutorial) return;
-    if (completeTutorial(tutorial.id, tutorial.xp)) showToast({ body: `🚀 Tutorial complete · +${tutorial.xp} XP` });
-    handleOpenChange(false);
+  async function handleComplete() {
+    if (!shownTutorial) return;
+    if (isWatched) return handleOpenChange(false);
+    setSaving(true);
+    try {
+      const xp = await completeTutorial(shownTutorial.id);
+      showToast({ body: xp ? `🚀 Tutorial complete · +${xp} XP` : '🚀 Tutorial complete' });
+      handleOpenChange(false);
+    } catch {
+      showToast({ body: 'Progress could not be saved. Try again.' });
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -55,6 +65,7 @@ export default function TutorialPlayer({ tutorial, onClose }: TutorialPlayerProp
                 <Button
                   label={isWatched ? 'Done' : `Mark complete · +${shownTutorial.xp} XP`}
                   variant="primary"
+                  isLoading={saving}
                   isDisabled={!allChecked && !isWatched}
                   tooltip={!allChecked && !isWatched ? 'Check off every step first' : undefined}
                   onClick={handleComplete}

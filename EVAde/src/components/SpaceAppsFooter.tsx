@@ -85,7 +85,7 @@ export default function SpaceAppsFooter() {
               <BrandMark size="sm" />
               <Text type="large" weight="bold">EVAde</Text>
             </HStack>
-            <Text type="supporting">Astronaut health monitoring · Challenge entry, demo data only.</Text>
+            <Text type="supporting">Astronaut health monitoring · NASA Space Apps Challenge entry.</Text>
           </VStack>
           <VStack gap={2}>
             <Text type="label">The event</Text>

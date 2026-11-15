@@ -8,6 +8,7 @@
 
 .vital-tile--caution { --tile-tone: var(--color-warning); }
 .vital-tile--critical { --tile-tone: var(--color-error); }
+.vital-tile--empty { --tile-tone: var(--color-border); }
 
 .vital-tile::after {
   content: '';
