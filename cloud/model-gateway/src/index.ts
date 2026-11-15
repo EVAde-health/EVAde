@@ -17,7 +17,7 @@ interface Env {
 
 const PORT = 8000;
 const IDLE_MS = 60 * 60 * 1000;          // sleep after 1 h without requests (max 6 h)
-const INSTANCE = "evade-api";            // ONE fixed name -> one container. Never derive it from the request.
+const INSTANCE = "evade-api-2";          // ONE fixed name -> one container. Never derive it from the request. Bump the suffix to start a fresh container (state is in D1/R2).
 const MAX_BODY = 1_000_000;              // the API's own cap is 1 MB
 const READY_WAIT_MS = 45_000;
 const FORWARD_HEADERS = ["content-type", "accept", "idempotency-key"];
