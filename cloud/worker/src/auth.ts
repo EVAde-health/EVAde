@@ -18,6 +18,8 @@ export interface AuthEnv extends AccessEnv {
   ALLOWED_ORIGINS?: string;
   FRONTEND_URL?: string;
   DEV_LOGIN?: string; // "true" enables the no-OAuth test provider. Never on in production.
+  /** Comma-separated verified emails that become flight surgeons when they sign in. */
+  FLIGHT_SURGEON_EMAILS?: string;
 }
 
 export interface Principal {
@@ -31,6 +33,13 @@ export interface Principal {
 
 export const STAFF_ACCESS_PROVIDER = "cloudflare_access_staff";
 export const STAFF_ROLES = new Set(["flight_surgeon", "therapist", "admin"]);
+/** Providers whose email is verified by the provider, so a matching email may link to an existing account. */
+const VERIFIED_EMAIL_PROVIDERS = ["cloudflare_access", "cloudflare_access_staff", "google", "github"];
+
+/** Lower-cased addresses from FLIGHT_SURGEON_EMAILS. */
+export function surgeonEmails(env: Pick<AuthEnv, "FLIGHT_SURGEON_EMAILS">) {
+  return new Set((env.FLIGHT_SURGEON_EMAILS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean));
+}
 const SESSION_TTL = 7 * 24 * 3600;
 const OAUTH_TTL = 600;
 const TURNSTILE_ORIGIN = "https://challenges.cloudflare.com";
@@ -77,8 +86,8 @@ const oauthProviders = (env: AuthEnv, url: URL): Provider[] => {
 
 export function enabledProviders(env: AuthEnv, url: URL) {
   const providers: string[] = [];
+  // One sign-in for astronauts and flight surgeons; the staff Access app is no longer advertised.
   if (accessConfigured(env)) providers.push("cloudflare_access");
-  if (staffAudience(env)) providers.push(STAFF_ACCESS_PROVIDER);
   return providers.concat(oauthProviders(env, url));
 }
 
@@ -148,12 +157,9 @@ export async function getSessionPrincipalByReference(reference: string, env: Aut
   if (s.provider === "demo" && env.DEMO_LOGIN !== "true") return null;
   const user = await env.DB.prepare("SELECT role FROM users WHERE user_id=?").bind(s.user_id).first<{ role: string }>();
   if (!user) return null;
-  let role = "astronaut";
-  if (s.provider === "cloudflare_access_staff") {
-    const audience = staffAudience(env);
-    if (!audience || s.audience !== audience || !STAFF_ROLES.has(user.role) || user.role !== s.role) return null;
-    role = user.role;
-  }
+  // The D1 role is authoritative on every request, so promoting or demoting someone takes effect at once.
+  // The shared demo session is always a read-only astronaut.
+  const role = s.provider === "demo" ? "astronaut" : user.role;
   return { kind: "user", user_id: s.user_id, role, email: s.email, demo: s.provider === "demo" };
 }
 
@@ -179,11 +185,28 @@ export interface IdentityIn {
   environment?: string;
   mission_name?: string | null;
   user_id?: string;
+  /** True when the provider verified `email`; only then may the login join an existing account with that email. */
+  email_verified?: boolean;
+  /** Local dev login only: sign in as a flight surgeon for testing. */
+  dev_role?: string | null;
 }
 
 /** Find or create the astronaut behind a login. `seedTasks` gives new astronauts today's routine. */
 export async function linkIdentity(env: AuthEnv, id: IdentityIn, seedTasks: (userId: string) => Promise<void>) {
   const now = new Date().toISOString();
+  const email = id.email?.trim().toLowerCase() || null;
+  if (!id.user_id && email && id.email_verified) {
+    // A first login through a new provider (or a new Access subject) joins the account that already holds
+    // this verified email instead of creating an empty one.
+    const known = await env.DB.prepare("SELECT 1 FROM auth_identities WHERE provider=? AND subject=?").bind(id.provider, id.subject).first();
+    if (!known) {
+      const existing = await env.DB.prepare(
+        `SELECT user_id FROM auth_identities WHERE lower(email)=? AND provider IN (${VERIFIED_EMAIL_PROVIDERS.map(() => "?").join(",")})
+         ORDER BY created_at LIMIT 1`
+      ).bind(email, ...VERIFIED_EMAIL_PROVIDERS).first<{ user_id: string }>();
+      if (existing) id = { ...id, user_id: existing.user_id };
+    }
+  }
   const userId = id.user_id ?? crypto.randomUUID();
   const statements: D1PreparedStatement[] = [];
   if (!id.user_id) {
@@ -206,9 +229,16 @@ export async function linkIdentity(env: AuthEnv, id: IdentityIn, seedTasks: (use
 
   // D1 batches are atomic, including when two first-time logins race.
   const batch = await env.DB.batch<{ user_id: string; role: string }>(statements);
-  const user = batch.at(-1)?.results[0];
+  let user = batch.at(-1)?.results[0];
   if (!user) throw new Error("Identity provisioning failed");
   if (!id.user_id && batch[0].meta.changes && user.role === "astronaut") await seedTasks(user.user_id);
+  // FLIGHT_SURGEON_EMAILS promotes a verified email (never demotes). The dev login (loopback only) may ask for the role.
+  const promote = (id.email_verified && email && surgeonEmails(env).has(email)) ||
+    (id.provider === "dev" && (id.dev_role === "flight_surgeon" || (email && surgeonEmails(env).has(email))));
+  if (promote && user.role === "astronaut") {
+    await env.DB.prepare("UPDATE users SET role='flight_surgeon' WHERE user_id=?").bind(user.user_id).run();
+    user = { ...user, role: "flight_surgeon" };
+  }
   return user;
 }
 
@@ -279,13 +309,11 @@ function loginPage(env: AuthEnv, url: URL, redirect: string, error?: string, sta
   const accessLink = accessConfigured(env)
     ? `<a class="btn" href="/auth/access?redirect=${encodeURIComponent(redirect)}">Sign in or create account</a>`
     : "";
-  const staffLink = staffAudience(env)
-    ? `<a class="btn" href="/auth/access/staff?redirect=${encodeURIComponent(safeRedirect(env, "/admin", url))}">Staff sign-in</a>`
+  // Flight surgeons use the same sign-in; their D1 role decides which console they land in.
+  const devField = providers.includes("dev")
+    ? `<input name="dev_email" placeholder="test email (dev login)" />
+       <select name="dev_role"><option value="astronaut">Astronaut</option><option value="flight_surgeon">Flight surgeon</option></select>`
     : "";
-  const switchLink = staffLink && env.FRONTEND_URL
-    ? `<small>Using the wrong email? On the <a href="${esc(safeRedirect(env, "/login", url))}">EVAde sign-in page</a>, choose Use a different email.</small>`
-    : "";
-  const devField = providers.includes("dev") ? `<input name="dev_email" placeholder="test email (dev login)" />` : "";
   const ts = providers.some((p) => p !== "dev") && env.TURNSTILE_SITE_KEY
     ? `<div class="cf-turnstile" data-sitekey="${esc(env.TURNSTILE_SITE_KEY)}" data-action="login" data-theme="dark"></div>
        <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>`
@@ -299,14 +327,12 @@ function loginPage(env: AuthEnv, url: URL, redirect: string, error?: string, sta
   h1{margin:0 0 4px;font-size:28px;letter-spacing:.5px}p{margin:0 0 20px;color:#9aa6c0}
   .btn{display:block;width:100%;margin:10px 0;padding:12px;border-radius:10px;border:1px solid #33415f;background:#141c30;color:#e8ecf5;font-size:15px;cursor:pointer}
   .btn:hover{border-color:#5b8cff}.google{background:#fff;color:#1f1f1f}.github{background:#24292f}
-  input{width:100%;padding:10px;margin:8px 0;border-radius:8px;border:1px solid #33415f;background:#0b1120;color:#e8ecf5}
+  input,select{width:100%;padding:10px;margin:8px 0;border-radius:8px;border:1px solid #33415f;background:#0b1120;color:#e8ecf5}
   .err{color:#ff8a8a}.cf-turnstile{margin:12px 0}small{display:block;margin-top:18px;color:#6f7b96}
 </style></head><body><main>
 <h1>EVAde</h1><p>Astronaut health monitoring</p>
 ${error ? `<p class="err">${esc(error)}</p>` : ""}
 ${accessLink}
-${staffLink}
-${switchLink}
 <form method="post" action="/auth/start">
   <input type="hidden" name="redirect" value="${esc(redirect)}">${devField}${ts}${buttons}
 </form>
@@ -360,7 +386,8 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     const state = randomToken(24);
     const browser = randomToken();
     const verifier = randomToken(48);
-    await env.SESSIONS.put(`oauth:${state}`, JSON.stringify({ provider, verifier, redirect, browser: await sha256(browser), dev_email: form.get("dev_email") }), {
+    const devRole = provider === "dev" && form.get("dev_role") === "flight_surgeon" ? "flight_surgeon" : null;
+    await env.SESSIONS.put(`oauth:${state}`, JSON.stringify({ provider, verifier, redirect, browser: await sha256(browser), dev_email: form.get("dev_email"), dev_role: devRole }), {
       expirationTtl: OAUTH_TTL,
     });
     const redirectUri = `${url.origin}/auth/callback/${provider}`;
@@ -386,14 +413,20 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     if (url.searchParams.get("error")) return fail("Sign-in was cancelled.");
     const browser = readCookie(req, cookieName(url, "oauth"));
     if (!state || !/^[\w-]{32}$/.test(state) || !code || !browser) return fail("Sign-in expired, please try again.");
-    const saved = await env.SESSIONS.get<{ provider: Provider; verifier: string; redirect: string; browser: string; dev_email: string | null }>(`oauth:${state}`, "json");
+    const saved = await env.SESSIONS.get<{
+      provider: Provider; verifier: string; redirect: string; browser: string; dev_email: string | null; dev_role?: string | null;
+    }>(`oauth:${state}`, "json");
     if (!saved || saved.provider !== provider || saved.browser !== await sha256(browser)) return fail("Sign-in expired, please try again.");
     await env.SESSIONS.delete(`oauth:${state}`); // one-time use
     if (!oauthProviders(env, url).includes(provider)) return fail("That sign-in method isn't available.");
 
     try {
       const profile = await exchangeAndProfile(env, provider, code, saved.verifier, `${url.origin}/auth/callback/${provider}`, saved.dev_email ?? undefined);
-      const user = await linkIdentity(env, { provider, subject: profile.subject, email: profile.email, display_name: profile.name }, seedTasks);
+      const user = await linkIdentity(env, {
+        provider, subject: profile.subject, email: profile.email, display_name: profile.name,
+        // Google only returns a verified email and GitHub only its primary verified one; the dev login is never verified.
+        email_verified: provider !== "dev" && !!profile.email, dev_role: provider === "dev" ? saved.dev_role ?? null : null,
+      }, seedTasks);
       const token = await createSession(env, user, profile.email, provider);
       await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, provider).run();
       const headers = new Headers({ Location: safeRedirect(env, saved.redirect, url) });
@@ -422,23 +455,11 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
       return fail("Sign-in could not be verified. Try again.");
     }
     try {
+      // Everyone (astronauts and flight surgeons) signs in the same way. The D1 role, optionally promoted by
+      // FLIGHT_SURGEON_EMAILS, decides what the session can reach. /auth/access/staff is kept for old links.
       const user = await linkIdentity(env, {
-        provider: "cloudflare_access", subject: identity.subject, email: identity.email, display_name: identity.name,
+        provider: "cloudflare_access", subject: identity.subject, email: identity.email, display_name: identity.name, email_verified: true,
       }, seedTasks);
-      if (staff) {
-        const enrolled = await env.DB.prepare(
-          `INSERT INTO auth_identities (provider,subject,user_id,last_login)
-           VALUES (?,?,?,?)
-           ON CONFLICT(provider,subject) DO UPDATE SET last_login=excluded.last_login
-           WHERE auth_identities.user_id=excluded.user_id`
-        ).bind(STAFF_ACCESS_PROVIDER, identity.subject, user.user_id, new Date().toISOString()).run();
-        if (!enrolled.meta.changes) return fail("This staff identity is linked to another account.", 403);
-      }
-      if (staff !== STAFF_ROLES.has(user.role)) {
-        return fail(staff
-          ? `Staff access is pending for ${identity.email}. If this is your email, give your EVAde administrator your account reference: ${user.user_id}`
-          : "Staff accounts sign in at /auth/access/staff.", 403);
-      }
       const ttl = staff ? Math.min(1800, identity.expiresAt - Math.floor(Date.now() / 1000)) : SESSION_TTL;
       if (ttl <= 0) return fail("Your Cloudflare Access sign-in expired. Try again.");
       const provider = staff ? "cloudflare_access_staff" : "cloudflare_access";
