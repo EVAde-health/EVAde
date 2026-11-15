@@ -12,7 +12,7 @@ import {
   Level,
 } from "./health";
 import {
-  AuthEnv, clearSessionCookie, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, sha256hex, STAFF_ROLES, trustedOrigin,
+  AuthEnv, clearSessionCookie, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, sessionReference, sha256hex, STAFF_ACCESS_PROVIDER, STAFF_ROLES, trustedOrigin,
 } from "./auth";
 import { analyzeJournal, dailyBriefing, transcribe, TEXT_MODEL } from "./ai";
 import type { LiveEvent } from "./live";
@@ -20,7 +20,9 @@ import {
   callModelApi, deleteModelUser, isMock, ModelApiError, ModelEnv, modelsConfigured, modelUserId, PREDICT_KINDS, PredictKind,
   REVIEW_NOTE, riskRow, summarize,
 } from "./models";
-import { DELETE_USER_SQL } from "./deleteUser";
+import { deleteUserStatements } from "./deleteUser";
+import { HttpError } from "./http";
+import { crewOverview, registerOps } from "./ops";
 import { awardDaily, materializeTasks, registerWebAppRoutes, type WebAppEnv } from "./webapp";
 export { CrewFeed } from "./live";
 
@@ -32,12 +34,6 @@ export interface Env extends AuthEnv, ModelEnv, WebAppEnv {
   LIVE?: DurableObjectNamespace; // CrewFeed Durable Object
   EVADE_API_KEY?: string;
   ALLOWED_ORIGINS?: string;
-}
-
-class HttpError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
 }
 
 const now = () => new Date().toISOString();
@@ -434,6 +430,7 @@ route("GET", "/users/:id", async (_r, env, p) => json(await requireUser(env, p.i
 route("POST", "/auth/identities", async (req, env) => {
   const b = await body(req);
   if (!b.provider || !b.subject) throw new HttpError(422, "provider and subject are required");
+  if (b.provider === STAFF_ACCESS_PROVIDER) throw new HttpError(403, "Staff enrollment requires the staff Access application");
   if (b.user_id) await requireUser(env, b.user_id);
   return json(await linkIdentity(env, b, (id) => seedTasks(env, id)), 201);
 });
@@ -446,7 +443,7 @@ route("GET", "/auth/identities/:provider/:subject", async (_r, env, p) => {
 });
 
 // Admin panel (doctors / therapists)
-route("GET", "/admin/crew", async (_r, env) => json((await env.DB.prepare("SELECT * FROM v_crew_overview ORDER BY escalated_alerts DESC, last_r DESC").all()).results));
+route("GET", "/admin/crew", async (_r, env) => json(await crewOverview(env.DB)));
 route("GET", "/admin/escalations", async (_r, env) => json((await env.DB.prepare("SELECT * FROM v_escalations ORDER BY ts DESC").all()).results));
 route("GET", "/admin/therapist-feed", async (_r, env, _p, url) => {
   const uid = url.searchParams.get("user_id");
@@ -649,16 +646,16 @@ route("POST", "/space-weather", async (req, env) => {
 });
 
 // Risk score + maximum days to return
-route("GET", "/users/:id/risk", async (_r, env, p, url, ctx) => {
+route("GET", "/users/:id/risk", async (_r, env, p, url, ctx, who) => {
   await requireUser(env, p.id);
-  const store = url.searchParams.get("store") !== "false";
+  const store = !who.demo && url.searchParams.get("store") !== "false";
   const risk = await riskFor(env, p.id, store);
   if (store) publish(env, ctx, { type: "risk", user_id: p.id, data: { r: risk.r, band: risk.band, mdtr: risk.mdtr, top_domains: risk.top_domains } });
   return json(risk);
 });
 
 // Plain-language daily briefing (Workers AI), cached in KV for 30 minutes
-route("GET", "/users/:id/briefing", async (_r, env, p, url) => {
+route("GET", "/users/:id/briefing", async (_r, env, p, url, _c, who) => {
   const user = await requireUser(env, p.id);
   const cacheKey = `brief:${p.id}`;
   if (url.searchParams.get("refresh") !== "1") {
@@ -678,7 +675,7 @@ route("GET", "/users/:id/briefing", async (_r, env, p, url) => {
       action: l.level !== "green" ? defs.get(l.metric)?.what_to_do : undefined })),
     overrides: risk.overrides, space_weather: sw,
   };
-  const text = await dailyBriefing(env, facts);
+  const text = who.demo ? null : await dailyBriefing(env, facts);
   const flagged = facts.readings.filter((r) => r.level !== "green");
   const fallback = [`Overall status: ${risk.band}. ${risk.action}`,
     ...flagged.map((r) => `${r.label} is ${r.value} ${r.unit} (${r.level}). ${r.action ?? ""}`.trim()),
@@ -918,11 +915,19 @@ route("GET", "/media/:mid", async (_r, env, p) => {
 });
 
 // Live crew feed (Durable Object WebSocket). Browser: new WebSocket("wss://api.evade.health/live") with the login cookie.
-route("GET", "/live", async (req, env, _p, _u, _c, who) => {
+route("GET", "/live", async (req, env, _p, url, _c, who) => {
   if (!env.LIVE) throw new HttpError(503, "Live feed not configured");
   if (req.headers.get("Upgrade") !== "websocket") throw new HttpError(426, "Expected a WebSocket upgrade");
+  const origin = req.headers.get("Origin");
+  if (origin !== null && !trustedOrigin(env, url, origin)) throw new HttpError(403, "Live feed origin not allowed");
   const headers = new Headers(req.headers);
-  headers.set("X-Live-Principal", JSON.stringify({ staff: isStaff(who), user_id: who.user_id ?? null }));
+  headers.delete("Cookie");
+  headers.delete("Authorization");
+  headers.delete("X-EVAde-Key");
+  headers.set("X-Live-Principal", JSON.stringify({
+    kind: who.kind, staff: isStaff(who), user_id: who.user_id ?? null,
+    sessionRef: who.kind === "user" ? await sessionReference(req) : null,
+  }));
   return env.LIVE.get(env.LIVE.idFromName("crew")).fetch(new Request(req, { headers }));
 });
 route("GET", "/live/stats", async (_r, env) => {
@@ -992,7 +997,7 @@ route("POST", "/predict/:kind", async (req, env, p) => {
   }
 });
 
-// "Delete my account": signed-in astronauts only (not service keys).
+// "Delete my account": signed-in astronauts only (not the shared demo account, not service keys).
 // Order: R2 objects, the model service's copy, then every D1 row in one batch, then this session.
 route("DELETE", "/me", async (req, env, _p, _u, _c, who) => {
   if (who.kind !== "user" || !who.user_id) throw new HttpError(403, "Sign in to delete your own account");
@@ -1010,7 +1015,7 @@ route("DELETE", "/me", async (req, env, _p, _u, _c, who) => {
   } catch (e) {
     throw modelError(e); // nothing in D1 is deleted yet, so the user can simply retry
   }
-  await env.DB.batch(DELETE_USER_SQL.map((sql) => env.DB.prepare(sql).bind(uid)));
+  await env.DB.batch(await deleteUserStatements(env.DB, uid));
   const token = sessionCookie(req);
   if (token) await env.SESSIONS.delete(`sess:${await sha256hex(token)}`);
   return json({ deleted: true, model_service: models }, 200, { "Set-Cookie": clearSessionCookie(new URL(req.url)) });
@@ -1033,15 +1038,15 @@ route("POST", "/sync", async (req, env) => {
   return json({ ok: true, ...res, synced_at: now() });
 });
 
-// Web app routes (tutorials, today's missions, settings, radiation, journal chat, food search, selfie delete)
 registerWebAppRoutes<Env>({
   route, json, body, requireUser, isStaff,
   fail: (status, message) => new HttpError(status, message),
   journal: (env, ctx, id, userId, content) => processJournal(env, ctx, id, userId, content),
 });
+registerOps(route, { json, body, now });
 
 // ---------- Access control ----------
-// service  = X-EVAde-Key (Python seeding, Michael's FastAPI, Ryan B's edge functions): full access
+// service  = X-EVAde-Key (Python seeding, Michael's FastAPI, Ryan B's edge functions): integration routes
 // staff    = session with role flight_surgeon / therapist / admin: every astronaut + admin routes
 // user     = astronaut session: only their own user_id; missing user_id in a body is filled in for them
 const STAFF_ONLY: [string, RegExp][] = [
@@ -1064,8 +1069,12 @@ const OWNED_BY_ID: [RegExp, string][] = [
 ];
 
 async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Request; principal: Principal }> {
+  const path = url.pathname.replace(/\/$/, "");
   const key = req.headers.get("X-EVAde-Key");
-  if (env.EVADE_API_KEY && key === env.EVADE_API_KEY) return { req, principal: { kind: "service" } };
+  if (env.EVADE_API_KEY && key === env.EVADE_API_KEY) {
+    if (path.startsWith("/admin/")) throw new HttpError(403, "Staff sign-in required");
+    return { req, principal: { kind: "service" } };
+  }
   const session = await getSessionPrincipal(req, env);
   if (!session) throw new HttpError(401, "Sign in at /login, or send X-EVAde-Key");
   // Cookie-authenticated writes must come from our own frontend (CSRF guard on top of SameSite=Lax)
@@ -1074,8 +1083,13 @@ async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Reque
     if ((origin || sessionCookie(req, url)) && !trustedOrigin(env, url, origin))
       throw new HttpError(403, "Cross-origin request blocked");
   }
+  if (session.demo) {
+    if (req.method !== "GET") throw new HttpError(403, "Use a personal account to save changes");
+    if (path === "/leaderboard" || path === "/live") {
+      throw new HttpError(403, "Use a personal account to view crew activity");
+    }
+  }
   const staff = STAFF_ROLES.has(session.role ?? "");
-  const path = url.pathname.replace(/\/$/, "");
   if (STAFF_ONLY.some(([m, re]) => (m === "*" || m === req.method) && re.test(path)) && !staff)
     throw new HttpError(403, "Flight surgeon / admin access only");
   if (staff) return { req, principal: session };

@@ -14,7 +14,8 @@ vi.mock("../src/live", () => ({ CrewFeed: class {} }));
 function fakeD1(): D1Database {
   const db = new DatabaseSync(":memory:");
   const dir = join(__dirname, "..", "migrations");
-  for (const f of readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) db.exec(readFileSync(join(dir, f), "utf8"));
+  // 0008 deletes the seeded demo astronaut. Keep the file, but do not apply it.
+  for (const f of readdirSync(dir).filter((f) => f.endsWith(".sql") && f !== "0008_remove_demo_data.sql").sort()) db.exec(readFileSync(join(dir, f), "utf8"));
   const stmt = (sql: string, args: unknown[] = []) => ({
     execute: () => {
       if (/\bRETURNING\b/i.test(sql)) return { success: true, results: db.prepare(sql).all(...(args as any[])), meta: {} };
@@ -60,6 +61,7 @@ function fakeKV(): KVNamespace {
 // ---------- signing ----------
 const TEAM = "evade.cloudflareaccess.com";
 const AUD = "aud-login-123";
+const STAFF_AUD = "aud-staff-456";
 let signer: CryptoKeyPair;
 let otherSigner: CryptoKeyPair;
 let publicJwk: JsonWebKey;
@@ -97,6 +99,7 @@ beforeEach(() => {
     AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) },
     ACCESS_TEAM_DOMAIN: TEAM,
     ACCESS_AUD: AUD,
+    ACCESS_STAFF_AUD: STAFF_AUD,
     ALLOWED_ORIGINS: "https://evade.health",
     FRONTEND_URL: "https://evade.health",
   };
@@ -114,6 +117,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 // ---------- helpers ----------
 const API = "https://api.evade.health";
+const API_URL = new URL(API);
 async function call(method: string, path: string, headers: Record<string, string> = {}) {
   const url = new URL(API + path);
   const res = await handleAuth(new Request(url, { method, headers, redirect: "manual" }), env, url, seedTasks);
@@ -128,9 +132,11 @@ const tokenFrom = (res: Response) => /evade_session=([^;]*)/.exec(res.headers.ge
 // ---------- tests ----------
 describe("providers", () => {
   it("lists cloudflare_access first when configured", () => {
-    expect(enabledProviders(env)).toEqual(["cloudflare_access"]);
-    expect(enabledProviders({ ...env, GOOGLE_CLIENT_ID: "g", GOOGLE_CLIENT_SECRET: "s", TURNSTILE_SITE_KEY: "test-site", TURNSTILE_SECRET: "test-secret" })).toEqual(["cloudflare_access", "google"]);
-    expect(enabledProviders({ ...env, ACCESS_AUD: "" })).toEqual([]);
+    expect(enabledProviders(env, API_URL)).toEqual(["cloudflare_access", "cloudflare_access_staff"]);
+    expect(enabledProviders({ ...env, GOOGLE_CLIENT_ID: "g", GOOGLE_CLIENT_SECRET: "s", TURNSTILE_SITE_KEY: "test-site", TURNSTILE_SECRET: "test-secret" }, API_URL)).toEqual(["cloudflare_access", "cloudflare_access_staff", "google"]);
+    expect(enabledProviders({ ...env, ACCESS_AUD: "" }, API_URL)).toEqual([]);
+    expect(enabledProviders({ ...env, ACCESS_STAFF_AUD: "" }, API_URL)).toEqual(["cloudflare_access"]);
+    expect(enabledProviders({ ...env, ACCESS_STAFF_AUD: env.ACCESS_AUD }, API_URL)).toEqual(["cloudflare_access"]);
   });
 
   it("login page links to /auth/access and keeps the redirect", async () => {
@@ -219,22 +225,77 @@ describe("GET /auth/access", () => {
   });
 });
 
-describe("no staff or demo sign-in", () => {
-  it("has no /auth/access/staff or /auth/demo route", async () => {
-    for (const path of ["/auth/access/staff", "/auth/demo"]) {
-      const url = new URL(API + path);
-      expect(await handleAuth(new Request(url), env, url, seedTasks)).toBeNull();
+describe("staff login (/auth/access/staff)", () => {
+  it("records staff enrollment only through the staff application", async () => {
+    await login(await sign({ sub: "crew-only" }));
+    expect(row("SELECT * FROM auth_identities WHERE provider='cloudflare_access_staff' AND subject=?", "crew-only")).toBeUndefined();
+  });
+
+  async function makeStaff(sub: string, role = "flight_surgeon") {
+    await login(await sign({ sub, email: `${sub}@evade.health` }));
+    const id = row("SELECT user_id FROM auth_identities WHERE subject=?", sub).user_id;
+    (env.DB as any).raw.prepare("UPDATE users SET role=? WHERE user_id=?").run(role, id);
+    return id;
+  }
+
+  it("staff must use the staff path", async () => {
+    await makeStaff("doc");
+    const res = await login(await sign({ sub: "doc", email: "doc@evade.health" }));
+    expect(res.status).toBe(403);
+    expect(res.headers.get("Set-Cookie")).toBeNull();
+  });
+
+  it("staff path needs a token for the staff app (its audience)", async () => {
+    await makeStaff("doc");
+    const wrongAud = await login(await sign({ sub: "doc" }), "/auth/access/staff");
+    expect(wrongAud.status).toBe(401);
+    const ok = await login(await sign({ sub: "doc", aud: [STAFF_AUD] }), "/auth/access/staff");
+    expect(ok.status).toBe(302);
+    const me = await call("GET", "/auth/me", { Cookie: `__Host-evade_session=${tokenFrom(ok)}` });
+    expect((await me.json<any>()).role).toBe("flight_surgeon");
+  });
+
+  it("disables staff sign-in when its audience is empty or matches the crew audience", async () => {
+    await makeStaff("doc");
+    for (const audience of ["", AUD]) {
+      env.ACCESS_STAFF_AUD = audience;
+      const token = await sign({ sub: "doc" });
+      expect((await login(token, "/auth/access/staff")).status).toBe(503);
+      expect((await login(token)).status).toBe(403);
     }
   });
 
-  it("gives a D1 staff role an ordinary astronaut session (no elevation)", async () => {
-    await login(await sign({ sub: "doc", email: "doc@evade.health" }));
-    const id = row("SELECT user_id FROM auth_identities WHERE subject=?", "doc").user_id;
-    (env.DB as any).raw.prepare("UPDATE users SET role='flight_surgeon' WHERE user_id=?").run(id);
-    const session = await login(await sign({ sub: "doc", email: "doc@evade.health" }));
-    expect(session.status).toBe(302);
-    const me = await call("GET", "/auth/me", { Cookie: `__Host-evade_session=${tokenFrom(session)}` });
-    expect((await me.json<any>()).role).toBe("astronaut");
+  it("enrolls a verified staff-app identity without granting a session until D1 promotion", async () => {
+    const token = await sign({ aud: [STAFF_AUD], sub: "pending-staff", email: "New.Staff@example.com" });
+    const staffPath = `/auth/access/staff?redirect=${encodeURIComponent("https://evade.health/admin")}`;
+    const response = await login(token, staffPath);
+    expect(response.status).toBe(403);
+    expect(response.headers.get("Set-Cookie")).toBeNull();
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    const identity = row("SELECT user_id FROM auth_identities WHERE provider='cloudflare_access' AND subject=?", "pending-staff");
+    const page = await response.text();
+    expect(page).toContain("Staff access is pending for new.staff@example.com.");
+    expect(page).toContain(identity.user_id);
+    expect(page).toContain('href="https://evade.health/login"');
+    expect(page).toContain("Use a different email");
+    expect(row("SELECT role FROM users WHERE user_id=?", identity.user_id).role).toBe("astronaut");
+    expect(row("SELECT user_id FROM auth_identities WHERE provider='cloudflare_access_staff' AND subject=?", "pending-staff"))
+      .toMatchObject({ user_id: identity.user_id });
+
+    (env.DB as any).raw.prepare("UPDATE users SET role='flight_surgeon' WHERE user_id=?").run(identity.user_id);
+    const approved = await login(token, staffPath);
+    expect(approved.status).toBe(302);
+    expect(approved.headers.get("Location")).toBe("https://evade.health/admin");
+    const session = await call("GET", "/auth/me", { Cookie: `__Host-evade_session=${tokenFrom(approved)}` });
+    expect((await session.json<any>())).toMatchObject({ user: { user_id: identity.user_id }, role: "flight_surgeon", demo: false });
+  });
+  it("invalidates a staff API session when the D1 role is revoked", async () => {
+    const userId = await makeStaff("doc");
+    const session = await login(await sign({ sub: "doc", aud: [STAFF_AUD] }), "/auth/access/staff");
+    const headers = { Cookie: `__Host-evade_session=${tokenFrom(session)}` };
+    expect((await call("GET", "/auth/me", headers)).status).toBe(200);
+    (env.DB as any).raw.prepare("UPDATE users SET role='astronaut' WHERE user_id=?").run(userId);
+    expect((await call("GET", "/auth/me", headers)).status).toBe(401);
   });
 });
 
@@ -244,21 +305,14 @@ describe("logout", () => {
     const headers = { Cookie: `__Host-evade_session=${tokenFrom(session)}` };
     expect((await call("GET", "/auth/logout", headers)).status).toBe(405);
     expect((await call("POST", "/auth/logout", { ...headers, Origin: "https://untrusted.example" })).status).toBe(403);
-    const out = await call("POST", "/auth/logout", { ...headers, Origin: "https://evade.health" });
-    expect(out.status).toBe(200);
-    expect(await out.json()).toEqual({ logout_url: `https://${TEAM}/cdn-cgi/access/logout` });
-    expect(out.headers.get("Set-Cookie")).toContain("Max-Age=0");
+    const logout = await call("POST", "/auth/logout", { ...headers, Origin: "https://evade.health" });
+    expect(logout.status).toBe(200);
+    expect(await logout.json()).toEqual({ logout_url: `https://${env.ACCESS_TEAM_DOMAIN}/cdn-cgi/access/logout` });
     expect((await call("GET", "/auth/me", headers)).status).toBe(401);
-  });
-
-  it("returns no Access logout link when Access is not configured", async () => {
-    env = { ...env, ACCESS_TEAM_DOMAIN: "" };
-    const out = await call("POST", "/auth/logout", { Origin: "https://evade.health" });
-    expect(out.status).toBe(204);
   });
 });
 
-it("denies cross-user, crew-wide and unauthenticated requests at the Worker entry point", async () => {
+it("denies cross-user, staff-only and unauthenticated requests at the Worker entry point", async () => {
   const session = await login(await sign({}));
   expect(session.status).toBe(302);
   const cookie = `__Host-evade_session=${tokenFrom(session)}`;

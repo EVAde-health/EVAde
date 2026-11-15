@@ -1,12 +1,14 @@
 // Cloudflare Access is the primary sign-in method. Direct OAuth fallbacks use
 // Turnstile, browser-bound state and PKCE. KV stores hashed session tokens.
 
-import { accessAssertion, accessConfigured, accessLogoutUrl, verifyAccessJwt, type AccessEnv } from "./access";
+import { accessAssertion, accessConfigured, accessLogoutUrl, staffAudience, verifyAccessJwt, type AccessEnv } from "./access";
 
 export interface AuthEnv extends AccessEnv {
   DB: D1Database;
   SESSIONS: KVNamespace;
   AUTH_RATE_LIMITER: RateLimit;
+  /** "true" enables GET /auth/demo (seeded fake astronaut only). */
+  DEMO_LOGIN?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   GITHUB_CLIENT_ID?: string;
@@ -15,6 +17,7 @@ export interface AuthEnv extends AccessEnv {
   TURNSTILE_SECRET?: string;
   ALLOWED_ORIGINS?: string;
   FRONTEND_URL?: string;
+  DEV_LOGIN?: string; // "true" enables the no-OAuth test provider. Never on in production.
 }
 
 export interface Principal {
@@ -22,8 +25,11 @@ export interface Principal {
   user_id?: string;
   role?: string;
   email?: string | null;
+  /** True for a read-only session on the seeded demo astronaut. */
+  demo?: boolean;
 }
 
+export const STAFF_ACCESS_PROVIDER = "cloudflare_access_staff";
 export const STAFF_ROLES = new Set(["flight_surgeon", "therapist", "admin"]);
 const SESSION_TTL = 7 * 24 * 3600;
 const OAUTH_TTL = 600;
@@ -41,9 +47,12 @@ const PROVIDERS = {
     scope: "read:user user:email",
   },
 } as const;
-type Provider = keyof typeof PROVIDERS;
-type SessionProvider = Provider | "cloudflare_access";
-const SESSION_PROVIDERS = new Set<SessionProvider>(["google", "github", "cloudflare_access"]);
+type Provider = keyof typeof PROVIDERS | "dev";
+type SessionProvider = Provider | "cloudflare_access" | "cloudflare_access_staff" | "demo";
+const SESSION_PROVIDERS = new Set<SessionProvider>(["google", "github", "dev", "cloudflare_access", "cloudflare_access_staff", "demo"]);
+/** The seeded demo astronaut (migration 0007): the only account "Try demo" can ever sign into. */
+const DEMO_IDENTITY = { provider: "demo", subject: "vega" } as const;
+const DEMO_SESSION_TTL = 2 * 3600;
 
 // ---------- small crypto helpers ----------
 const b64url = (buf: ArrayBuffer | Uint8Array) =>
@@ -53,20 +62,30 @@ const sha256 = async (s: string) => b64url(await crypto.subtle.digest("SHA-256",
 
 function clientFor(env: AuthEnv, p: Provider) {
   if (p === "google") return { id: env.GOOGLE_CLIENT_ID, secret: env.GOOGLE_CLIENT_SECRET };
-  return { id: env.GITHUB_CLIENT_ID, secret: env.GITHUB_CLIENT_SECRET };
+  if (p === "github") return { id: env.GITHUB_CLIENT_ID, secret: env.GITHUB_CLIENT_SECRET };
+  return { id: "dev", secret: "dev" };
 }
 const hasTurnstile = (env: AuthEnv) => Boolean(env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET);
 const isLoopback = (url: URL) => ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-const oauthProviders = (env: AuthEnv): Provider[] => {
+const oauthProviders = (env: AuthEnv, url: URL): Provider[] => {
   const out: Provider[] = [];
   if (hasTurnstile(env) && env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) out.push("google");
   if (hasTurnstile(env) && env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET) out.push("github");
+  if (env.DEV_LOGIN === "true" && isLoopback(url)) out.push("dev");
   return out;
 };
 
-export function enabledProviders(env: AuthEnv) {
-  const oauth = oauthProviders(env);
-  return accessConfigured(env) ? ["cloudflare_access", ...oauth] : oauth;
+export function enabledProviders(env: AuthEnv, url: URL) {
+  const providers: string[] = [];
+  if (accessConfigured(env)) providers.push("cloudflare_access");
+  if (staffAudience(env)) providers.push(STAFF_ACCESS_PROVIDER);
+  return providers.concat(oauthProviders(env, url));
+}
+
+function demoUser(env: AuthEnv) {
+  return env.DB.prepare(
+    "SELECT u.user_id, u.role FROM auth_identities a JOIN users u USING (user_id) WHERE a.provider=? AND a.subject=? AND u.role='astronaut'"
+  ).bind(DEMO_IDENTITY.provider, DEMO_IDENTITY.subject).first<{ user_id: string; role: string }>();
 }
 
 const allowedOrigins = (env: AuthEnv) => (env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -110,25 +129,41 @@ export const clearSessionCookie = (url: URL) => cookieHeader(url, "session", "",
 export const sha256hex = async (s: string) => sha256(s);
 
 // ---------- sessions ----------
-export async function getSessionPrincipal(req: Request, env: AuthEnv): Promise<Principal | null> {
-  let token = sessionCookie(req);
+export async function sessionReference(req: Request): Promise<string | null> {
   const authz = req.headers.get("Authorization");
-  if (!token && authz?.startsWith("Bearer ")) token = authz.slice(7);
-  if (!token) return null;
+  const token = sessionCookie(req) || (authz?.startsWith("Bearer ") ? authz.slice(7) : null);
+  return token ? "sess:" + await sha256(token) : null;
+}
+
+export async function getSessionPrincipal(req: Request, env: AuthEnv): Promise<Principal | null> {
+  const reference = await sessionReference(req);
+  return reference ? getSessionPrincipalByReference(reference, env) : null;
+}
+
+export async function getSessionPrincipalByReference(reference: string, env: AuthEnv): Promise<Principal | null> {
   const s = await env.SESSIONS.get<{
-    user_id: string; role: string; email: string | null; provider?: SessionProvider; expires?: number;
-  }>(`sess:${await sha256(token)}`, "json");
+    user_id: string; role: string; email: string | null; provider?: SessionProvider; audience?: string; expires?: number;
+  }>(reference, "json");
   if (!s?.provider || !SESSION_PROVIDERS.has(s.provider) || (s.expires !== undefined && s.expires <= Date.now())) return null;
-  // Signed-in web sessions are always the astronaut acting on their own data.
-  return { kind: "user", user_id: s.user_id, role: "astronaut", email: s.email };
+  if (s.provider === "demo" && env.DEMO_LOGIN !== "true") return null;
+  const user = await env.DB.prepare("SELECT role FROM users WHERE user_id=?").bind(s.user_id).first<{ role: string }>();
+  if (!user) return null;
+  let role = "astronaut";
+  if (s.provider === "cloudflare_access_staff") {
+    const audience = staffAudience(env);
+    if (!audience || s.audience !== audience || !STAFF_ROLES.has(user.role) || user.role !== s.role) return null;
+    role = user.role;
+  }
+  return { kind: "user", user_id: s.user_id, role, email: s.email, demo: s.provider === "demo" };
 }
 
 async function createSession(
-  env: AuthEnv, user: { user_id: string; role: string }, email: string | null, provider: SessionProvider, ttl = SESSION_TTL,
+  env: AuthEnv, user: { user_id: string; role: string }, email: string | null, provider: SessionProvider,
+  ttl = SESSION_TTL, audience?: string,
 ) {
   const token = randomToken();
   const expires = Date.now() + ttl * 1000;
-  await env.SESSIONS.put(`sess:${await sha256(token)}`, JSON.stringify({ user_id: user.user_id, role: user.role, email, provider, expires }), {
+  await env.SESSIONS.put(`sess:${await sha256(token)}`, JSON.stringify({ user_id: user.user_id, role: user.role, email, provider, audience, expires }), {
     expirationTtl: Math.max(60, ttl),
   });
   return token;
@@ -178,7 +213,11 @@ export async function linkIdentity(env: AuthEnv, id: IdentityIn, seedTasks: (use
 }
 
 // ---------- provider calls ----------
-async function exchangeAndProfile(env: AuthEnv, p: Provider, code: string, verifier: string, redirectUri: string) {
+async function exchangeAndProfile(env: AuthEnv, p: Provider, code: string, verifier: string, redirectUri: string, devEmail?: string) {
+  if (p === "dev") {
+    const email = devEmail || "dev.astronaut@evade.health";
+    return { subject: `dev:${email}`, email, name: email.split("@")[0] };
+  }
   const { id, secret } = clientFor(env, p);
   const tokenRes = await fetch(PROVIDERS[p].token, {
     method: "POST",
@@ -231,16 +270,23 @@ async function verifyTurnstile(env: AuthEnv, token: string | null, ip: string | 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 function loginPage(env: AuthEnv, url: URL, redirect: string, error?: string, status = 200) {
-  const providers = oauthProviders(env);
+  const providers = oauthProviders(env, url);
   const nonce = randomToken();
-  const label: Record<Provider, string> = { google: "Continue with Google", github: "Continue with GitHub" };
+  const label: Record<string, string> = { google: "Continue with Google", github: "Continue with GitHub", dev: "Test login (dev only)" };
   const buttons = providers.length
     ? providers.map((p) => `<button name="provider" value="${p}" class="btn ${p}">${label[p]}</button>`).join("")
     : accessConfigured(env) ? "" : `<p class="err">No login provider is configured yet.</p>`;
   const accessLink = accessConfigured(env)
     ? `<a class="btn" href="/auth/access?redirect=${encodeURIComponent(redirect)}">Sign in or create account</a>`
     : "";
-  const ts = providers.length && env.TURNSTILE_SITE_KEY
+  const staffLink = staffAudience(env)
+    ? `<a class="btn" href="/auth/access/staff?redirect=${encodeURIComponent(safeRedirect(env, "/admin", url))}">Staff sign-in</a>`
+    : "";
+  const switchLink = staffLink && env.FRONTEND_URL
+    ? `<small>Using the wrong email? On the <a href="${esc(safeRedirect(env, "/login", url))}">EVAde sign-in page</a>, choose Use a different email.</small>`
+    : "";
+  const devField = providers.includes("dev") ? `<input name="dev_email" placeholder="test email (dev login)" />` : "";
+  const ts = providers.some((p) => p !== "dev") && env.TURNSTILE_SITE_KEY
     ? `<div class="cf-turnstile" data-sitekey="${esc(env.TURNSTILE_SITE_KEY)}" data-action="login" data-theme="dark"></div>
        <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>`
     : "";
@@ -259,13 +305,16 @@ function loginPage(env: AuthEnv, url: URL, redirect: string, error?: string, sta
 <h1>EVAde</h1><p>Astronaut health monitoring</p>
 ${error ? `<p class="err">${esc(error)}</p>` : ""}
 ${accessLink}
+${staffLink}
+${switchLink}
 <form method="post" action="/auth/start">
-  <input type="hidden" name="redirect" value="${esc(redirect)}">${ts}${buttons}
+  <input type="hidden" name="redirect" value="${esc(redirect)}">${devField}${ts}${buttons}
 </form>
 
 </main></body></html>`;
   return new Response(html, { status, headers: {
     "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
     "Content-Security-Policy": `default-src 'none'; script-src ${TURNSTILE_ORIGIN}; frame-src ${TURNSTILE_ORIGIN}; connect-src ${TURNSTILE_ORIGIN}; style-src 'nonce-${nonce}'; form-action 'self' https://accounts.google.com https://github.com; base-uri 'none'; frame-ancestors 'none'`,
   } });
 }
@@ -274,9 +323,9 @@ ${accessLink}
 export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks: (id: string) => Promise<void>): Promise<Response | null> {
   const path = url.pathname.replace(/\/$/, "");
   const ip = req.headers.get("CF-Connecting-IP");
-  const accessPath = path === "/auth/access";
-  if (accessPath || path === "/auth/start" || path.startsWith("/auth/callback/")) {
-    const bucket = accessPath ? "access" : path === "/auth/start" ? "start" : "callback";
+  const accessPath = path === "/auth/access" || path === "/auth/access/staff";
+  if (accessPath || path === "/auth/demo" || path === "/auth/start" || path.startsWith("/auth/callback/")) {
+    const bucket = accessPath ? "access" : path === "/auth/demo" ? "demo" : path === "/auth/start" ? "start" : "callback";
     const { success } = await env.AUTH_RATE_LIMITER.limit({ key: `${bucket}:${ip ?? "unknown"}` });
     if (!success) return Response.json({ error: "Too many sign-in requests. Try again in a minute." }, {
       status: 429, headers: { "Retry-After": "60" },
@@ -288,7 +337,8 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
   }
 
   if (path === "/auth/providers" && req.method === "GET") {
-    const providers = enabledProviders(env);
+    const providers = enabledProviders(env, url);
+    if (env.DEMO_LOGIN === "true" && await demoUser(env)) providers.push("demo");
     return Response.json({ providers, default_provider: providers[0] ?? null, turnstile_site_key: hasTurnstile(env) ? env.TURNSTILE_SITE_KEY : null });
   }
 
@@ -303,20 +353,21 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     const provider = String(form.get("provider") ?? "") as Provider;
     const redirect = safeRedirect(env, String(form.get("redirect") ?? ""), url);
     const back = (msg: string) => Response.redirect(`${url.origin}/login?error=${encodeURIComponent(msg)}&redirect=${encodeURIComponent(redirect)}`, 303);
-    if (!oauthProviders(env).includes(provider)) return back("That sign-in method isn't available.");
-    if (!(await verifyTurnstile(env, form.get("cf-turnstile-response"), ip, new URL(origin).hostname).catch(() => false)))
+    if (!oauthProviders(env, url).includes(provider)) return back("That sign-in method isn't available.");
+    if (provider !== "dev" && !(await verifyTurnstile(env, form.get("cf-turnstile-response"), ip, new URL(origin).hostname).catch(() => false)))
       return back("Human check failed, please try again.");
 
     const state = randomToken(24);
     const browser = randomToken();
     const verifier = randomToken(48);
-    await env.SESSIONS.put(`oauth:${state}`, JSON.stringify({ provider, verifier, redirect, browser: await sha256(browser) }), {
+    await env.SESSIONS.put(`oauth:${state}`, JSON.stringify({ provider, verifier, redirect, browser: await sha256(browser), dev_email: form.get("dev_email") }), {
       expirationTtl: OAUTH_TTL,
     });
     const redirectUri = `${url.origin}/auth/callback/${provider}`;
     const next = (location: string) => new Response(null, { status: 303, headers: {
       Location: location, "Set-Cookie": cookieHeader(url, "oauth", browser, OAUTH_TTL),
     } });
+    if (provider === "dev") return next(`${redirectUri}?code=dev&state=${state}`);
     const challenge = await sha256(verifier);
     const q = new URLSearchParams({
       client_id: clientFor(env, provider).id!, redirect_uri: redirectUri, response_type: "code",
@@ -326,7 +377,7 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     return next(`${PROVIDERS[provider].authorize}?${q}`);
   }
 
-  const cb = path.match(/^\/auth\/callback\/(google|github)$/);
+  const cb = path.match(/^\/auth\/callback\/(google|github|dev)$/);
   if (cb && req.method === "GET") {
     const provider = cb[1] as Provider;
     const state = url.searchParams.get("state");
@@ -335,13 +386,13 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     if (url.searchParams.get("error")) return fail("Sign-in was cancelled.");
     const browser = readCookie(req, cookieName(url, "oauth"));
     if (!state || !/^[\w-]{32}$/.test(state) || !code || !browser) return fail("Sign-in expired, please try again.");
-    const saved = await env.SESSIONS.get<{ provider: Provider; verifier: string; redirect: string; browser: string }>(`oauth:${state}`, "json");
+    const saved = await env.SESSIONS.get<{ provider: Provider; verifier: string; redirect: string; browser: string; dev_email: string | null }>(`oauth:${state}`, "json");
     if (!saved || saved.provider !== provider || saved.browser !== await sha256(browser)) return fail("Sign-in expired, please try again.");
     await env.SESSIONS.delete(`oauth:${state}`); // one-time use
-    if (!oauthProviders(env).includes(provider)) return fail("That sign-in method isn't available.");
+    if (!oauthProviders(env, url).includes(provider)) return fail("That sign-in method isn't available.");
 
     try {
-      const profile = await exchangeAndProfile(env, provider, code, saved.verifier, `${url.origin}/auth/callback/${provider}`);
+      const profile = await exchangeAndProfile(env, provider, code, saved.verifier, `${url.origin}/auth/callback/${provider}`, saved.dev_email ?? undefined);
       const user = await linkIdentity(env, { provider, subject: profile.subject, email: profile.email, display_name: profile.name }, seedTasks);
       const token = await createSession(env, user, profile.email, provider);
       await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, provider).run();
@@ -358,13 +409,15 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
   if (accessPath && req.method === "GET") {
     const redirect = safeRedirect(env, url.searchParams.get("redirect"), url);
     const fail = (msg: string, status = 401) => loginPage(env, url, redirect, msg, status);
-    if (!accessConfigured(env)) return fail("Cloudflare Access sign-in is unavailable.", 503);
+    const staff = path.endsWith("/staff");
+    const audience = staff ? staffAudience(env) : env.ACCESS_AUD;
+    if (!accessConfigured(env) || !audience) return fail("This Cloudflare Access sign-in is unavailable.", 503);
     const assertion = accessAssertion(req);
     if (!assertion) return fail("Please sign in through Cloudflare Access.");
 
     let identity;
     try {
-      identity = await verifyAccessJwt(assertion, env);
+      identity = await verifyAccessJwt(assertion, env, audience);
     } catch {
       return fail("Sign-in could not be verified. Try again.");
     }
@@ -372,10 +425,27 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
       const user = await linkIdentity(env, {
         provider: "cloudflare_access", subject: identity.subject, email: identity.email, display_name: identity.name,
       }, seedTasks);
-      await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', 'cloudflare_access')").bind(user.user_id).run();
-      const token = await createSession(env, user, identity.email, "cloudflare_access");
+      if (staff) {
+        const enrolled = await env.DB.prepare(
+          `INSERT INTO auth_identities (provider,subject,user_id,last_login)
+           VALUES (?,?,?,?)
+           ON CONFLICT(provider,subject) DO UPDATE SET last_login=excluded.last_login
+           WHERE auth_identities.user_id=excluded.user_id`
+        ).bind(STAFF_ACCESS_PROVIDER, identity.subject, user.user_id, new Date().toISOString()).run();
+        if (!enrolled.meta.changes) return fail("This staff identity is linked to another account.", 403);
+      }
+      if (staff !== STAFF_ROLES.has(user.role)) {
+        return fail(staff
+          ? `Staff access is pending for ${identity.email}. If this is your email, give your EVAde administrator your account reference: ${user.user_id}`
+          : "Staff accounts sign in at /auth/access/staff.", 403);
+      }
+      const ttl = staff ? Math.min(1800, identity.expiresAt - Math.floor(Date.now() / 1000)) : SESSION_TTL;
+      if (ttl <= 0) return fail("Your Cloudflare Access sign-in expired. Try again.");
+      const provider = staff ? "cloudflare_access_staff" : "cloudflare_access";
+      await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, provider).run();
+      const token = await createSession(env, user, identity.email, provider, ttl, staff ? audience : undefined);
       return new Response(null, { status: 302, headers: {
-        Location: redirect, "Set-Cookie": cookieHeader(url, "session", token, SESSION_TTL), "Cache-Control": "no-store",
+        Location: redirect, "Set-Cookie": cookieHeader(url, "session", token, ttl), "Cache-Control": "no-store",
       } });
     } catch {
       console.warn("Cloudflare Access session could not be created");
@@ -383,24 +453,41 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     }
   }
 
+  // "Try demo" for judges: signs into the seeded fake astronaut only. Never takes a user id from the request.
+  // Off unless DEMO_LOGIN = "true". The session is short (2 h) and can't delete the account.
+  if (path === "/auth/demo" && req.method === "GET") {
+    if (env.DEMO_LOGIN !== "true") return Response.json({ error: "Demo sign-in is off" }, { status: 404 });
+    const redirect = safeRedirect(env, url.searchParams.get("redirect"), url);
+    const user = await demoUser(env);
+    if (!user) return Response.json({ error: "Demo account isn't set up" }, { status: 503 });
+    const token = await createSession(env, user, null, "demo", DEMO_SESSION_TTL);
+    await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', 'demo')").bind(user.user_id).run();
+    return new Response(null, {
+      status: 302, headers: { Location: redirect, "Set-Cookie": cookieHeader(url, "session", token, DEMO_SESSION_TTL), "Cache-Control": "no-store" },
+    });
+  }
+
   if (path === "/auth/me" && req.method === "GET") {
     const p = await getSessionPrincipal(req, env);
     if (!p) return Response.json({ error: "Not signed in", login: `${url.origin}/login` }, { status: 401 });
     const user = await env.DB.prepare("SELECT * FROM users WHERE user_id=?").bind(p.user_id).first();
     if (!user) return Response.json({ error: "Not signed in" }, { status: 401 });
-    return Response.json({ user: { ...user, role: p.role }, role: p.role, email: p.email });
+    return Response.json({ user: { ...user, role: p.role }, role: p.role, email: p.email, demo: p.demo === true });
   }
 
   if (path === "/auth/logout") {
     if (req.method !== "POST") return Response.json({ error: "Use POST to sign out" }, { status: 405, headers: { Allow: "POST" } });
     if (!trustedOrigin(env, url, req.headers.get("Origin"))) return Response.json({ error: "Cross-origin sign-out blocked" }, { status: 403 });
     const token = sessionCookie(req, url);
-    if (token) await env.SESSIONS.delete(`sess:${await sha256(token)}`);
-    const clearCookie = { "Set-Cookie": cookieHeader(url, "session", "", 0) };
-    // The browser signs out with fetch, so it navigates to the Access logout itself.
-    const logoutUrl = accessLogoutUrl(env);
-    if (logoutUrl) return Response.json({ logout_url: logoutUrl }, { headers: clearCookie });
-    return new Response(null, { status: 204, headers: clearCookie });
+    let provider: SessionProvider | undefined;
+    if (token) {
+      const reference = `sess:${await sha256(token)}`;
+      provider = (await env.SESSIONS.get<{ provider?: SessionProvider }>(reference, "json"))?.provider;
+      await env.SESSIONS.delete(reference);
+    }
+    const headers = { "Set-Cookie": clearSessionCookie(url) };
+    const logoutUrl = provider === "demo" ? null : accessLogoutUrl(env);
+    return logoutUrl ? Response.json({ logout_url: logoutUrl }, { headers }) : new Response(null, { status: 204, headers });
   }
 
   return null;

@@ -2,6 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "evade-api",
   "main": "src/index.ts",
+  "services": [{ "binding": "MODELS", "service": "evade-gateway" }],
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
@@ -19,7 +20,7 @@
   ],
   // Workers AI (journal analysis, Whisper voice-to-text, daily briefing)
   "ai": { "binding": "AI" },
-  // Private uploads (selfies, ultrasound images, audio, PDFs), served only through /media/:id
+  // Private uploads, accessed through the authenticated media endpoints.
   "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "evade-media" }],
   // Live crew feed over WebSockets
   "durable_objects": { "bindings": [{ "name": "LIVE", "class_name": "CrewFeed" }] },
@@ -38,11 +39,16 @@
     // service binding below (no public URL). Fallback only: set MODEL_API_URL to the gateway's HTTPS URL.
     // Until either is set, /predict/* and /models return 503.
     "MODEL_API_URL": "",
+    // "true" enables GET /auth/demo: a 2-hour session as the seeded fake astronaut Cmdr. Vega (demo). Never a real user.
+    "DEMO_LOGIN": "true",
     // Where users land after signing in if no redirect was requested.
     "FRONTEND_URL": "https://evade.health",
-    // Cloudflare Access is the only sign-in (the crew application in front of /auth/access).
+    // A blank staff application audience disables staff sign-in.
     "ACCESS_TEAM_DOMAIN": "evade-health.cloudflareaccess.com",
     "ACCESS_AUD": "ecbeabe1fc1a7bca3ebee00b3aef522ecd96ac431b0f9dd9b0d8ae3d06dc093b",
+    "ACCESS_STAFF_AUD": "ad5b4c4744e160df8c7f926f93e955321d1c7bb8c3e7def993cbdc413070dd5d",
+    // "true" shows a no-OAuth test login. Keep "false" in production.
+    "DEV_LOGIN": "false",
     // Optional AI Gateway id (create one named "evade" in the dashboard for logs + caching of AI calls)
     "AI_GATEWAY": ""
   }

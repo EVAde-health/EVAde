@@ -18,7 +18,8 @@ const SURGEON = "33333333-3333-4333-8333-333333333333";
 function fakeD1() {
   const db = new DatabaseSync(":memory:");
   const dir = join(__dirname, "..", "migrations");
-  for (const f of readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) db.exec(readFileSync(join(dir, f), "utf8"));
+  // 0008 deletes the seeded demo astronaut. Keep the file, but do not apply it.
+  for (const f of readdirSync(dir).filter((f) => f.endsWith(".sql") && f !== "0008_remove_demo_data.sql").sort()) db.exec(readFileSync(join(dir, f), "utf8"));
   const reads = (sql: string) => /^\s*(SELECT|WITH)\b/i.test(sql) || /\bRETURNING\b/i.test(sql);
   const stmt = (sql: string, args: unknown[] = []): any => ({
     execute: () => reads(sql)
@@ -272,5 +273,44 @@ describe("food search", () => {
     expect(res.data[0].source).toBe("space_pantry");
     expect(requested.every((u) => !u.includes("api_key"))).toBe(true);
     expect((await call("GET", "/foods/search?q=a")).status).toBe(422);
+  });
+});
+
+// ---------- both route sets ----------
+describe("web app routes and staff/demo routes", () => {
+  it("registers the website routes and the staff console and demo sign-in", async () => {
+    const web: [string, string, unknown?][] = [
+      ["GET", "/tutorials"],
+      ["GET", `/users/${ASTRONAUT}/today`],
+      ["GET", `/users/${ASTRONAUT}/settings`],
+      ["PATCH", `/users/${ASTRONAUT}/settings`, {}],
+      ["GET", `/users/${ASTRONAUT}/radiation`],
+      ["GET", `/users/${ASTRONAUT}/tutorials`],
+      ["GET", `/users/${ASTRONAUT}/journal/messages`],
+      ["POST", "/journal/messages", {}],
+      ["POST", "/tutorials/bp-cuff/complete", {}],
+      ["GET", `/users/${ASTRONAUT}/goals`],
+    ];
+    for (const [method, path, body] of web) {
+      const res = await call(method, path, body === undefined ? {} : { body });
+      expect(res.data?.error ?? "", `${method} ${path}`).not.toMatch(/^No route /);
+    }
+    const radiation = await call("GET", `/users/${ASTRONAUT}/radiation`);
+    expect(radiation.status).toBe(200);
+    expect(radiation.data.doses).toEqual([]);
+    expect(radiation.data.limit_msv).toBeGreaterThan(0);
+
+    const demoOff = await call("GET", "/auth/demo", { token: null });
+    expect(demoOff.status).toBe(404);
+    expect(demoOff.data.error).toBe("Demo sign-in is off");
+    env.DEMO_LOGIN = "true";
+    expect((await call("GET", "/auth/demo", { token: null })).status).toBe(302);
+
+    const staffLogin = await worker.fetch(new Request(`${API}/auth/access/staff`), env, ctx);
+    expect(staffLogin.status).toBe(503);
+    expect(await staffLogin.text()).toContain("Cloudflare Access sign-in is unavailable");
+    const admin = await call("GET", `/admin/astronauts/${ASTRONAUT}`);
+    expect(admin.status).toBe(403);
+    expect(admin.data.error).toBe("Flight surgeon / admin access only");
   });
 });
