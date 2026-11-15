@@ -1,5 +1,42 @@
-// Address of the EVAde website the app opens. Override per build with EXPO_PUBLIC_SITE_URL.
-export const SITE_URL: string = process.env.EXPO_PUBLIC_SITE_URL || 'https://evade.health';
+// Where the app points. Production by default; override per run or build with EXPO_PUBLIC_* variables, e.g.
+//   EXPO_PUBLIC_SITE_URL=http://192.168.1.20:5180 EXPO_PUBLIC_API_URL=http://192.168.1.20:8787 npx expo start
+// (see README: the local web server must listen on the LAN with `--host`).
 
-// Hosts that stay inside the app: the site itself and Cloudflare Access sign-in pages.
-export const IN_APP_HOSTS: string[] = [new URL(SITE_URL).hostname, 'cloudflareaccess.com'];
+/** The EVAde website the app opens. */
+export const SITE_URL: string = trimSlash(process.env.EXPO_PUBLIC_SITE_URL || 'https://evade.health');
+
+/** The evade-api Worker the site signs in through (Cloudflare Access guards its /auth/access path). */
+export const API_URL: string = trimSlash(process.env.EXPO_PUBLIC_API_URL || defaultApiUrl(SITE_URL));
+
+/** The app's own URL scheme (app.json "scheme"); evade://journal opens the journal, evade://auth is sign-in only. */
+export const APP_SCHEME = 'evade';
+export const AUTH_RETURN_URL = `${APP_SCHEME}://auth`;
+
+/**
+ * Hosts that stay inside the app (subdomains included): the site, the API (sign-in redirects and logout go through
+ * it) and the Cloudflare Access sign-in page (evade-health.cloudflareaccess.com). Anything else opens in the
+ * system browser or the matching app (mail, phone, maps).
+ */
+export const IN_APP_HOSTS: string[] = unique([hostOf(SITE_URL), hostOf(API_URL), 'cloudflareaccess.com']);
+
+/** The Cloudflare Access sign-in page, where the app offers "use a passkey" in the system browser. */
+export const ACCESS_LOGIN_HOST_SUFFIX = 'cloudflareaccess.com';
+
+function defaultApiUrl(site: string) {
+  const url = new URL(site);
+  // Production: evade.health -> api.evade.health. Local dev: the Worker runs on port 8787 of the same machine.
+  if (url.protocol === 'https:') return `https://api.${url.hostname.replace(/^www\./, '')}`;
+  return `${url.protocol}//${url.hostname}:8787`;
+}
+
+function hostOf(url: string) {
+  return new URL(url).hostname;
+}
+
+function trimSlash(url: string) {
+  return url.replace(/\/+$/, '');
+}
+
+function unique(values: string[]) {
+  return [...new Set(values)];
+}
