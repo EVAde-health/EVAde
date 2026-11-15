@@ -1,0 +1,23 @@
+# Scans every push and pull request for committed secrets (API keys, tokens, private keys).
+# Free alternative to GitHub push protection, which isn't available on private repos on the Free plan.
+# A finding fails the check; rotate the leaked key first, then remove it from the code.
+name: Secret scan
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
