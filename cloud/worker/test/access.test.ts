@@ -352,6 +352,22 @@ describe("localhost dev sign-in", () => {
 
   beforeEach(() => { env = localEnv(); });
 
+  it("also runs on a private LAN address (phone testing) but never on a public host", async () => {
+    const LAN = "http://192.168.1.20:8787";
+    env = { ...env, ALLOWED_ORIGINS: "http://localhost:5180,http://192.168.1.20:5180" };
+    expect(enabledProviders(env, new URL(LAN))).toContain("dev");
+    for (const host of ["http://8.8.8.8:8787", "http://172.32.0.1:8787", "http://192.169.1.1:8787"]) {
+      expect(enabledProviders(env, new URL(host))).not.toContain("dev");
+    }
+    const access = await local("GET", "/auth/access?redirect=http://192.168.1.20:5180/dashboard", { host: LAN });
+    expect(access.headers.get("Location")).toBe(`${LAN}/auth/local-access?redirect=${encodeURIComponent("http://192.168.1.20:5180/dashboard")}`);
+    // A LAN origin that is not in ALLOWED_ORIGINS is still refused as a redirect target.
+    const other = await local("GET", "/auth/access?redirect=http://192.168.1.99:5180/dashboard", { host: LAN });
+    expect(other.headers.get("Location")).toBe(`${LAN}/auth/local-access?redirect=${encodeURIComponent("http://localhost:5180")}`);
+    env = { ...env, DEV_LOGIN: "false" };
+    expect((await local("GET", "/auth/local-access", { host: LAN })).status).toBe(404);
+  });
+
   it("is only offered on localhost with DEV_LOGIN, and sends /auth/access there instead of failing", async () => {
     expect(enabledProviders(env, new URL("https://api.evade.health"))).not.toContain("dev");
     expect(enabledProviders(env, new URL(LOCAL))).toContain("dev");
@@ -471,4 +487,61 @@ it("denies cross-user, staff-only and unauthenticated requests at the Worker ent
   expect(crossUser.headers.get("X-Content-Type-Options")).toBe("nosniff");
   expect((await request("/live/stats", { Cookie: cookie })).status).toBe(403);
   expect((await request("/live/stats")).status).toBe(401);
+});
+
+describe("mobile app sign-in handoff", () => {
+  const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
+  const challengeFor = async (v: string) => b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(v)));
+  async function redeem(body: Record<string, string>, contentType = "application/x-www-form-urlencoded") {
+    const url = new URL(API + "/auth/app-redeem");
+    const res = await handleAuth(new Request(url, { method: "POST", body: new URLSearchParams(body), headers: { "Content-Type": contentType } }), env, url, seedTasks);
+    return res!;
+  }
+  async function appLogin() {
+    const res = await login(await sign({}), `/auth/access?redirect=https://evade.health/dashboard&app_challenge=${await challengeFor(verifier)}`);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Set-Cookie")).toBeNull();
+    const location = new URL(res.headers.get("Location")!);
+    expect(`${location.protocol}//${location.host}`).toBe("evade://auth");
+    return location.searchParams.get("code")!;
+  }
+
+  it("advertises the handoff when Access is configured", async () => {
+    expect((await (await call("GET", "/auth/providers")).json() as { app_handoff: boolean }).app_handoff).toBe(true);
+  });
+
+  it("sends a one-time code to the app scheme and redeems it once for a session cookie", async () => {
+    const code = await appLogin();
+    const res = await redeem({ code, verifier });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("Location")).toBe("https://evade.health/dashboard");
+    const cookie = res.headers.get("Set-Cookie")!;
+    expect(cookie.startsWith("__Host-evade_session=")).toBe(true);
+    expect(cookie).toMatch(/HttpOnly/);
+    const me = await call("GET", "/auth/me", { Cookie: `__Host-evade_session=${tokenFrom(res)}` });
+    expect(me.status).toBe(200);
+    expect((await me.json() as { email: string }).email).toBe("vega@evade.health");
+    const again = await redeem({ code, verifier });
+    expect(again.headers.get("Location")).toContain("/login?error=");
+    expect(again.headers.get("Set-Cookie")).toBeNull();
+  });
+
+  it("rejects a wrong verifier and burns the code", async () => {
+    const code = await appLogin();
+    const wrong = await redeem({ code, verifier: b64url(crypto.getRandomValues(new Uint8Array(32))) });
+    expect(wrong.headers.get("Set-Cookie")).toBeNull();
+    expect((await redeem({ code, verifier })).headers.get("Set-Cookie")).toBeNull();
+  });
+
+  it("rejects malformed challenges, the staff path and non-form bodies", async () => {
+    expect((await login(await sign({}), "/auth/access?app_challenge=short")).status).toBe(400);
+    expect((await login(await sign({}), `/auth/access/staff?app_challenge=${await challengeFor(verifier)}`)).status).toBe(400);
+    expect((await redeem({ code: "x", verifier }, "application/json")).status).toBe(415);
+  });
+
+  it("leaves the normal web sign-in unchanged", async () => {
+    const res = await login(await sign({}));
+    expect(res.headers.get("Location")).toBe("https://evade.health/dashboard");
+    expect(res.headers.get("Set-Cookie")).toMatch(/^__Host-evade_session=/);
+  });
 });

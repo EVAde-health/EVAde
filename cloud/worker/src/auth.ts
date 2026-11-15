@@ -63,6 +63,13 @@ const SESSION_PROVIDERS = new Set<SessionProvider>(["google", "github", "dev", "
 /** The seeded demo astronaut (migration 0007): the only account "Try demo" can ever sign into. */
 const DEMO_IDENTITY = { provider: "demo", subject: "vega" } as const;
 const DEMO_SESSION_TTL = 2 * 3600;
+/** Mobile app sign-in handoff (see /auth/app-redeem): the one-time code lives this long. */
+const APP_HANDOFF_TTL = 120;
+/** The only place a handoff code is ever sent: the EVAde app's own URL scheme (never a web origin). */
+export const APP_HANDOFF_RETURN = "evade://auth";
+const PKCE_CHALLENGE_RE = /^[A-Za-z0-9_-]{43}$/;
+
+interface AppHandoff { user_id: string; role: string; email: string; challenge: string }
 
 // ---------- small crypto helpers ----------
 const b64url = (buf: ArrayBuffer | Uint8Array) =>
@@ -77,6 +84,10 @@ function clientFor(env: AuthEnv, p: Provider) {
 }
 const hasTurnstile = (env: AuthEnv) => Boolean(env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET);
 const isLoopback = (url: URL) => ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+/** Private LAN address (10/8, 172.16/12, 192.168/16): a phone testing `wrangler dev` over Wi-Fi. Dev login only. */
+const isPrivateLan = (url: URL) => /^(10\.\d+|172\.(1[6-9]|2\d|3[01])|192\.168)\.\d+\.\d+$/.test(url.hostname);
+/** Hosts where the DEV_LOGIN stand-ins may run: loopback, or a private LAN address for phone testing. */
+const isLocalDevHost = (url: URL) => isLoopback(url) || isPrivateLan(url);
 const oauthProviders = (env: AuthEnv, url: URL): Provider[] => {
   const out: Provider[] = [];
   if (hasTurnstile(env) && env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) out.push("google");
@@ -84,8 +95,8 @@ const oauthProviders = (env: AuthEnv, url: URL): Provider[] => {
   if (localAccessEnabled(env, url)) out.push("dev");
   return out;
 };
-/** Local development only: DEV_LOGIN=true on a loopback host (never true for api.evade.health). */
-const localAccessEnabled = (env: AuthEnv, url: URL) => env.DEV_LOGIN === "true" && isLoopback(url);
+/** Local development only: DEV_LOGIN=true on a loopback or private LAN host (never true for api.evade.health). */
+const localAccessEnabled = (env: AuthEnv, url: URL) => env.DEV_LOGIN === "true" && isLocalDevHost(url);
 
 export function enabledProviders(env: AuthEnv, url: URL) {
   const providers: string[] = [];
@@ -112,7 +123,7 @@ function safeRedirect(env: AuthEnv, target: string | null, reqUrl: URL): string 
   if (!target) return fallback;
   try {
     const t = new URL(target, fallback);
-    if ((t.protocol === "https:" || (isLoopback(reqUrl) && isLoopback(t))) &&
+    if ((t.protocol === "https:" || (isLoopback(reqUrl) && isLoopback(t)) || (localAccessEnabled(env, reqUrl) && isLocalDevHost(t))) &&
         !t.username && !t.password && trustedOrigin(env, reqUrl, t.origin)) return t.toString();
   } catch {}
   return fallback;
@@ -346,8 +357,8 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
   const path = url.pathname.replace(/\/$/, "");
   const ip = req.headers.get("CF-Connecting-IP");
   const accessPath = path === "/auth/access" || path === "/auth/access/staff";
-  if (accessPath || path === "/auth/demo" || path === "/auth/start" || path.startsWith("/auth/callback/")) {
-    const bucket = accessPath ? "access" : path === "/auth/demo" ? "demo" : path === "/auth/start" ? "start" : "callback";
+  if (accessPath || path === "/auth/demo" || path === "/auth/start" || path === "/auth/app-redeem" || path.startsWith("/auth/callback/")) {
+    const bucket = accessPath ? "access" : path === "/auth/demo" ? "demo" : path === "/auth/start" ? "start" : path === "/auth/app-redeem" ? "app" : "callback";
     const { success } = await env.AUTH_RATE_LIMITER.limit({ key: `${bucket}:${ip ?? "unknown"}` });
     if (!success) return Response.json({ error: "Too many sign-in requests. Try again in a minute." }, {
       status: 429, headers: { "Retry-After": "60" },
@@ -361,7 +372,11 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
   if (path === "/auth/providers" && req.method === "GET") {
     const providers = enabledProviders(env, url);
     if (env.DEMO_LOGIN === "true" && await demoUser(env)) providers.push("demo");
-    return Response.json({ providers, default_provider: providers[0] ?? null, turnstile_site_key: hasTurnstile(env) ? env.TURNSTILE_SITE_KEY : null });
+    return Response.json({
+      providers, default_provider: providers[0] ?? null, turnstile_site_key: hasTurnstile(env) ? env.TURNSTILE_SITE_KEY : null,
+      // The mobile app checks this before offering "Sign in with a passkey" in the system browser.
+      app_handoff: accessConfigured(env),
+    });
   }
 
   if (path === "/auth/start" && req.method === "POST") {
@@ -435,7 +450,7 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
   }
 
   // Local development: nothing sits in front of `wrangler dev`, so the Access sign-in (passkey or emailed code)
-  // is served by a local stand-in. Only on a loopback host with DEV_LOGIN=true.
+  // is served by a local stand-in. Only on a loopback or private LAN host with DEV_LOGIN=true.
   if (path === "/auth/local-access" || path.startsWith("/auth/local-access/")) {
     if (!localAccessEnabled(env, url)) return Response.json({ error: "Not found" }, { status: 404 });
     return handleLocalAccess(req, path, {
@@ -458,6 +473,8 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     }
     const fail = (msg: string, status = 401) => loginPage(env, url, redirect, msg, status);
     const staff = path.endsWith("/staff");
+    const appChallenge = url.searchParams.get("app_challenge");
+    if (appChallenge !== null && (staff || !PKCE_CHALLENGE_RE.test(appChallenge))) return fail("This app sign-in link is invalid.", 400);
     const audience = staff ? staffAudience(env) : env.ACCESS_AUD;
     if (!accessConfigured(env) || !audience) return fail("This Cloudflare Access sign-in is unavailable.", 503);
     const assertion = accessAssertion(req);
@@ -478,6 +495,17 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
       const ttl = staff ? Math.min(1800, identity.expiresAt - Math.floor(Date.now() / 1000)) : SESSION_TTL;
       if (ttl <= 0) return fail("Your Cloudflare Access sign-in expired. Try again.");
       const provider = staff ? "cloudflare_access_staff" : "cloudflare_access";
+      if (appChallenge !== null) {
+        // Mobile app: the sign-in ran in the system browser (where passkeys work), but the app's WebView has its own
+        // cookie jar. Hand the app a short-lived one-time code instead of a cookie; only the app that started the
+        // sign-in knows the PKCE verifier needed to redeem it, and the code only ever goes to the app's own scheme.
+        const code = randomToken();
+        await env.SESSIONS.put(`apph:${await sha256(code)}`, JSON.stringify({
+          user_id: user.user_id, role: user.role, email: identity.email, challenge: appChallenge,
+        } satisfies AppHandoff), { expirationTtl: APP_HANDOFF_TTL });
+        await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, "cloudflare_access_app").run();
+        return new Response(null, { status: 302, headers: { Location: `${APP_HANDOFF_RETURN}?code=${code}`, "Cache-Control": "no-store" } });
+      }
       await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, provider).run();
       const token = await createSession(env, user, identity.email, provider, ttl, staff ? audience : undefined);
       return new Response(null, { status: 302, headers: {
@@ -487,6 +515,31 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
       console.warn("Cloudflare Access session could not be created");
       return fail("Sign-in failed. Try again.", 500);
     }
+  }
+
+  // Mobile app: the app's WebView posts the one-time code from /auth/access?app_challenge=... with the PKCE verifier
+  // and gets the normal session cookie. Codes are single-use and expire after APP_HANDOFF_TTL seconds.
+  if (path === "/auth/app-redeem" && req.method === "POST") {
+    const failed = () => new Response(null, { status: 303, headers: {
+      Location: `${env.FRONTEND_URL || url.origin}/login?error=${encodeURIComponent("App sign-in expired. Please try again.")}`, "Cache-Control": "no-store",
+    } });
+    const contentType = req.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase();
+    if (contentType !== "application/x-www-form-urlencoded") return Response.json({ error: "Expected a form" }, { status: 415 });
+    const encoded = await req.text();
+    if (encoded.length > 1024) return Response.json({ error: "Form is too large" }, { status: 413 });
+    const form = new URLSearchParams(encoded);
+    const code = form.get("code") ?? "";
+    const verifier = form.get("verifier") ?? "";
+    if (!/^[\w-]{43}$/.test(code) || !/^[\w-]{43,128}$/.test(verifier)) return failed();
+    const key = `apph:${await sha256(code)}`;
+    const saved = await env.SESSIONS.get<AppHandoff>(key, "json");
+    if (!saved) return failed();
+    await env.SESSIONS.delete(key); // one-time use, even when the verifier is wrong
+    if (await sha256(verifier) !== saved.challenge) return failed();
+    const token = await createSession(env, saved, saved.email, "cloudflare_access");
+    return new Response(null, { status: 303, headers: {
+      Location: `${env.FRONTEND_URL || url.origin}/dashboard`, "Set-Cookie": cookieHeader(url, "session", token, SESSION_TTL), "Cache-Control": "no-store",
+    } });
   }
 
   // "Try demo" for judges: signs into the seeded fake astronaut only. Never takes a user id from the request.

@@ -1,11 +1,11 @@
-// Local stand-in for the Cloudflare Access login page, used only by `wrangler dev` on a loopback host with
+// Local stand-in for the Cloudflare Access login page, used only by `wrangler dev` on a loopback (or private LAN) host with
 // DEV_LOGIN=true. In production /auth/access sits behind real Cloudflare Access, which shows its own
 // "Sign in with a passkey" or "Email: send login code" page. Locally nothing sits in front of the Worker, so
 // /auth/access sends the browser here instead and the same two choices work end to end against local D1/KV:
 //   * Email: a 6-digit code (shown on the page and in the wrangler console, since no email is sent).
 //   * Passkey: real WebAuthn (navigator.credentials) with signatures verified by WebCrypto; keys live in local KV.
 // Accounts are "dev" identities keyed by email, so the seeded test accounts (vega@ / ortiz@demo.evade.local)
-// sign in with the role stored in D1. Nothing here is reachable on a non-loopback host or without DEV_LOGIN.
+// sign in with the role stored in D1. Nothing here is reachable on a public host or without DEV_LOGIN.
 
 export interface LocalAccessDeps {
   env: { SESSIONS: KVNamespace };
