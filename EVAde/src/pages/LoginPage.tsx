@@ -96,7 +96,6 @@ export default function LoginPage() {
                 </VStack>
               )}
               {hasDemo && <Button variant="ghost" width="100%" label="Try the demo" href={demoLoginUrl()} />}
-              {isSignUp && <Button variant="secondary" width="100%" label="Already have an account? Sign in" onClick={() => changeMode('signin')} />}
             </VStack>
           </Card>
           <HStack gap={2} vAlign="center">
