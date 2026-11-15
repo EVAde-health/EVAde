@@ -55,18 +55,18 @@ Local dev: `npx wrangler d1 migrations apply evade-db --local && npx wrangler de
 
 ## Login (OAuth on Cloudflare)
 
-Flow: frontend links to `https://api.evade.health/login?redirect=https://evade.health/app` → login page (Turnstile human check) → Google or GitHub (OAuth 2.0 code flow + PKCE, one-time `state` in KV, 10 min) → `/auth/callback/<provider>` links the login to an astronaut in D1 (`auth_identities`, astronaut created on first login with today's tasks) → session in Workers KV (7 days, only the SHA-256 of the token is stored) → HttpOnly cookie on `.evade.health` → back to the frontend.
+The frontend submits the login form after Turnstile. Auth0 is the default when configured, with direct Google and GitHub as fallbacks. The OAuth code flow uses PKCE and browser-bound state. The callback links the provider's subject to a D1 user, creates tasks for new crew accounts, and sets a host-only HttpOnly session cookie. See [Auth0 setup](worker/auth0/SETUP.md).
 
 | Path | Use |
 |---|---|
 | `GET /login?redirect=` | hosted sign-in page (redirect must be an allowed origin) |
 | `GET /auth/providers` | which buttons to show + Turnstile site key, if the frontend draws its own page |
 | `GET /auth/me` | current user and role, or 401 with the login URL |
-| `POST /auth/logout` | ends the session |
+| `POST /auth/logout` | ends the local session and sends Auth0 users through the provider's logout |
 
 Who can do what:
 - **Astronaut** (session): only their own data. A body without `user_id` is filled in from the session; a different `user_id` gets 403.
-- **Staff** (`flight_surgeon` / `therapist` / `admin`; emails listed in `STAFF_EMAILS` get flight_surgeon on first login): every astronaut, plus `/admin/*`.
+- **Staff** (`flight_surgeon` / `therapist` / `admin`; roles are assigned in Auth0 and synced on every login, see `worker/auth0/SETUP.md`): every astronaut, plus `/admin/*`.
 - **Service** (`X-EVAde-Key`): full access, for Python, FastAPI and edge functions.
 - Cookie-authenticated writes from another origin are blocked (CSRF), on top of SameSite=Lax.
 
@@ -87,7 +87,7 @@ One-time setup (by a person, the credentials can't be created by Claude):
 2. **GitHub**: github.com/settings/developers → New OAuth App. Homepage `https://evade.health`, callback `https://api.evade.health/auth/callback/github`.
 3. **Turnstile**: Cloudflare dashboard → Turnstile → Add widget for `evade.health` and `api.evade.health`. Put the site key in `TURNSTILE_SITE_KEY` in `wrangler.jsonc`.
 4. Secrets: `npx wrangler secret put` for `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `TURNSTILE_SECRET`, then `npx wrangler deploy`.
-5. Put the doctor/therapist demo emails in `STAFF_EMAILS`.
+5. Assign the doctor/therapist demo accounts a staff role in Auth0 (see `worker/auth0/SETUP.md`).
 
 Local testing: set `DEV_LOGIN=true`, `FRONTEND_URL=http://localhost:5173`, and `ALLOWED_ORIGINS=http://localhost:5173` in `worker/.dev.vars`. Open the local Worker's `/login` page for the loopback-only test sign-in. Keep `DEV_LOGIN` off in production.
 
@@ -112,7 +112,7 @@ Local testing: set `DEV_LOGIN=true`, `FRONTEND_URL=http://localhost:5173`, and `
 - Google OAuth uses a **Web application** client with the authorized redirect URI `https://api.evade.health/auth/callback/google`. Put that client's ID and secret in Wrangler as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
 - GitHub OAuth uses the callback `https://api.evade.health/auth/callback/github` and the `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` bindings.
 - Use a Cloudflare Turnstile widget for `evade.health` and `api.evade.health`. Set its site key and secret as `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET`. OAuth providers are available only when their client credentials and both widget settings are present.
-- The website submits a form to `POST /auth/start` with `provider`, `redirect` (normally `https://evade.health/dashboard`), and the Turnstile response field. `GET /auth/providers` exposes the enabled provider names and public site key. Browser API calls use the API's HttpOnly cookie with `credentials: "include"`. Sign out with `POST /auth/logout`.
+- The website submits a form to `POST /auth/start` with `provider`, `redirect` (normally `https://evade.health/dashboard`), and the Turnstile response field. Pass `screen_hint=signup` for Auth0 signup. `GET /auth/providers` exposes the default provider, enabled provider names, and public site key. Browser API calls use the API's HttpOnly cookie with `credentials: "include"`. See [Auth0 setup](worker/auth0/SETUP.md) for the logout response.
 
 ## API (sign in, or send header `X-EVAde-Key: <EVADE_API_KEY>`; /health and /metrics are public)
 
