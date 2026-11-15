@@ -179,28 +179,75 @@ describe("AI companion routes", () => {
     }
   });
 
-  it("restricts summaries to staff and sends only scoped, structured data to Workers AI", async () => {
+  const summaryPath = "/admin/astronauts/" + ASTRONAUT + "/summary";
+  const vitalDisplay = "Blood pressure 110–124/72–80 mmHg, Heart rate 65–76 bpm, SpO₂ 96.1–98.0%, Sleep 6.2–8.0 hours";
+
+  function seedSummaryVitals() {
     const raw: DatabaseSync = env.DB.raw;
-    const ts = new Date().toISOString();
-    const insert = raw.prepare("INSERT INTO observations (user_id,metric,value,unit,ts) VALUES (?,'heart_rate',?,?,?)");
-    insert.run(ASTRONAUT, 70, "private@example.test", ts);
-    insert.run(OTHER, 9876, "other@example.test", ts);
+    const first = new Date(Date.now() - 16 * 3600_000).toISOString();
+    const second = new Date(Date.now() - 1 * 3600_000).toISOString();
+    const insert = raw.prepare("INSERT INTO observations (user_id,metric,value,unit,ts) VALUES (?,?,?,?,?)");
+    for (const [metric, low, high] of [
+      ["systolic_bp", 109.6, 124.4], ["diastolic_bp", 71.5, 79.6], ["heart_rate", 65.4, 75.6],
+      ["spo2", 96.14, 97.98], ["sleep_hours", 6.15, 7.98],
+    ] as const) {
+      insert.run(ASTRONAUT, metric, low, "private@example.test", first);
+      insert.run(ASTRONAUT, metric, high, "private@example.test", second);
+    }
+    insert.run(OTHER, "heart_rate", 9876, "other@example.test", second);
+  }
+
+  it("uses Workers AI for staff summaries and passes only scoped, formatted facts", async () => {
+    seedSummaryVitals();
+    const raw: DatabaseSync = env.DB.raw;
     raw.prepare("INSERT INTO journal_entries (user_id,ts,content,sentiment) VALUES (?,?,?,?)")
-      .run(ASTRONAUT, ts, "private journal content", 0.25);
+      .run(ASTRONAUT, new Date().toISOString(), "private journal content", 0.25);
     expect((await call("POST", "/journal/chat", { body: { message: "private companion content" } })).status).toBe(201);
-    const run = vi.fn(async () => ({ response: '{"bullets":["Vitals recorded.","No alerts.","Mood score recorded."]}' }));
-    env.AI = { run };
-    const path = "/admin/astronauts/" + ASTRONAUT + "/summary";
-    expect((await call("GET", path)).status).toBe(403);
-    const result = await call("GET", path, { token: await staffSession() });
+    const run = vi.fn(async (_model: string, _input: { messages: { role: string; content: string }[] }) => ({
+      response: { bullets: ["Heart rate was higher in the second half of the window.", "No alerts.", "A journal mood score was recorded."] },
+    }));
+    Object.assign(env, { AI: { run }, COMPANION_MODEL: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" });
+    expect((await call("GET", summaryPath)).status).toBe(403);
+    expect(run).not.toHaveBeenCalled();
+    const result = await call("GET", summaryPath, { token: await staffSession() });
     expect(result.status).toBe(200);
     expect(result.data.label).toBe("AI summary, verify against the data, not a diagnosis");
-    expect(result.data.bullets).toHaveLength(3);
-    const modelInput = JSON.stringify(run.mock.calls);
-    expect(modelInput).toContain("journal_samples");
-    for (const excluded of ["example.test", "9876", "private journal content", "private companion content", ASTRONAUT, OTHER]) {
+    expect(result.data.bullets).toEqual([
+      vitalDisplay + ". Heart rate was higher in the second half of the window.", "No alerts.", "A journal mood score was recorded.",
+    ]);
+    expect(run).toHaveBeenCalledExactlyOnceWith(env.COMPANION_MODEL, expect.objectContaining({
+      max_tokens: 240,
+      response_format: expect.objectContaining({ type: "json_schema" }),
+    }));
+    const modelInput = run.mock.calls[0][1].messages[1].content;
+    expect(JSON.parse(modelInput)).toMatchObject({
+      vitals: {
+        display: vitalDisplay,
+        trends: expect.arrayContaining([
+          expect.objectContaining({ label: "Heart rate", first_half_average: "65", second_half_average: "76" }),
+          expect.objectContaining({ label: "SpO₂", first_half_average: "96.1", second_half_average: "98.0" }),
+        ]),
+      },
+      journalMood: { journal_samples: 1, average_sentiment: 0.25 },
+    });
+    for (const excluded of ["example.test", "9876", "109.6", "97.98", "private journal content", "private companion content", ASTRONAUT, OTHER]) {
       expect(modelInput).not.toContain(excluded);
     }
+  });
+
+  it("uses the same rounded display ranges when Workers AI fails or returns unusable bullets", async () => {
+    seedSummaryVitals();
+    const token = await staffSession();
+    const run = vi.fn()
+      .mockRejectedValueOnce(new Error("Model unavailable"))
+      .mockResolvedValueOnce({ response: '{"bullets":["Incomplete summary."]}' });
+    env.AI = { run };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await call("GET", summaryPath, { token });
+      expect(result.status).toBe(200);
+      expect(result.data.bullets).toEqual([vitalDisplay + ".", "No alerts recorded.", "No journal mood score recorded."]);
+    }
+    expect(run).toHaveBeenCalledTimes(2);
   });
 });
 
