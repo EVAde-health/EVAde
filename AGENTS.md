@@ -4,6 +4,12 @@ Guidance for AI coding agents (and humans) working on EVAde, NASA Space Apps 202
 
 Web app conventions (Astryx design system, component rules) are in [`EVAde/AGENTS.md`](EVAde/AGENTS.md). This file covers how the pieces fit together and how to ship them.
 
+## Deployment rule: only Daniel's PC deploys
+
+- Production deploys of the Cloudflare Workers `evade` (evade.health) and `evade-api` (api.evade.health) run **only from Daniel's PC (MKII)**, **only from `main`**, with `WORKER_REF` set to that `main` commit.
+- Nobody else may run `wrangler deploy` or `node deploy/deploy.mjs` against production: no other teammate machine, no AI agent elsewhere, no CI, and never from a feature branch (such as `evade-cloud`).
+- To ship a change, merge it to `main` and ask Daniel to deploy.
+
 ## Live URLs
 
 | URL | What serves it |
@@ -47,6 +53,15 @@ Config: [`deploy/wrangler.jsonc`](deploy/wrangler.jsonc). It combines the site a
 ## Deploying
 
 Follow [DEPLOY.md](DEPLOY.md) for the API, gateway, and site deploy sequence from clean `main`.
+
+Prereqs: git, Node 20+, and a Wrangler login with access to the EVAde Cloudflare account (`npx wrangler login`, check with `npx wrangler whoami`).
+
+Deploy only from the repository root on merged `main` in PowerShell, on Daniel's PC (see the deployment rule above). `deploy/deploy.mjs` checks for a clean `main` at the latest remote tip before each target:
+
+```powershell
+node deploy/deploy.mjs --api
+node deploy/deploy.mjs --gateway
+```
 **Do not run `npx wrangler deploy` from `worker/`.** It would replace the live site with the voice Worker alone and leave `/`, `/journal`, and `/admin` returning 404.
 
 ## Local development
