@@ -23,6 +23,7 @@ import {
 import { deleteUserStatements } from "./deleteUser";
 import { HttpError } from "./http";
 import { crewOverview, registerOps } from "./ops";
+import { registerMessaging } from "./messages";
 import { awardDaily, materializeTasks, registerWebAppRoutes, type WebAppEnv } from "./webapp";
 export { CrewFeed } from "./live";
 
@@ -443,7 +444,7 @@ route("GET", "/auth/identities/:provider/:subject", async (_r, env, p) => {
 });
 
 // Admin panel (doctors / therapists)
-route("GET", "/admin/crew", async (_r, env) => json(await crewOverview(env.DB)));
+route("GET", "/admin/crew", async (_r, env, _p, _u, _c, who) => json(await crewOverview(env.DB, who.user_id ?? null)));
 route("GET", "/admin/escalations", async (_r, env) => json((await env.DB.prepare("SELECT * FROM v_escalations ORDER BY ts DESC").all()).results));
 route("GET", "/admin/therapist-feed", async (_r, env, _p, url) => {
   const uid = url.searchParams.get("user_id");
@@ -595,8 +596,10 @@ route("POST", "/journal/:jid/analyze", async (_r, env, p, _u, ctx) => {
   if (!j) throw new HttpError(404, "journal entry not found");
   return json(await processJournal(env, ctx, Number(p.jid), j.user_id, j.content));
 });
-route("GET", "/users/:id/journal", async (_r, env, p) =>
-  json((await env.DB.prepare("SELECT * FROM journal_entries WHERE user_id=? ORDER BY ts DESC LIMIT 100").bind(p.id).all()).results));
+route("GET", "/users/:id/journal", async (_r, env, p, _u, _c, who) => {
+  if (who.kind === "user" && p.id !== who.user_id) throw new HttpError(403, "Only the astronaut can read their journal");
+  return json((await env.DB.prepare("SELECT * FROM journal_entries WHERE user_id=? ORDER BY ts DESC LIMIT 100").bind(p.id).all()).results);
+});
 route("PATCH", "/journal/:jid", async (req, env, p) => {
   const b = await body(req);
   await env.DB.prepare("UPDATE journal_entries SET ai_summary=COALESCE(?,ai_summary), sentiment=COALESCE(?,sentiment), flags=COALESCE(?,flags) WHERE id=?")
@@ -1044,6 +1047,7 @@ registerWebAppRoutes<Env>({
   journal: (env, ctx, id, userId, content) => processJournal(env, ctx, id, userId, content),
 });
 registerOps(route, { json, body, now });
+registerMessaging(route, { json, body, now });
 
 // ---------- Access control ----------
 // service  = X-EVAde-Key (Python seeding, Michael's FastAPI, Ryan B's edge functions): integration routes

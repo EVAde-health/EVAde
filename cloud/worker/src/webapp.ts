@@ -303,7 +303,8 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
   });
 
   // Journal chat history (the single running thread).
-  route("GET", "/users/:id/journal/messages", async (_r, env, p, url) => {
+  route("GET", "/users/:id/journal/messages", async (_r, env, p, url, _c, who) => {
+    if (who.kind === "user" && p.id !== who.user_id) throw fail(403, "Only the astronaut can read their journal");
     const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit")) || 200, 500));
     const { results } = await env.DB.prepare(
       "SELECT id, sender, content, ts FROM journal_messages WHERE user_id=? AND thread_id IS NULL ORDER BY ts DESC LIMIT ?"
