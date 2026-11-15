@@ -1,4 +1,5 @@
 import { createContext, useContext } from 'react';
+import type { SessionUser } from '../services/api';
 import type { Macros } from '../services/foodSearch';
 
 export interface MealEntry {
@@ -19,15 +20,28 @@ export interface MissionState {
   watchedTutorials: string[];
 }
 
+export interface DailyGoals {
+  kcal: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  waterMl: number;
+}
+
 export interface MissionActions {
   toggleTask: (id: string, xp: number) => boolean;
-  addWater: (ml: number, xp: number) => void;
-  addMeal: (meal: Omit<MealEntry, 'id' | 'loggedAt'>, xp: number) => void;
-  removeMeal: (id: string) => void;
+  addWater: (ml: number, xp: number) => Promise<number>;
+  addMeal: (meal: Omit<MealEntry, 'id' | 'loggedAt'>, xp: number) => Promise<void>;
+  removeMeal: (id: string) => Promise<void>;
   completeTutorial: (id: string, xp: number) => boolean;
 }
 
-export type MissionContextValue = MissionState & MissionActions;
+export type MissionContextValue = MissionState & MissionActions & {
+  user: SessionUser;
+  goals: DailyGoals;
+  loading: boolean;
+  nutritionUnavailable: boolean;
+};
 
 export const LEVEL_XP = 400;
 export const RANKS = ['Cadet', 'Specialist', 'Flight Engineer', 'Mission Specialist', 'Commander', 'Station Legend'];

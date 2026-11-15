@@ -1,68 +1,120 @@
-import { useMemo, type ReactNode } from 'react';
-import { MissionContext, type MissionContextValue, type MissionState } from '../context/MissionContext';
+import { useEffect, useState, type ReactNode } from 'react';
+import { MissionContext, type DailyGoals, type MealEntry, type MissionContextValue, type MissionState } from '../context/MissionContext';
+import { NUTRITION_GOALS, WATER_GOAL_ML } from '../data/tasks';
 import { usePersistentState } from '../hooks/usePersistentState';
+import { api, userPath, type SessionUser } from '../services/api';
 
-// Local calendar date key, e.g. 2026-11-14.
+type ApiMeal = Omit<MealEntry, 'loggedAt'> & { ts: string };
+type LocalProgress = Omit<MissionState, 'meals' | 'waterMl'>;
+
+const FALLBACK_GOALS: DailyGoals = { ...NUTRITION_GOALS, waterMl: WATER_GOAL_ML };
+const toMeal = ({ ts, ...entry }: ApiMeal): MealEntry => ({ ...entry, loggedAt: Date.parse(ts) });
+
 function todayKey() {
   return new Date().toLocaleDateString('en-CA');
 }
 
-// Seed state so the demo shows progress on first launch.
-function initialState(): MissionState {
-  return { day: todayKey(), xp: 1240, streak: 12, completed: [], waterMl: 750, meals: [], watchedTutorials: ['bp-cuff'] };
+function today(now = new Date()) {
+  return {
+    since: new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(),
+    until: new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString(),
+  };
 }
 
-// Starts a fresh day while keeping XP, streak and tutorials.
-function rollOver(state: MissionState): MissionState {
+function initialState(user: SessionUser): LocalProgress {
+  return { day: todayKey(), xp: user.points, streak: user.streak_days, completed: [], watchedTutorials: [] };
+}
+
+function rollOver(state: LocalProgress): LocalProgress {
   if (state.day === todayKey()) return state;
-  const keptStreak = state.completed.length > 0 ? state.streak + 1 : 0;
-  return { ...state, day: todayKey(), streak: keptStreak, completed: [], waterMl: 0, meals: [] };
+  return { ...state, day: todayKey(), streak: state.completed.length ? state.streak + 1 : 0, completed: [] };
 }
 
-// Provides persisted gamification state to every page.
-export default function MissionProvider({ children }: { children: ReactNode }) {
-  const [stored, setStored] = usePersistentState<MissionState>('evade:mission', initialState);
+export default function MissionProvider({ user, children }: { user: SessionUser; children: ReactNode }) {
+  const [stored, setStored] = usePersistentState<LocalProgress>(`evade:mission:${user.user_id}`, () => initialState(user));
   const state = rollOver(stored);
+  const [meals, setMeals] = useState<MealEntry[]>([]);
+  const [waterMl, setWaterMl] = useState(0);
+  const [goals, setGoals] = useState<DailyGoals>(FALLBACK_GOALS);
+  const [loading, setLoading] = useState(true);
+  const [nutritionUnavailable, setNutritionUnavailable] = useState(false);
+  const { since, until } = today();
+  const id = user.user_id;
 
-  const value = useMemo<MissionContextValue>(() => {
-    // Completes or reopens a task, adjusting XP; returns new completion.
-    function toggleTask(id: string, xp: number) {
-      const isDone = state.completed.includes(id);
-      setStored({
-        ...state,
-        xp: Math.max(0, state.xp + (isDone ? -xp : xp)),
-        completed: isDone ? state.completed.filter(c => c !== id) : [...state.completed, id],
-      });
-      return !isDone;
-    }
+  useEffect(() => {
+    const controller = new AbortController();
+    const query = new URLSearchParams({ since, until });
+    const options = { signal: controller.signal };
+    void Promise.allSettled([
+      api<ApiMeal[]>(userPath(id, `meals?${query}`), options),
+      api<{ total_ml: number }>(userPath(id, `hydration?${query}`), options),
+      api<{ goals: { metric: string; target: number }[] }>(userPath(id, 'goals'), options),
+    ]).then(([mealResult, waterResult, goalResult]) => {
+      if (controller.signal.aborted) return;
+      if (mealResult.status === 'fulfilled') setMeals(mealResult.value.map(toMeal));
+      if (waterResult.status === 'fulfilled') setWaterMl(Math.max(0, waterResult.value.total_ml));
+      if (goalResult.status === 'fulfilled') {
+        const target = (metric: string, fallback: number) => goalResult.value.goals.find(goal => goal.metric === metric)?.target ?? fallback;
+        setGoals({
+          kcal: target('kcal_intake', FALLBACK_GOALS.kcal),
+          protein: target('protein_intake_g', FALLBACK_GOALS.protein),
+          carbs: target('carbs_intake_g', FALLBACK_GOALS.carbs),
+          fat: target('fat_intake_g', FALLBACK_GOALS.fat),
+          waterMl: target('water_intake_ml', FALLBACK_GOALS.waterMl),
+        });
+      }
+      setNutritionUnavailable(mealResult.status === 'rejected' || waterResult.status === 'rejected');
+      setLoading(false);
+    });
+    return () => controller.abort();
+  }, [id, since, until]);
 
-    // Logs water intake and awards XP per glass.
-    function addWater(ml: number, xp: number) {
-      const waterMl = Math.max(0, state.waterMl + ml);
-      if (waterMl === state.waterMl) return;
-      setStored({ ...state, waterMl, xp: Math.max(0, state.xp + (ml > 0 ? xp : -xp)) });
-    }
+  // The Journal and Missions share the existing synchronous completion contract.
+  function toggleTask(taskId: string, xp: number) {
+    const isDone = state.completed.includes(taskId);
+    setStored(previous => {
+      const progress = rollOver(previous);
+      return {
+        ...progress,
+        xp: Math.max(0, progress.xp + (isDone ? -xp : xp)),
+        completed: isDone ? progress.completed.filter(item => item !== taskId) : [...progress.completed, taskId],
+      };
+    });
+    return !isDone;
+  }
 
-    // Adds a meal entry and its XP.
-    function addMeal(meal: Parameters<MissionContextValue['addMeal']>[0], xp: number) {
-      const entry = { ...meal, id: crypto.randomUUID(), loggedAt: Date.now() };
-      setStored({ ...state, meals: [entry, ...state.meals], xp: state.xp + xp });
-    }
+  async function addWater(ml: number, xp: number) {
+    const timestamp = new Date();
+    const saved = await api<{ amount_ml: number }>('/hydration', {
+      method: 'POST', body: { id: crypto.randomUUID(), amount_ml: ml, ts: timestamp.toISOString(), ...today(timestamp) },
+    });
+    setWaterMl(previous => Math.max(0, previous + saved.amount_ml));
+    setStored(previous => ({ ...rollOver(previous), xp: Math.max(0, previous.xp + (ml > 0 ? xp : -xp)) }));
+    return Math.max(0, waterMl + saved.amount_ml);
+  }
 
-    // Deletes a logged meal.
-    function removeMeal(id: string) {
-      setStored({ ...state, meals: state.meals.filter(m => m.id !== id) });
-    }
+  async function addMeal(meal: Parameters<MissionContextValue['addMeal']>[0], xp: number) {
+    const saved = toMeal(await api<ApiMeal>('/meals', { method: 'POST', body: { id: crypto.randomUUID(), ...meal } }));
+    setMeals(previous => [saved, ...previous.filter(item => item.id !== saved.id)]);
+    setStored(previous => ({ ...rollOver(previous), xp: previous.xp + xp }));
+  }
 
-    // Marks a tutorial watched once; returns true on first completion.
-    function completeTutorial(id: string, xp: number) {
-      if (state.watchedTutorials.includes(id)) return false;
-      setStored({ ...state, watchedTutorials: [...state.watchedTutorials, id], xp: state.xp + xp });
-      return true;
-    }
+  async function removeMeal(mealId: string) {
+    await api(`/meals/${encodeURIComponent(mealId)}`, { method: 'DELETE' });
+    setMeals(previous => previous.filter(meal => meal.id !== mealId));
+  }
 
-    return { ...state, toggleTask, addWater, addMeal, removeMeal, completeTutorial };
-  }, [state, setStored]);
+  function completeTutorial(tutorialId: string, xp: number) {
+    if (state.watchedTutorials.includes(tutorialId)) return false;
+    setStored(previous => ({
+      ...rollOver(previous), watchedTutorials: [...previous.watchedTutorials, tutorialId], xp: previous.xp + xp,
+    }));
+    return true;
+  }
 
+  const value: MissionContextValue = {
+    ...state, user, meals, waterMl, goals, loading, nutritionUnavailable,
+    toggleTask, addWater, addMeal, removeMeal, completeTutorial,
+  };
   return <MissionContext.Provider value={value}>{children}</MissionContext.Provider>;
 }

@@ -62,7 +62,7 @@ export default function LandingPage() {
             </Text>
             <HStack gap={3} wrap="wrap" className="rise-in" style={stagger(3)}>
               <Button label="Open mission dashboard" variant="primary" size="lg" href="/dashboard" endContent={<Icon icon={ArrowRightIcon} />} className="landing__cta" />
-              <Button label="Create crew account" size="lg" href="/login?mode=signup" />
+              <Button label="Create crew account" size="lg" href="/login" />
             </HStack>
           </VStack>
           <Stack className="landing__visual landing__depth-visual rise-in" style={stagger(2)}>
@@ -104,7 +104,7 @@ export default function LandingPage() {
         />
         <HStack gap={3} wrap="wrap" hAlign="center" className="reveal-on-scroll">
           <Button label="Open mission dashboard" variant="primary" size="lg" href="/dashboard" endContent={<Icon icon={ArrowRightIcon} />} className="landing__cta" />
-          <Button label="Create crew account" size="lg" href="/login?mode=signup" />
+          <Button label="Create crew account" size="lg" href="/login" />
         </HStack>
       </VStack>
 

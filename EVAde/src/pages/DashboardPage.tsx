@@ -13,6 +13,7 @@ import BonePanel from '../components/BonePanel';
 import CardioPanel from '../components/CardioPanel';
 import MetricExplorer from '../components/MetricExplorer';
 import MoodPanel from '../components/MoodPanel';
+import { EmergencyBanner } from '../components/EmergencyButton';
 import NutritionPanel from '../components/NutritionPanel';
 import PageHeader from '../components/PageHeader';
 import RadiationPanel from '../components/RadiationPanel';
@@ -57,7 +58,7 @@ function overallScore(statuses: HealthStatus[]) {
 // Main health dashboard: overview, mind & rest, vitals, long-term risks.
 export default function DashboardPage() {
   const [selectedVital, setSelectedVital] = useState<VitalId>('heartRate');
-  const { xp, completed, streak } = useMission();
+  const { xp, completed, streak, user } = useMission();
   const tiles = buildTiles();
   const signalStatuses: HealthStatus[] = [
     ...tiles.map(t => t.status),
@@ -91,6 +92,7 @@ export default function DashboardPage() {
           </>
         }
       />
+      {!user.demo && <EmergencyBanner />}
 
       <Card padding={6} className="dashboard__overview rise-in">
         <Grid columns={{ minWidth: 260, max: 3 }} gap={6}>
