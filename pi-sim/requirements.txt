@@ -1,0 +1,6 @@
+numpy
+httpx
+# Bluetooth path only:
+#   bless   on the Raspberry Pi (BLE peripheral, BlueZ)
+#   bleak   on the gateway (BLE central: Linux, Windows, macOS)
+# tests: pytest

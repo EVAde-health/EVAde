@@ -1,0 +1,18 @@
+{
+  "name": "demo",
+  "duration_s": 1800,
+  "time_scale": 1.0,
+  "seed": 7,
+  "baseline": {"fast": true},
+  "events": [
+    {"type": "tachycardia", "start_s": 300, "end_s": 420, "hr": 150},
+    {"type": "seizure", "start_s": 600, "end_s": 660},
+    {"type": "mi_pattern", "start_s": 780, "end_s": 900, "st_mv": 0.25},
+    {"type": "hypoxia", "start_s": 960, "end_s": 1080},
+    {"type": "arrhythmia", "start_s": 1140, "end_s": 1260},
+    {"type": "hrv_drop", "start_s": 1260, "end_s": 1440},
+    {"type": "stress", "start_s": 1200, "end_s": 1800},
+    {"type": "poor_sleep", "start_s": 1500, "end_s": 1800},
+    {"type": "spe", "start_s": 1320, "end_s": 1800, "peak_pfu": 800}
+  ]
+}
