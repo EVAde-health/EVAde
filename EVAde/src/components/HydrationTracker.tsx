@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { HStack, Stack, VStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
@@ -13,16 +14,23 @@ const GLASSES = WATER_GOAL_ML / WATER_STEP_ML;
 
 // Animated water tank with quick add/remove pouch buttons.
 export default function HydrationTracker() {
-  const { waterMl, addWater } = useMission();
+  const { waterMl, addWater, loading } = useMission();
+  const [saving, setSaving] = useState(false);
   const showToast = useToast();
   const fill = Math.min(1, waterMl / WATER_GOAL_ML);
   const glasses = Math.round(waterMl / WATER_STEP_ML);
 
   // Adds one pouch and celebrates hitting the daily goal.
-  function drink() {
-    addWater(WATER_STEP_ML, WATER_XP);
-    if (waterMl < WATER_GOAL_ML && waterMl + WATER_STEP_ML >= WATER_GOAL_ML) {
-      showToast({ body: '💧 Hydration goal reached!' });
+  async function adjust(amount: number) {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const total = await addWater(amount, WATER_XP);
+      if (waterMl < WATER_GOAL_ML && total >= WATER_GOAL_ML) showToast({ body: '💧 Hydration goal reached!' });
+    } catch {
+      showToast({ body: 'The water log could not be updated. Try again.' });
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -39,8 +47,8 @@ export default function HydrationTracker() {
             <Text type="supporting" hasTabularNumbers>{glasses} of {GLASSES} pouches</Text>
           </VStack>
           <HStack gap={2}>
-            <Button label="Remove pouch" isIconOnly icon={<Icon icon={MinusIcon} />} onClick={() => addWater(-WATER_STEP_ML, WATER_XP)} isDisabled={waterMl === 0} />
-            <Button label={`+${WATER_STEP_ML} ml`} variant="primary" icon={<Icon icon={PlusIcon} />} onClick={drink} />
+            <Button label="Remove pouch" isIconOnly icon={<Icon icon={MinusIcon} />} onClick={() => adjust(-WATER_STEP_ML)} isDisabled={loading || saving || waterMl < WATER_STEP_ML} />
+            <Button label={`+${WATER_STEP_ML} ml`} variant="primary" icon={<Icon icon={PlusIcon} />} onClick={() => adjust(WATER_STEP_ML)} isDisabled={loading || saving} />
           </HStack>
         </VStack>
       </HStack>

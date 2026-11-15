@@ -1,5 +1,13 @@
 # React + TypeScript + Vite
 
+## EVAde sign-in and API
+
+Set the public Vite variable `VITE_API_URL=https://api.evade.health` for the website. The Worker uses an HttpOnly session cookie and permits the configured EVAde website origins. The website submits sign-in to the Worker's OAuth form endpoint, and the Worker reports available providers after their credentials and Turnstile are configured.
+
+The dashboard, mission tasks, journal, meals, and hydration use the signed-in account's API records. Selfies stay in this browser, scoped to that account. The earlier demo's unscoped browser data stays separate from signed-in accounts.
+
+Run `npm ci`, `npm run lint`, and `npm run build` from this folder. The website host should serve `index.html` for SPA routes, including `/login` and `/dashboard`.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:

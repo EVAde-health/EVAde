@@ -27,6 +27,7 @@ export interface MissionTask {
   icon: ComponentType<SVGProps<SVGSVGElement>>;
   tutorialId?: string;
   window?: string;
+  metric?: string | null;
 }
 
 export interface NutritionGoals {

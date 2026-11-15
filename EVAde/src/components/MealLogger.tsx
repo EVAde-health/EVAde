@@ -30,17 +30,33 @@ function macroLine(macros: { kcal: number; protein: number; carbs: number; fat: 
 export default function MealLogger() {
   const [selected, setSelected] = useState<FoodItem | null>(null);
   const [grams, setGrams] = useState(DEFAULT_GRAMS);
-  const { meals, addMeal, removeMeal } = useMission();
+  const [saving, setSaving] = useState(false);
+  const { meals, addMeal, removeMeal, loading } = useMission();
   const showToast = useToast();
   const portion = selected?.auxiliaryData ? macrosForPortion(selected.auxiliaryData.per100g, grams) : null;
 
   // Saves the chosen food and portion as a meal entry.
-  function logMeal() {
-    if (!selected || !portion) return;
-    addMeal({ name: selected.label, grams, macros: portion }, MEAL_XP);
-    showToast({ body: `🍽️ Logged ${selected.label} · +${MEAL_XP} XP` });
-    setSelected(null);
-    setGrams(DEFAULT_GRAMS);
+  async function logMeal() {
+    if (!selected || !portion || saving) return;
+    setSaving(true);
+    try {
+      await addMeal({ name: selected.label, grams, macros: portion }, MEAL_XP);
+      showToast({ body: `🍽️ Logged ${selected.label} · +${MEAL_XP} XP` });
+      setSelected(null);
+      setGrams(DEFAULT_GRAMS);
+    } catch {
+      showToast({ body: 'The meal could not be saved. Try again.' });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteMeal(id: string) {
+    try {
+      await removeMeal(id);
+    } catch {
+      showToast({ body: 'The meal could not be removed. Try again.' });
+    }
   }
 
   return (
@@ -72,7 +88,7 @@ export default function MealLogger() {
           <StackItem size="fill">
             <Text type="supporting">{macroLine(portion)}</Text>
           </StackItem>
-          <Button label={`Log meal · +${MEAL_XP} XP`} variant="primary" icon={<Icon icon={PlusIcon} />} onClick={logMeal} />
+          <Button label={`Log meal · +${MEAL_XP} XP`} variant="primary" icon={<Icon icon={PlusIcon} />} onClick={logMeal} isLoading={saving} isDisabled={loading} />
         </HStack>
       )}
 
@@ -93,7 +109,7 @@ export default function MealLogger() {
               endContent={
                 <HStack gap={2} vAlign="center">
                   <Token label={`${meal.grams} g`} size="sm" />
-                  <IconButton label={`Remove ${meal.name}`} size="sm" variant="ghost" icon={<Icon icon={TrashIcon} />} onClick={() => removeMeal(meal.id)} />
+                  <IconButton label={`Remove ${meal.name}`} size="sm" variant="ghost" icon={<Icon icon={TrashIcon} />} onClick={() => deleteMeal(meal.id)} isDisabled={loading} />
                 </HStack>
               }
             />

@@ -22,7 +22,7 @@ import { stagger } from '../utils/style';
 import './css/SelfiesPage.css';
 
 const COUNTDOWN_SECONDS = 3;
-const SELFIE_TASK = { id: 'b-selfie', xp: 15 };
+const SELFIE_XP = 15;
 
 interface GalleryItem extends Selfie {
   url: string;
@@ -49,7 +49,8 @@ export default function SelfiesPage() {
   const [isFlashing, setIsFlashing] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const galleryRef = useRef<GalleryItem[]>([]);
-  const { completed, toggleTask } = useMission();
+  const { user, awardSelfie } = useMission();
+  const userId = user.user_id;
   const showToast = useToast();
   const lightboxMedia = useMemo(
     () => gallery.map(g => ({ src: g.url, alt: `Selfie from ${new Date(g.createdAt).toLocaleString()}`, caption: g.note || new Date(g.createdAt).toLocaleString() })),
@@ -58,13 +59,13 @@ export default function SelfiesPage() {
 
   useEffect(() => {
     let isActive = true;
-    listSelfies()
+    listSelfies(userId)
       .then(selfies => isActive && setGallery(toGallery(selfies)))
       .catch(() => isActive && setGallery([]));
     return () => {
       isActive = false;
     };
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     galleryRef.current = gallery;
@@ -96,18 +97,17 @@ export default function SelfiesPage() {
   // Persists the pending shot and awards the daily XP once.
   async function keepSelfie() {
     if (!pending) return;
-    const saved = await saveSelfie(pending.blob, note.trim());
+    const saved = await saveSelfie(userId, pending.blob, note.trim());
     setGallery(current => [{ ...saved, url: URL.createObjectURL(saved.blob) }, ...current]);
     setPending(null);
     setNote('');
-    const isFirstToday = !completed.includes(SELFIE_TASK.id);
-    if (isFirstToday) toggleTask(SELFIE_TASK.id, SELFIE_TASK.xp);
-    showToast({ body: isFirstToday ? `📸 Selfie saved · +${SELFIE_TASK.xp} XP` : '📸 Selfie saved' });
+    const isFirstToday = awardSelfie(SELFIE_XP);
+    showToast({ body: isFirstToday ? `📸 Selfie saved · +${SELFIE_XP} XP` : '📸 Selfie saved' });
   }
 
   // Deletes a selfie from storage and the gallery.
   async function removeSelfie(id: string) {
-    await deleteSelfie(id);
+    await deleteSelfie(userId, id);
     const removed = gallery.find(g => g.id === id);
     if (removed) URL.revokeObjectURL(removed.url);
     setGallery(current => current.filter(g => g.id !== id));

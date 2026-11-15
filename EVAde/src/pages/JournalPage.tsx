@@ -20,10 +20,10 @@ import { useToast } from '@astryxdesign/core/Toast';
 import { SparklesIcon } from '@heroicons/react/24/outline';
 import BrandMark from '../components/BrandMark';
 import PageHeader from '../components/PageHeader';
-import { usePersistentState } from '../hooks/usePersistentState';
 import { useMission } from '../context/MissionContext';
-import { CREW, MOOD_LABELS } from '../data/mission';
-import { createMessage, getAssistantReply, type JournalMessage } from '../services/journalAssistant';
+import { MOOD_LABELS } from '../data/mission';
+import { api, userPath } from '../services/api';
+import { createMessage, formatAnalysis, getAssistantReply, type JournalMessage } from '../services/journalAssistant';
 import './css/JournalPage.css';
 
 const PROMPTS = [
@@ -34,7 +34,7 @@ const PROMPTS = [
 ];
 
 const MOOD_EMOJI = ['😣', '😕', '😐', '🙂', '😄'];
-const MOOD_TASK = { id: 'p-mood', xp: 25 };
+type JournalEntry = { id: number; ts: string; content: string; ai_summary: string | null; mood_label: string | null };
 
 // Animated three-dot "typing" indicator.
 function TypingDots() {
@@ -49,47 +49,81 @@ function TypingDots() {
 
 // Private journal with mood check-in and an AI companion chat.
 export default function JournalPage() {
-  const [messages, setMessages] = usePersistentState<JournalMessage[]>('evade:journal', []);
+  const [messages, setMessages] = useState<JournalMessage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [historyError, setHistoryError] = useState(false);
   const [draft, setDraft] = useState('');
   const [isReplying, setIsReplying] = useState(false);
   const [mood, setMood] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const { completed, toggleTask } = useMission();
+  const { user, tasks, completed, toggleTask } = useMission();
   const showToast = useToast();
+  const userId = user.user_id;
 
   useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => {
+    const controller = new AbortController();
+    api<JournalEntry[]>(userPath(userId, 'journal'), { signal: controller.signal })
+      .then(entries => {
+        if (controller.signal.aborted) return;
+        const history = [...entries].reverse().flatMap<JournalMessage>(entry => {
+          const sentAt = Date.parse(entry.ts);
+          const message: JournalMessage = { id: `entry-${entry.id}`, sender: 'user', text: entry.content, sentAt };
+          return entry.ai_summary ? [message, {
+            id: `analysis-${entry.id}`, sender: 'assistant', text: formatAnalysis(entry.ai_summary, entry.mood_label), sentAt,
+          }] : [message];
+        });
+        setMessages(previous => [...history, ...previous]);
+      })
+      .catch(() => { if (!controller.signal.aborted) setHistoryError(true); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [userId]);
 
   // Sends the user's entry and appends the assistant reply.
   async function sendMessage(text: string) {
     const trimmed = text.trim();
-    if (!trimmed || isReplying) return;
-    const history = [...messages, createMessage('user', trimmed)];
-    setMessages(history);
+    if (!trimmed || loading || abortRef.current) return;
+    const entry = createMessage('user', trimmed);
+    setMessages(previous => [...previous, entry]);
     setDraft('');
     setIsReplying(true);
-    abortRef.current = new AbortController();
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      const reply = await getAssistantReply(history, abortRef.current.signal);
-      setMessages(current => [...current, createMessage('assistant', reply)]);
+      const reply = await getAssistantReply(userId, entry, controller.signal);
+      if (!controller.signal.aborted) setMessages(current => [...current, createMessage('assistant', reply)]);
     } catch {
-      // Aborted on unmount or stop.
+      if (!controller.signal.aborted) {
+        setMessages(current => current.filter(message => message.id !== entry.id));
+        setDraft(current => current || trimmed);
+        showToast({ body: 'The journal request did not finish. Check your history before resubmitting.' });
+      }
     } finally {
-      setIsReplying(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        if (!controller.signal.aborted) setIsReplying(false);
+      }
     }
   }
 
   // Cancels an in-flight assistant reply.
   function stopReply() {
     abortRef.current?.abort();
+    abortRef.current = null;
     setIsReplying(false);
   }
 
   // Logs today's mood and completes the check-in protocol once.
-  function logMood(score: number) {
+  async function logMood(score: number) {
     setMood(score);
     setMessages(current => [...current, createMessage('system', `Mood logged: ${MOOD_EMOJI[score - 1]} ${MOOD_LABELS[score - 1]}`)]);
-    if (!completed.includes(MOOD_TASK.id) && toggleTask(MOOD_TASK.id, MOOD_TASK.xp)) {
-      showToast({ body: `🧠 Behavioral check-in complete · +${MOOD_TASK.xp} XP` });
+    const task = tasks.find(item => item.metric === 'mood');
+    if (!task || completed.includes(task.id)) return;
+    try {
+      if (await toggleTask(task.id)) showToast({ body: `🧠 Behavioral check-in complete · +${task.xp} XP` });
+    } catch {
+      showToast({ body: 'The check-in task could not be updated.' });
     }
   }
 
@@ -98,9 +132,10 @@ export default function JournalPage() {
       <PageHeader
         eyebrow="Private journal"
         title="How are you, really?"
-        description="Only you can read this. Your companion will learn to spot patterns in how you’re feeling."
+        description="Save a journal entry to your EVAde account and get an AI-generated summary and mood label."
         actions={<Token label="AI companion · preview" color="purple" icon={<Icon icon={SparklesIcon} size="sm" />} />}
       />
+      {historyError && <Text role="alert">Journal history could not load.</Text>}
 
       <Card padding={4} className="journal__mood rise-in">
         <HStack gap={4} wrap="wrap" vAlign="center" hAlign="between">
@@ -138,8 +173,8 @@ export default function JournalPage() {
           emptyState={
             <EmptyState
               icon={<BrandMark size="lg" />}
-              title={`Hi ${CREW.name.split(' ')[0]}, what’s on your mind?`}
-              description="Pick a prompt or start writing."
+              title={`Hi ${user.display_name.split(' ')[0]}, what’s on your mind?`}
+              description={loading ? 'Loading your journal…' : 'Pick a prompt or start writing.'}
               actions={
                 <HStack gap={2} wrap="wrap" hAlign="center">
                   {PROMPTS.map(prompt => (

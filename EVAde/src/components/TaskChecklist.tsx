@@ -16,8 +16,12 @@ export default function TaskChecklist({ label, tasks }: { label: string; tasks: 
   const showToast = useToast();
 
   // Toggles a task and shows an XP toast on completion.
-  function handleCheck(task: MissionTask) {
-    if (toggleTask(task.id, task.xp)) showToast({ body: `✅ ${task.title} · +${task.xp} XP`, uniqueID: 'task-xp' });
+  async function handleCheck(task: MissionTask) {
+    try {
+      if (await toggleTask(task.id)) showToast({ body: `✅ ${task.title} · +${task.xp} XP`, uniqueID: 'task-xp' });
+    } catch {
+      showToast({ body: 'The task could not be updated. Try again.' });
+    }
   }
 
   return (

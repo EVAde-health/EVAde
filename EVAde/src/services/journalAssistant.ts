@@ -1,3 +1,5 @@
+import { api } from './api';
+
 export interface JournalMessage {
   id: string;
   sender: 'user' | 'assistant' | 'system';
@@ -5,18 +7,15 @@ export interface JournalMessage {
   sentAt: number;
 }
 
-const FAKE_LATENCY_MS = 900;
+export function formatAnalysis(summary: string, mood: string | null) {
+  return mood ? `${summary}\n\nMood: ${mood}` : summary;
+}
 
-// Placeholder assistant; replace with the LLM worker call later.
-export async function getAssistantReply(_history: JournalMessage[], signal?: AbortSignal): Promise<string> {
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, FAKE_LATENCY_MS);
-    signal?.addEventListener('abort', () => {
-      clearTimeout(timer);
-      reject(new DOMException('Aborted', 'AbortError'));
-    });
+export async function getAssistantReply(userId: string, entry: JournalMessage, signal: AbortSignal): Promise<string> {
+  const { analysis } = await api<{ analysis?: { summary: string; mood_label: string | null } }>('/journal?analyze=sync', {
+    method: 'POST', body: { user_id: userId, client_id: entry.id, content: entry.text, source: 'text' }, signal,
   });
-  return 'testing';
+  return analysis?.summary ? formatAnalysis(analysis.summary, analysis.mood_label) : 'Entry saved. No analysis was returned.';
 }
 
 // Creates a message with a fresh id and timestamp.

@@ -1,5 +1,7 @@
 import { createContext, useContext } from 'react';
 import type { Macros } from '../services/foodSearch';
+import type { SessionUser } from '../services/api';
+import type { MissionTask } from '../data/tasks';
 
 export interface MealEntry {
   id: string;
@@ -10,20 +12,25 @@ export interface MealEntry {
 }
 
 export interface MissionState {
-  day: string;
+  user: SessionUser;
   xp: number;
   streak: number;
+  tasks: MissionTask[];
   completed: string[];
   waterMl: number;
   meals: MealEntry[];
   watchedTutorials: string[];
+  loading: boolean;
+  loadError: boolean;
 }
 
 export interface MissionActions {
-  toggleTask: (id: string, xp: number) => boolean;
-  addWater: (ml: number, xp: number) => void;
-  addMeal: (meal: Omit<MealEntry, 'id' | 'loggedAt'>, xp: number) => void;
-  removeMeal: (id: string) => void;
+  toggleTask: (id: string) => Promise<boolean>;
+  addWater: (ml: number, xp: number) => Promise<number>;
+  addMeal: (meal: Omit<MealEntry, 'id' | 'loggedAt'>, xp: number) => Promise<void>;
+  removeMeal: (id: string) => Promise<void>;
+  reload: () => void;
+  awardSelfie: (xp: number) => boolean;
   completeTutorial: (id: string, xp: number) => boolean;
 }
 

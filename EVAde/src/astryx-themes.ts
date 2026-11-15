@@ -5,6 +5,7 @@
 
 import {evadeTheme as _astryxTheme0} from "./themes/evade/evade.js";
 import "./themes/evade/evade.css";
+import "./themes/evade/evade.fonts.css";
 
 export const themes = {
   "evade": _astryxTheme0,
