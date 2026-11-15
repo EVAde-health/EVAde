@@ -16,6 +16,7 @@ import CardioPanel from '../components/CardioPanel';
 import HealthDataProvider from '../components/HealthDataProvider';
 import MetricExplorer from '../components/MetricExplorer';
 import MoodPanel from '../components/MoodPanel';
+import ModelResultsPanel from '../components/ModelResultsPanel';
 import NoReadings from '../components/NoReadings';
 import NutritionPanel from '../components/NutritionPanel';
 import PageHeader from '../components/PageHeader';
@@ -257,6 +258,7 @@ function DashboardContent() {
         <Grid columns={{ minWidth: 380, max: 2 }} gap={4}>
           <RadiationPanel />
           <SpaceWeatherPanel />
+          <ModelResultsPanel />
           <BonePanel />
           <CardioPanel />
           <NutritionPanel />
