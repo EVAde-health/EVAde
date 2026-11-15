@@ -693,6 +693,37 @@ export function registerOps(route: (method: string, path: string, handler: Handl
     return json(result, result.already ? 200 : 201);
   });
 
+  // The signed-in user's notifications (the web app's notice bell). From main's API, kept for the web app on main.
+  route("GET", "/me/notifications", async (_r, env, _p, url, _c, who) => {
+    if (who.kind !== "user" || !who.user_id) throw new HttpError(403, "Sign in to see your notifications");
+    const unreadOnly = url.searchParams.get("unread") === "1";
+    const { results } = await env.DB.prepare(
+      `SELECT n.id, n.kind, n.title, n.body, n.created_at, n.read_at, a.display_name AS actor_name
+       FROM user_notifications n LEFT JOIN users a ON a.user_id = n.actor_id
+       WHERE n.user_id=? AND (? = 0 OR n.read_at IS NULL) ORDER BY n.id DESC LIMIT 30`
+    ).bind(who.user_id, unreadOnly ? 1 : 0).all<any>();
+    const unread = await env.DB.prepare("SELECT COUNT(*) AS n FROM user_notifications WHERE user_id=? AND read_at IS NULL").bind(who.user_id).first<{ n: number }>();
+    return json({ notifications: results, unread: unread?.n ?? 0 });
+  });
+
+  // Body: { ids?: number[] } (omit to mark everything read).
+  route("POST", "/me/notifications/read", async (req, env, _p, _u, _c, who) => {
+    if (who.kind !== "user" || !who.user_id) throw new HttpError(403, "Sign in to update your notifications");
+    const input = await body(req).catch(() => ({} as any));
+    const ids: unknown = input?.ids;
+    if (ids !== undefined && (!Array.isArray(ids) || ids.length > 50 || !ids.every((id) => Number.isSafeInteger(id) && id > 0))) {
+      throw new HttpError(422, "ids must be up to 50 notification ids");
+    }
+    const ts = now();
+    if (Array.isArray(ids) && ids.length) {
+      await env.DB.prepare(`UPDATE user_notifications SET read_at=? WHERE user_id=? AND read_at IS NULL AND id IN (${ids.map(() => "?").join(",")})`)
+        .bind(ts, who.user_id, ...ids).run();
+    } else {
+      await env.DB.prepare("UPDATE user_notifications SET read_at=? WHERE user_id=? AND read_at IS NULL").bind(ts, who.user_id).run();
+    }
+    return new Response(null, { status: 204 });
+  });
+
   route("GET", "/emergencies/mine", async (_r, env, _p, _u, _c, who) => {
     if (!who.user_id || who.demo) throw new HttpError(403, "Use your own account to see your emergencies");
     const { results } = await env.DB.prepare(
