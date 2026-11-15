@@ -89,7 +89,7 @@ One-time setup (by a person, the credentials can't be created by Claude):
 4. Secrets: `npx wrangler secret put` for `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `TURNSTILE_SECRET`, then `npx wrangler deploy`.
 5. Put the doctor/therapist demo emails in `STAFF_EMAILS`.
 
-Local testing: create `worker/.dev.vars` with `DEV_LOGIN=true`, `COOKIE_DOMAIN=`, `FRONTEND_URL=http://localhost:5173`, `ALLOWED_ORIGINS=http://localhost:5173`. The login page then offers a test login with no OAuth. Keep `DEV_LOGIN` off in production.
+Local testing: set `DEV_LOGIN=true`, `FRONTEND_URL=http://localhost:5173`, and `ALLOWED_ORIGINS=http://localhost:5173` in `worker/.dev.vars`. Open the local Worker's `/login` page for the loopback-only test sign-in. Keep `DEV_LOGIN` off in production.
 
 ## Cloudflare services in use
 
@@ -107,7 +107,18 @@ Local testing: create `worker/.dev.vars` with `DEV_LOGIN=true`, `COOKIE_DOMAIN=`
 | R2 | photos, ultrasound images, voice journal audio, PDFs (private, access-checked per astronaut) |
 | Durable Objects | live crew feed over WebSockets (hibernating), staff see the whole crew in real time |
 
+## Website sign-in
+
+- Google OAuth uses a **Web application** client with the authorized redirect URI `https://api.evade.health/auth/callback/google`. Put that client's ID and secret in Wrangler as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+- GitHub OAuth uses the callback `https://api.evade.health/auth/callback/github` and the `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` bindings.
+- Use a Cloudflare Turnstile widget for `evade.health` and `api.evade.health`. Set its site key and secret as `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET`. OAuth providers are available only when their client credentials and both widget settings are present.
+- The website submits a form to `POST /auth/start` with `provider`, `redirect` (normally `https://evade.health/dashboard`), and the Turnstile response field. `GET /auth/providers` exposes the enabled provider names and public site key. Browser API calls use the API's HttpOnly cookie with `credentials: "include"`. Sign out with `POST /auth/logout`.
+
 ## API (sign in, or send header `X-EVAde-Key: <EVADE_API_KEY>`; /health and /metrics are public)
+
+- `POST /meals` saves a food name, portion in `grams`, and `macros` (`kcal`, `protein`, `carbs`, `fat`). `GET /users/:id/meals` lists entries and `DELETE /meals/:id` removes one.
+- `POST /hydration` records a signed `amount_ml`. `GET /users/:id/hydration` returns entries and `total_ml`. Both lists accept ISO timestamps `since` (inclusive) and `until` (exclusive). A hydration write can specify the same bounds for the user's local tracking day.
+- Meal and hydration writes accept an optional UUID `id` for retries and an optional `ts`. Cookie-authenticated astronauts can write to their own record without supplying a `user_id`.
 
 | Method | Path | What it does |
 |---|---|---|

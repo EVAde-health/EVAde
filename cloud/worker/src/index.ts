@@ -11,7 +11,7 @@ import {
   xrayClass,
   Level,
 } from "./health";
-import { AuthEnv, getSessionPrincipal, handleAuth, linkIdentity, Principal, STAFF_ROLES } from "./auth";
+import { AuthEnv, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, STAFF_ROLES, trustedOrigin } from "./auth";
 import { analyzeJournal, dailyBriefing, transcribe, TEXT_MODEL } from "./ai";
 import type { LiveEvent } from "./live";
 export { CrewFeed } from "./live";
@@ -56,7 +56,10 @@ function cors(req: Request, env: Env): Record<string, string> {
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", ...headers } });
 
+const isJson = (req: Request) => req.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() === "application/json";
+
 async function body<T = any>(req: Request): Promise<T> {
+  if (!isJson(req)) throw new HttpError(415, "Expected application/json");
   try {
     return (await req.json()) as T;
   } catch {
@@ -691,6 +694,105 @@ route("GET", "/users/:id/dashboard", async (_r, env, p) => {
   });
 });
 
+// Nutrition logs. A client-provided UUID makes retrying an entry idempotent.
+function logTimestamp(value: unknown) {
+  if (typeof value !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?(?:Z|[+\-]\d\d:\d\d)$/.test(value))
+    throw new HttpError(422, "Expected an ISO 8601 timestamp with a timezone");
+  const time = new Date(value);
+  if (!Number.isFinite(time.getTime())) throw new HttpError(422, "Invalid timestamp");
+  return time.toISOString();
+}
+
+function logWindow(since: unknown, until: unknown, start = "0001-01-01T00:00:00.000Z", end = "9999-12-31T23:59:59.999Z") {
+  const from = since == null ? start : logTimestamp(since);
+  const to = until == null ? end : logTimestamp(until);
+  if (from >= to) throw new HttpError(422, "since must be before until");
+  return [from, to] as const;
+}
+
+function logId(value: unknown) {
+  if (value == null) return uuid();
+  if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value))
+    throw new HttpError(422, "id must be a UUID");
+  return value.toLowerCase();
+}
+
+function logNumber(value: unknown, field: string, min: number, max: number) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max)
+    throw new HttpError(422, `${field} must be between ${min} and ${max}`);
+  return value;
+}
+
+type MealRow = { id: string; user_id: string; ts: string; name: string; grams: number; kcal: number; protein: number; carbs: number; fat: number };
+type HydrationRow = { id: string; user_id: string; ts: string; amount_ml: number };
+const mealResponse = ({ kcal, protein, carbs, fat, ...meal }: MealRow) => ({ ...meal, macros: { kcal, protein, carbs, fat } });
+
+route("POST", "/meals", async (req, env) => {
+  const b = await body(req);
+  if (!b || typeof b.name !== "string" || !b.name.trim() || b.name.trim().length > 200)
+    throw new HttpError(422, "name is required (max 200 characters)");
+  const owner = await requireUser(env, typeof b.user_id === "string" ? b.user_id : undefined);
+  const id = logId(b.id);
+  const ts = logTimestamp(b.ts ?? now());
+  const grams = logNumber(b.grams, "grams", 1, 2000);
+  const kcal = logNumber(b.macros?.kcal, "kcal", 0, 20000);
+  const protein = logNumber(b.macros?.protein, "protein", 0, 2000);
+  const carbs = logNumber(b.macros?.carbs, "carbs", 0, 2000);
+  const fat = logNumber(b.macros?.fat, "fat", 0, 2000);
+  const inserted = await env.DB.prepare(
+    "INSERT INTO meals (id,user_id,ts,name,grams,kcal,protein,carbs,fat) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING RETURNING *"
+  ).bind(id, owner.user_id, ts, b.name.trim(), grams, kcal, protein, carbs, fat).first<MealRow>();
+  if (inserted) return json(mealResponse(inserted), 201);
+  const existing = await env.DB.prepare("SELECT * FROM meals WHERE id=? AND user_id=?").bind(id, owner.user_id).first<MealRow>();
+  if (!existing) throw new HttpError(409, "Meal could not be saved with that ID");
+  return json(mealResponse(existing));
+});
+
+route("GET", "/users/:id/meals", async (_r, env, p, url) => {
+  const [since, until] = logWindow(url.searchParams.get("since"), url.searchParams.get("until"));
+  const { results } = await env.DB.prepare("SELECT * FROM meals WHERE user_id=? AND ts>=? AND ts<? ORDER BY ts DESC,id LIMIT 500")
+    .bind(p.id, since, until).all<MealRow>();
+  return json(results.map(mealResponse));
+});
+
+route("DELETE", "/meals/:mid", async (_r, env, p) => {
+  await env.DB.prepare("DELETE FROM meals WHERE id=?").bind(p.mid).run();
+  return new Response(null, { status: 204 });
+});
+
+route("POST", "/hydration", async (req, env) => {
+  const b = await body(req);
+  if (!b || !Number.isInteger(b.amount_ml) || !b.amount_ml || Math.abs(b.amount_ml) > 10000)
+    throw new HttpError(422, "amount_ml must be a nonzero integer from -10000 to 10000");
+  const owner = await requireUser(env, typeof b.user_id === "string" ? b.user_id : undefined);
+  const id = logId(b.id);
+  const ts = logTimestamp(b.ts ?? now());
+  const day = ts.slice(0, 10) + "T00:00:00.000Z";
+  const tomorrow = new Date(Date.parse(day) + 864e5).toISOString();
+  const [since, until] = logWindow(b.since, b.until, day, tomorrow);
+  if (ts < since || ts >= until || Date.parse(until) - Date.parse(since) > 26 * 3600e3)
+    throw new HttpError(422, "The entry must be within its tracking day");
+  const inserted = await env.DB.prepare(
+    `INSERT INTO hydration (id,user_id,ts,amount_ml)
+     SELECT ?,?,?,? WHERE ? > 0 OR
+       (SELECT COALESCE(SUM(amount_ml),0) FROM hydration WHERE user_id=? AND ts>=? AND ts<?) + ? >= 0
+     ON CONFLICT(id) DO NOTHING RETURNING *`
+  ).bind(id, owner.user_id, ts, b.amount_ml, b.amount_ml, owner.user_id, since, until, b.amount_ml).first<HydrationRow>();
+  if (inserted) return json(inserted, 201);
+  const existing = await env.DB.prepare("SELECT * FROM hydration WHERE id=? AND user_id=?").bind(id, owner.user_id).first<HydrationRow>();
+  if (!existing) throw new HttpError(409, "Water adjustment could not be recorded");
+  return json(existing);
+});
+
+route("GET", "/users/:id/hydration", async (_r, env, p, url) => {
+  const [since, until] = logWindow(url.searchParams.get("since"), url.searchParams.get("until"));
+  const [entries, total] = await env.DB.batch<HydrationRow | { total_ml: number }>([
+    env.DB.prepare("SELECT * FROM hydration WHERE user_id=? AND ts>=? AND ts<? ORDER BY ts DESC,id LIMIT 500").bind(p.id, since, until),
+    env.DB.prepare("SELECT COALESCE(SUM(amount_ml),0) total_ml FROM hydration WHERE user_id=? AND ts>=? AND ts<?").bind(p.id, since, until),
+  ]);
+  return json({ entries: entries.results, total_ml: (total.results[0] as { total_ml: number }).total_ml });
+});
+
 // Tasks / gamification
 route("GET", "/users/:id/tasks", async (_r, env, p) =>
   json((await env.DB.prepare("SELECT * FROM tasks WHERE user_id=? ORDER BY completed_at IS NOT NULL, due_at").bind(p.id).all()).results));
@@ -701,17 +803,36 @@ route("POST", "/tasks", async (req, env) => {
     .bind(b.user_id, b.title, b.category ?? "basic", b.metric ?? null, b.recurrence ?? null, b.due_at ?? null, b.points ?? 10).first();
   return json(r, 201);
 });
-route("POST", "/tasks/:tid/complete", async (_r, env, p, _u, ctx) => {
-  const t = await env.DB.prepare("SELECT * FROM tasks WHERE id=?").bind(p.tid).first<any>();
+async function setTaskCompleted(env: Env, taskId: string, complete: boolean, ctx: ExecutionContext) {
+  const t = await env.DB.prepare(`SELECT t.*, EXISTS (
+    SELECT 1 FROM action_log a WHERE a.user_id=t.user_id AND a.action='task_points_awarded'
+      AND a.detail=CAST(t.id AS TEXT) AND a.ts=t.completed_at
+  ) AS awarded FROM tasks t WHERE t.id=?`).bind(taskId).first<{
+    id: number; user_id: string; title: string; points: number; completed_at: string | null; awarded: number;
+  }>();
   if (!t) throw new HttpError(404, "task not found");
-  if (t.completed_at) return json({ ok: true, already: true });
-  await env.DB.batch([
-    env.DB.prepare("UPDATE tasks SET completed_at=? WHERE id=?").bind(now(), p.tid),
-    env.DB.prepare("UPDATE users SET points=points+?, last_active=? WHERE user_id=?").bind(t.points, now(), t.user_id),
-  ]);
-  publish(env, ctx, { type: "task", user_id: t.user_id, data: { id: t.id, title: t.title, points_awarded: t.points } });
-  return json({ ok: true, points_awarded: t.points });
-});
+  if (Boolean(t.completed_at) === complete) return json({ ok: true, already: true });
+  const ts = now();
+  // Only undo points from an explicit completion, not an automatic observation or journal update.
+  const points = complete ? t.points : t.awarded ? -t.points : 0;
+  const condition = complete ? "completed_at IS NULL" : "completed_at=?";
+  const taskParams = complete ? [t.id] : [t.id, t.completed_at];
+  const updates = [
+    env.DB.prepare(`UPDATE users SET points=MAX(0,points+?),last_active=?
+      WHERE user_id=? AND EXISTS (SELECT 1 FROM tasks WHERE id=? AND ${condition})`).bind(points, ts, t.user_id, ...taskParams),
+  ];
+  if (complete) updates.push(env.DB.prepare(`INSERT INTO action_log (ts,user_id,action,detail)
+    SELECT ?,?,'task_points_awarded',? WHERE EXISTS (SELECT 1 FROM tasks WHERE id=? AND completed_at IS NULL)`)
+    .bind(ts, t.user_id, String(t.id), t.id));
+  updates.push(env.DB.prepare(`UPDATE tasks SET completed_at=? WHERE id=? AND ${condition}`)
+    .bind(complete ? ts : null, ...taskParams));
+  const updated = (await env.DB.batch(updates)).at(-1)!;
+  if (!updated.meta.changes) return json({ ok: true, already: true });
+  publish(env, ctx, { type: "task", user_id: t.user_id, data: { id: t.id, title: t.title, points_awarded: points } });
+  return json({ ok: true, points_awarded: points });
+}
+route("POST", "/tasks/:tid/complete", async (_r, env, p, _u, ctx) => setTaskCompleted(env, p.tid, true, ctx));
+route("POST", "/tasks/:tid/reopen", async (_r, env, p, _u, ctx) => setTaskCompleted(env, p.tid, false, ctx));
 route("POST", "/users/:id/tasks/new-day", async (_r, env, p) => {
   await requireUser(env, p.id);
   await seedTasks(env, p.id);
@@ -832,10 +953,11 @@ const STAFF_ONLY: [string, RegExp][] = [
   ["GET", /^\/live\/stats$/],
 ];
 const OWNED_BY_ID: [RegExp, string][] = [
-  [/^\/tasks\/(\d+)\/complete$/, "tasks"],
-  [/^\/journal\/(\d+)$/, "journal_entries"],
-  [/^\/alerts\/(\d+)\/ack$/, "alerts"],
-  [/^\/media\/([0-9a-f-]{36})$/, "media"],
+  [/^\/tasks\/([^/]+)\/(?:complete|reopen)$/, "tasks"],
+  [/^\/journal\/([^/]+)$/, "journal_entries"],
+  [/^\/alerts\/([^/]+)\/ack$/, "alerts"],
+  [/^\/media\/([^/]+)$/, "media"],
+  [/^\/meals\/([^/]+)$/, "meals"],
 ];
 
 async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Request; principal: Principal }> {
@@ -846,25 +968,26 @@ async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Reque
   // Cookie-authenticated writes must come from our own frontend (CSRF guard on top of SameSite=Lax)
   if (req.method !== "GET") {
     const origin = req.headers.get("Origin");
-    const allowed = (env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim());
-    if (origin && origin !== url.origin && !allowed.includes(origin)) throw new HttpError(403, "Cross-origin request blocked");
+    if ((origin || sessionCookie(req, url)) && !trustedOrigin(env, url, origin))
+      throw new HttpError(403, "Cross-origin request blocked");
   }
   const staff = STAFF_ROLES.has(session.role ?? "");
-  if (STAFF_ONLY.some(([m, re]) => (m === "*" || m === req.method) && re.test(url.pathname)) && !staff)
+  const path = url.pathname.replace(/\/$/, "");
+  if (STAFF_ONLY.some(([m, re]) => (m === "*" || m === req.method) && re.test(path)) && !staff)
     throw new HttpError(403, "Flight surgeon / admin access only");
   if (staff) return { req, principal: session };
 
   const own = session.user_id!;
-  const pathUser = url.pathname.match(/^\/users\/([^/]+)/)?.[1];
+  const pathUser = path.match(/^\/users\/([^/]+)/)?.[1];
   if (pathUser && pathUser !== own) throw new HttpError(403, "You can only access your own data");
   for (const [re, table] of OWNED_BY_ID) {
-    const m = url.pathname.match(re);
+    const m = path.match(re);
     if (m) {
       const row = await env.DB.prepare(`SELECT user_id FROM ${table} WHERE id=?`).bind(m[1]).first<{ user_id: string }>();
       if (row && row.user_id !== own) throw new HttpError(403, "You can only access your own data");
     }
   }
-  if ((req.method === "POST" || req.method === "PATCH") && (req.headers.get("Content-Type") ?? "").includes("application/json")) {
+  if ((req.method === "POST" || req.method === "PATCH") && isJson(req)) {
     let b: any;
     try { b = await req.clone().json(); } catch { b = null; }
     if (b && typeof b === "object" && !Array.isArray(b)) {
@@ -880,37 +1003,42 @@ async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Reque
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const h = cors(request, env);
-    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: h });
     const url = new URL(request.url);
-    const withCors = (res: Response) => {
-      const r = new Response(res.body, res);
-      for (const [k, v] of Object.entries(h)) r.headers.set(k, v);
-      return r;
+    const h = {
+      ...cors(request, env),
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Strict-Transport-Security": "max-age=31536000",
+    };
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: h });
+    const publicPath = /^\/(?:health|metrics)\/?$/.test(url.pathname);
+    const withHeaders = (res: Response) => {
+      const headers = new Headers(res.headers);
+      for (const [name, value] of Object.entries(h)) headers.set(name, value);
+      if (!publicPath && res.status !== 101) headers.set("Cache-Control", "private, no-store");
+      return new Response(res.body, { status: res.status, statusText: res.statusText, headers, webSocket: res.webSocket });
     };
     try {
-      if (url.pathname === "/") return withCors(json({ service: "EVAde API", login: "/login", health: "/health" }));
-      if (url.pathname === "/health" || url.pathname === "/metrics") {
-        // public: no auth
-      } else {
+      if (url.pathname === "/") return withHeaders(json({ service: "EVAde API", login: "/login", health: "/health" }));
+      if (!publicPath) {
         const authRes = await handleAuth(request, env, url, (id) => seedTasks(env, id));
-        if (authRes) return withCors(authRes);
+        if (authRes) return withHeaders(authRes);
       }
       let req = request;
       let who: Principal = { kind: "service" };
-      if (url.pathname !== "/health" && url.pathname !== "/metrics") ({ req, principal: who } = await authorize(request, env, url));
+      if (!publicPath) ({ req, principal: who } = await authorize(request, env, url));
       for (const [m, re, handler] of routes) {
         const match = url.pathname.match(re);
         if (match && m === req.method) {
           const res = await handler(req, env, (match.groups ?? {}) as Record<string, string>, url, ctx, who);
-          return res.status === 101 ? res : withCors(res); // WebSocket upgrades must be returned untouched
+          return withHeaders(res);
         }
       }
       throw new HttpError(404, `No route ${req.method} ${url.pathname}`);
     } catch (e: any) {
       const status = e instanceof HttpError ? e.status : 500;
-      if (status === 500) console.error(e);
-      return json({ error: status === 500 ? "Internal error" : e.message }, status, h);
+      if (status === 500) console.error("Worker request failed", request.method, e instanceof Error ? e.name : "Error");
+      return withHeaders(json({ error: status === 500 ? "Internal error" : e.message }, status));
     }
   },
 

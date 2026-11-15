@@ -4,7 +4,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
-  "observability": { "enabled": true },
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true, "redact_query_string": true },
   // Public API address on Daniel's domain (evade.health must be a zone in the EVAde Cloudflare account)
   "routes": [{ "pattern": "api.evade.health", "custom_domain": true }],
   "d1_databases": [
@@ -17,27 +19,26 @@
   ],
   // Workers AI (journal analysis, Whisper voice-to-text, daily briefing)
   "ai": { "binding": "AI" },
-  // R2: photos, ultrasound images, voice journals
-  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "evade-media" }],
+  // Optional MEDIA binding stays disabled until R2 is enabled in EVAde.
   // Live crew feed over WebSockets
   "durable_objects": { "bindings": [{ "name": "LIVE", "class_name": "CrewFeed" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CrewFeed"] }],
   // Sessions + OAuth state (Workers KV)
   "kv_namespaces": [{ "binding": "SESSIONS", "id": "784305dfc43442a78ccc2aac162e5811" }],
+  "ratelimits": [
+    { "name": "AUTH_RATE_LIMITER", "namespace_id": "11340105", "simple": { "limit": 20, "period": 60 } }
+  ],
   // Pull NOAA space weather every 15 minutes into the space_weather table
   "triggers": { "crons": ["*/15 * * * *"] },
   "vars": {
-    // Comma-separated frontend origins allowed by CORS. Add the GoDaddy domain once Daniel sets it up.
-    "ALLOWED_ORIGINS": "https://evade.health,https://www.evade.health,http://localhost:5173,http://localhost:3000",
+    // Exact HTTPS origins allowed to use the browser session. Override locally for local development.
+    "ALLOWED_ORIGINS": "https://evade.health,https://www.evade.health",
     // Michael's FastAPI model service. Leave empty until it is deployed; /predict/* then returns 503.
     "FASTAPI_URL": "",
-    // Where users land after signing in, and the cookie domain shared by evade.health + api.evade.health
+    // Where users land after signing in if no redirect was requested.
     "FRONTEND_URL": "https://evade.health",
-    "COOKIE_DOMAIN": ".evade.health",
     // Logins with these emails become flight_surgeon (doctor panel). Comma-separated.
     "STAFF_EMAILS": "",
-    // Public Turnstile site key (create a widget for evade.health in the dashboard)
-    "TURNSTILE_SITE_KEY": "",
     // "true" shows a no-OAuth test login. Keep "false" in production.
     "DEV_LOGIN": "false",
     // Optional AI Gateway id (create one named "evade" in the dashboard for logs + caching of AI calls)
@@ -48,5 +49,5 @@
   //   FASTAPI_KEY    optional key forwarded to FastAPI in X-EVAde-Key
   //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   Google OAuth client
   //   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET   GitHub OAuth app
-  //   TURNSTILE_SECRET                         Turnstile widget secret
+  //   TURNSTILE_SITE_KEY, TURNSTILE_SECRET     Turnstile widget site key and private secret
 }
