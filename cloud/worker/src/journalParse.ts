@@ -140,6 +140,50 @@ export function supported(crewText: string, quote: unknown, stated?: number | nu
   return nums.length === 0 || nums.some((x) => Math.abs(x - stated) < 1e-6);
 }
 
+// Words that must appear around a value for it to count as that metric. Real model output showed why: it copied
+// "92" from "Heart rate 92 at rest" into SpO2 too, and read "Felt connected" as mood 5.
+const CONTEXT: Record<Rating | ValueMetric, RegExp> = {
+  mood: /\b(mood|happy|sad|depress\w*|down|low|great|good|bad|terrible|awful|fantastic|miserable|cheer\w*|upset|lonely|fine|okay|ok|joy\w*|blue)\b/i,
+  stress: /\b(stress\w*|anxi\w*|overwhelm\w*|tense|pressure|calm|relax\w*|worr\w*|nervous)\b/i,
+  fatigue: /\b(tired\w*|exhaust\w*|fatigue\w*|drained|energ\w*|rested|sleepy|worn out|wiped)\b/i,
+  sleep_quality: /\b(sleep\w*|slept|rest\w*|insomnia|woke)\b/i,
+  sleep_hours: /\b(sleep\w*|slept|nap\w*|bed|hours?|hrs?)\b/i,
+  systolic_bp: /\b(bp|blood pressure|pressure|over)\b|\d\s*\/\s*\d/i,
+  diastolic_bp: /\b(bp|blood pressure|pressure|over)\b|\d\s*\/\s*\d/i,
+  body_temp: /\b(temp\w*|fever\w*|degrees?|celsius|fahrenheit)\b|°|\d\s*[fc]\b/i,
+  blood_glucose: /\b(sugar|glucose|mg\s*\/?\s*dl|mmol\w*)\b/i,
+  heart_rate: /\b(heart\w*|pulse|bpm|hr|beats?)\b/i,
+  spo2: /\b(sp\s?o2|oxygen|o2|sat|sats|saturation|pulse ?ox\w*)\b/i,
+};
+
+/**
+ * The text around a quote: the line it is on plus the line before it (so "about seven" answering EVAde's
+ * "How many hours did you sleep?" keeps its context). Null when the quote is not in the crew member's own lines.
+ */
+export function contextOf(text: string, quote: unknown): string | null {
+  if (typeof quote !== "string" || norm(quote).length < 1) return null;
+  const q = norm(quote);
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*(evade|assistant|agent)\s*:/i.test(lines[i])) continue;
+    if (norm(lines[i]).includes(q)) return `${i > 0 ? lines[i - 1] : ""}\n${lines[i]}`;
+  }
+  return null;
+}
+
+/** Explicit numeric ratings such as "stress is a 4 out of 5" or "mood 8/10" (the model sometimes skips them). */
+export function explicitRatings(crewText: string): Partial<Record<Rating, number>> {
+  const out: Partial<Record<Rating, number>> = {};
+  const re = /\b(mood|stress(?:\s+level)?|fatigue|tiredness|sleep quality)\b[^.\d\n]{0,25}?(\d{1,2}(?:\.\d)?)\s*(?:\/|out of)\s*(5|10)\b/gi;
+  for (const m of crewText.matchAll(re)) {
+    const word = m[1].toLowerCase();
+    const key: Rating = word.startsWith("mood") ? "mood" : word.startsWith("stress") ? "stress" : word.startsWith("sleep") ? "sleep_quality" : "fatigue";
+    const v = toRating(Number(m[2]), Number(m[3]));
+    if (v !== null && out[key] === undefined) out[key] = v;
+  }
+  return out;
+}
+
 /** The crew member's own words: drops lines spoken by the EVAde agent / assistant. */
 export function crewWords(text: string) {
   return text
@@ -208,20 +252,28 @@ For every field, "quote" must be the astronaut's exact words (copied verbatim, a
 
 const runOpts = (env: AiEnv) => (env.AI_GATEWAY ? { gateway: { id: env.AI_GATEWAY } } : undefined);
 
-/** Validates raw model output against the crew member's words. Exported for tests. */
-export function validateAi(out: any, crewText: string) {
+/**
+ * Validates raw model output against the text. A value is kept only when its quote is in the crew member's own
+ * lines, any number in the quote matches, and the words around it name that metric. Exported for tests.
+ */
+export function validateAi(out: any, text: string) {
   const ratings: Partial<Record<Rating, number>> = {};
   const values: Partial<Record<ValueMetric, number>> = {};
   if (!out || typeof out !== "object") return { ratings, values };
+  const crewText = crewWords(text);
   const field = (k: string) => (out[k] && typeof out[k] === "object" ? out[k] : null);
+  const about = (f: any, metric: Rating | ValueMetric) => {
+    const ctx = contextOf(text, f?.quote);
+    return ctx !== null && CONTEXT[metric].test(ctx);
+  };
   for (const r of RATINGS) {
     const f = field(r);
     if (!f) continue;
     const v = toRating(f.value, f.scale_max ?? 5);
-    if (v !== null && supported(crewText, f.quote, finite(f.value))) ratings[r] = v;
+    if (v !== null && supported(crewText, f.quote, finite(f.value)) && about(f, r)) ratings[r] = v;
   }
   const sd = field("sleep_duration");
-  if (sd && supported(crewText, sd.quote, finite(sd.value))) {
+  if (sd && supported(crewText, sd.quote, finite(sd.value)) && about(sd, "sleep_hours")) {
     const h = toHours(sd.value, sd.unit);
     if (h !== null) values.sleep_hours = h;
   }
@@ -229,25 +281,25 @@ export function validateAi(out: any, crewText: string) {
   if (bp) {
     const sys = inRange(finite(bp.systolic), RANGES.systolic_bp);
     const dia = inRange(finite(bp.diastolic), RANGES.diastolic_bp);
-    if (sys !== null && dia !== null && sys > dia && supported(crewText, bp.quote, sys) && supported(crewText, bp.quote, dia)) {
+    if (sys !== null && dia !== null && sys > dia && supported(crewText, bp.quote, sys) && supported(crewText, bp.quote, dia) && about(bp, "systolic_bp")) {
       values.systolic_bp = Math.round(sys);
       values.diastolic_bp = Math.round(dia);
     }
   }
   const t = field("temperature");
-  if (t && supported(crewText, t.quote, finite(t.value))) {
+  if (t && supported(crewText, t.quote, finite(t.value)) && about(t, "body_temp")) {
     const c = toCelsius(t.value, t.unit === "unknown" ? undefined : t.unit);
     if (c !== null) values.body_temp = c;
   }
   const g = field("blood_sugar");
-  if (g && supported(crewText, g.quote, finite(g.value))) {
+  if (g && supported(crewText, g.quote, finite(g.value)) && about(g, "blood_glucose")) {
     const mg = toMgDl(g.value, g.unit === "unknown" ? undefined : g.unit);
     if (mg !== null) values.blood_glucose = mg;
   }
   for (const [k, metric] of [["heart_rate", "heart_rate"], ["spo2", "spo2"]] as const) {
     const f = field(k);
     const v = f ? inRange(finite(f.value), RANGES[metric]) : null;
-    if (v !== null && supported(crewText, f.quote, v)) values[metric] = Math.round(v);
+    if (v !== null && supported(crewText, f.quote, v) && about(f, metric)) values[metric] = Math.round(v);
   }
   return { ratings, values };
 }
@@ -286,7 +338,9 @@ export async function extractHealth(env: AiEnv, text: string, checkin?: CheckinI
   try {
     const r = await aiExtract(env, text);
     if (r) {
-      ai = validateAi(r.out, crewWords(text));
+      ai = validateAi(r.out, text);
+      // Explicit "X out of 5 / X/10" ratings the model skipped (seen with real output: "Stress is a 4 out of 5").
+      for (const [k, v] of Object.entries(explicitRatings(crewWords(text)))) if (ai.ratings[k as Rating] === undefined) ai.ratings[k as Rating] = v;
       result.model = r.model;
       result.ai_ok = true;
     }

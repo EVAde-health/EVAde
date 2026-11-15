@@ -314,3 +314,43 @@ describe("typed journal entries", () => {
     expect(count("journal_entries")).toBe(1);
   });
 });
+
+// ---------- real Workers AI output (captured from @cf/meta/llama-3.3-70b-instruct-fp8-fast via wrangler dev) ----------
+describe("real model output", () => {
+  it("drops a heart rate the model also copied into SpO2", () => {
+    const text = "Rough day. My temperature was 100.4 F this morning and I am completely exhausted. Heart rate 92 at rest.";
+    const raw = { temperature: { value: 100.4, unit: "F", quote: "100.4 F" }, heart_rate: { value: 92, quote: "92" }, spo2: { value: 92, quote: "92 at rest" } };
+    expect(P.validateAi(raw, text).values).toEqual({ body_temp: 38, heart_rate: 92 });
+  });
+
+  it("does not turn tone into a mood rating", () => {
+    const raw = { mood: { value: 5, scale_max: 5, quote: "Felt connected" } };
+    expect(P.validateAi(raw, "Watched Earth rise over the Pacific and talked to my family. Felt connected.").ratings).toEqual({});
+  });
+
+  it("ignores empty placeholder fields and picks up an explicit rating the model skipped", async () => {
+    const text = [
+      "EVAde: Hi, how did you sleep last night?",
+      "Me: Not great. I slept about 5 hours and woke up with a headache.",
+      "EVAde: Sorry to hear that. A normal body temperature is 36.5 to 37.5 degrees. How is your stress?",
+      "Me: Stress is a 4 out of 5 with the EVA prep. BP was 128 over 82 this morning.",
+    ].join("\n");
+    extraction = {
+      sleep_duration: { value: 5, unit: "hours", quote: "5 hours" },
+      blood_pressure: { systolic: 128, diastolic: 82, quote: "128 over 82" },
+      temperature: { value: 36.5, unit: "C", quote: "" },
+      blood_sugar: { value: 0, unit: "unknown", quote: "" },
+      heart_rate: { value: 0, quote: "" },
+      spo2: { value: 0, quote: "" },
+    };
+    const x = await P.extractHealth({ AI } as any, text, null);
+    expect(x.values).toEqual({ sleep_hours: 5, systolic_bp: 128, diastolic_bp: 82 });
+    expect(x.ratings).toEqual({ stress: 4 });
+  });
+
+  it("keeps a short answer to the agent's question", () => {
+    const text = "EVAde: How many hours did you sleep?\nMe: About seven.";
+    expect(P.validateAi({ sleep_duration: { value: 7, unit: "hours", quote: "About seven" } }, text).values).toEqual({ sleep_hours: 7 });
+    expect(P.explicitRatings("mood 8/10, stress level is 2 out of 5")).toEqual({ mood: 4, stress: 2 });
+  });
+});
