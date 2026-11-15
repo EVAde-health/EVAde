@@ -6,6 +6,7 @@ export interface ChromeMessage {
   type: 'evade:chrome';
   top: string;
   bottom: string;
+  page: string;
 }
 
 export const CHROME_REPORTER = `(function () {
@@ -32,8 +33,8 @@ export const CHROME_REPORTER = `(function () {
   function report() {
     if (!document.body || !window.ReactNativeWebView) return;
     var x = Math.round(innerWidth / 2);
-    var msg = { type: 'evade:chrome', top: paint(document.elementFromPoint(x, 1)), bottom: paint(document.elementFromPoint(x, innerHeight - 2)) };
-    var key = msg.top + '|' + msg.bottom;
+    var msg = { type: 'evade:chrome', top: paint(document.elementFromPoint(x, 1)), bottom: paint(document.elementFromPoint(x, innerHeight - 2)), page: location.origin + location.pathname };
+    var key = msg.top + '|' + msg.bottom + '|' + msg.page;
     if (key !== last) { last = key; window.ReactNativeWebView.postMessage(JSON.stringify(msg)); }
   }
   var pending = null;
@@ -80,7 +81,7 @@ export function isLight(color: string) {
 export function parseChromeMessage(data: string): ChromeMessage | null {
   try {
     const msg = JSON.parse(data) as Partial<ChromeMessage>;
-    return msg.type === 'evade:chrome' && typeof msg.top === 'string' && typeof msg.bottom === 'string' ? (msg as ChromeMessage) : null;
+    return msg.type === 'evade:chrome' && typeof msg.top === 'string' && typeof msg.bottom === 'string' && typeof msg.page === 'string' ? (msg as ChromeMessage) : null;
   } catch {
     return null;
   }

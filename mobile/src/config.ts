@@ -7,6 +7,7 @@ export const SITE_URL: string = trimSlash(process.env.EXPO_PUBLIC_SITE_URL || 'h
 
 /** The evade-api Worker the site signs in through (Cloudflare Access guards its /auth/access path). */
 export const API_URL: string = trimSlash(process.env.EXPO_PUBLIC_API_URL || defaultApiUrl(SITE_URL));
+export const STAFF_SIGN_IN_URL = 'https://api.evade.health/auth/access/staff?redirect=https%3A%2F%2Fevade.health%2Fadmin';
 
 /** The app's URL scheme. For example, evade://journal opens the journal. */
 export const APP_SCHEME = 'evade';

@@ -6,7 +6,7 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import WebView, { type WebViewMessageEvent, type WebViewNavigation } from 'react-native-webview';
 import type { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTypes';
-import { APP_SCHEME, IN_APP_HOSTS, SITE_URL } from './src/config';
+import { API_URL, APP_SCHEME, IN_APP_HOSTS, SITE_URL, STAFF_SIGN_IN_URL } from './src/config';
 import { CHROME_REPORTER, isLight, parseChromeMessage, solidColor } from './src/siteChrome';
 
 const SPACE = '#0B0F1A';
@@ -21,6 +21,17 @@ function isInAppUrl(url: string) {
     if (parsed.protocol === 'about:' || parsed.protocol === 'blob:' || parsed.protocol === 'data:') return true;
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
     return IN_APP_HOSTS.some((allowed) => hostMatches(parsed.hostname, allowed));
+  } catch {
+    return false;
+  }
+}
+
+function isSignInPage(url: string) {
+  try {
+    const { origin, pathname } = new URL(url);
+    const path = pathname.replace(/\/$/, '');
+    return (origin === new URL(SITE_URL).origin && (path === '' || path === '/login')) ||
+      (origin === new URL(API_URL).origin && (path === '/auth/access' || path === '/login'));
   } catch {
     return false;
   }
@@ -50,6 +61,8 @@ function Shell() {
   const [webViewKey, setWebViewKey] = useState(0);
   const [canGoBack, setCanGoBack] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [showStaffSignIn, setShowStaffSignIn] = useState(true);
+  const [staffBrowserError, setStaffBrowserError] = useState(false);
   const [chrome, setChrome] = useState({ top: SPACE, bottom: SPACE });
 
   // Loads a page in a fresh WebView (also clears the error screen).
@@ -86,6 +99,10 @@ function Shell() {
   function handleShouldLoad(event: ShouldStartLoadRequest) {
     if (event.isTopFrame === false) return true;
     if (event.url.startsWith(`${APP_SCHEME}://auth`)) return false;
+    if (event.url === STAFF_SIGN_IN_URL) {
+      void openStaffSignIn();
+      return false;
+    }
     if (isInAppUrl(event.url)) return true;
     Linking.openURL(event.url).catch(() => undefined);
     return false;
@@ -93,12 +110,25 @@ function Shell() {
 
   function handleNavigation(state: WebViewNavigation) {
     setCanGoBack(state.canGoBack);
+    setShowStaffSignIn(isSignInPage(state.url));
     if (isInAppUrl(state.url)) lastUrl.current = state.url;
   }
 
   function handleMessage(event: WebViewMessageEvent) {
     const msg = parseChromeMessage(event.nativeEvent.data);
-    if (msg) setChrome({ top: solidColor(msg.top, SPACE), bottom: solidColor(msg.bottom, SPACE) });
+    if (msg) {
+      setChrome({ top: solidColor(msg.top, SPACE), bottom: solidColor(msg.bottom, SPACE) });
+      setShowStaffSignIn(isSignInPage(msg.page));
+    }
+  }
+
+  async function openStaffSignIn() {
+    setStaffBrowserError(false);
+    try {
+      await Linking.openURL(STAFF_SIGN_IN_URL);
+    } catch {
+      setStaffBrowserError(true);
+    }
   }
 
   const retry = () => open({ uri: lastUrl.current });
@@ -120,6 +150,16 @@ function Shell() {
     <View style={[styles.screen, { backgroundColor: chrome.bottom }]}>
       <StatusBar style={isLight(chrome.top) ? 'dark' : 'light'} />
       <View style={{ height: insets.top, backgroundColor: chrome.top }} />
+      {showStaffSignIn && (
+        <View style={styles.staffBar}>
+          <Pressable onPress={openStaffSignIn} accessibilityRole="link" style={styles.staffLink}>
+            <Text style={styles.staffLinkText}>Staff sign-in</Text>
+          </Pressable>
+          <Text style={styles.staffNote} accessibilityLiveRegion="polite">
+            {staffBrowserError ? 'Could not open the browser. Try again.' : 'The staff console opens in your browser.'}
+          </Text>
+        </View>
+      )}
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'android' ? 'height' : undefined}>
         <WebView
           key={webViewKey}
@@ -172,4 +212,8 @@ const styles = StyleSheet.create({
   body: { fontSize: 15, color: '#B8C0D0', textAlign: 'center' },
   button: { marginTop: 8, paddingVertical: 12, paddingHorizontal: 24, borderRadius: 10, backgroundColor: '#7C5CFF' },
   buttonText: { fontSize: 15, fontWeight: '600', color: '#FFFFFF' },
+  staffBar: { backgroundColor: SPACE, paddingHorizontal: 16, paddingBottom: 8, alignItems: 'center' },
+  staffLink: { minHeight: 44, justifyContent: 'center' },
+  staffLinkText: { color: '#FFFFFF', fontSize: 15, fontWeight: '600', textDecorationLine: 'underline' },
+  staffNote: { color: '#B8C0D0', fontSize: 13, textAlign: 'center' },
 });
