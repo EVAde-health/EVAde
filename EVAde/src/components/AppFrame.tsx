@@ -32,7 +32,9 @@ import { useMission } from '../context/MissionContext';
 import { ApiError, SIGN_IN_REQUIRED, STAFF_ROLES } from '../services/api';
 import { fetchSession, signOut, type SessionUser } from '../services/healthApi';
 import AmbientBackdrop from './AmbientBackdrop';
-import AdminShell from './AdminShell';
+import SurgeonShell from './surgeon/SurgeonShell';
+import AstronautNotices from './AstronautNotices';
+import { usePoll } from '../hooks/usePoll';
 import BrandMark from './BrandMark';
 import EmergencyButton from './EmergencyButton';
 import LevelMeter from './LevelMeter';
@@ -48,7 +50,7 @@ const NAV_ITEMS = [
   { href: '/tasks', label: 'Missions', icon: CheckCircleIcon, selectedIcon: CheckCircleSolid },
   { href: '/journal', label: 'Journal', icon: BookOpenIcon, selectedIcon: BookOpenSolid },
   { href: '/selfies', label: 'Selfies', icon: CameraIcon, selectedIcon: CameraSolid },
-  { href: '/chat', label: 'Team line', icon: ChatBubbleLeftRightIcon, selectedIcon: ChatSolid },
+  { href: '/messages', label: 'Messages', icon: ChatBubbleLeftRightIcon, selectedIcon: ChatSolid },
 ];
 
 type SessionState = SessionUser | 'loading' | 'signed-out' | 'error';
@@ -100,9 +102,9 @@ export default function AppFrame() {
   }
 
   if (STAFF_ROLES.has(session.role) && !session.demo) {
-    return <AdminShell key={session.user_id} user={session} onSignOut={() => setSession('signed-out')} />;
+    return <SurgeonShell key={session.user_id} user={session} onSignOut={() => setSession('signed-out')} />;
   }
-  if (matchRoutes([{ path: '/admin/*' }], location) || (session.demo && matchRoutes([{ path: '/chat/*' }], location))) {
+  if (matchRoutes([{ path: '/admin/*' }], location)) {
     return <Navigate to="/dashboard" replace />;
   }
 
@@ -122,6 +124,14 @@ function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
   const { completed, tasks, user } = useMission();
   const showToast = useToast();
   const remaining = tasks.length - completed.length;
+  // Unread 1:1 messages from flight surgeons, polled every few seconds for the nav badge.
+  const unread = usePoll<{ unread: number }>('/messages/unread', 5000);
+  const reloadUnread = unread.reload;
+  useEffect(() => {
+    window.addEventListener('evade:messages-read', reloadUnread);
+    return () => window.removeEventListener('evade:messages-read', reloadUnread);
+  }, [reloadUnread]);
+  const unreadCount = unread.data?.unread ?? 0;
 
   async function handleSignOut() {
     if (signingOut) return;
@@ -167,22 +177,24 @@ function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
               </VStack>
             }>
             <SideNavSection title="Mission control" isHeaderHidden>
-              {NAV_ITEMS.filter(item => !user.demo || item.href !== '/chat').map(item => (
+              {NAV_ITEMS.map(item => (
                 <SideNavItem
                   key={item.href}
                   label={item.label}
                   href={item.href}
                   icon={item.icon}
                   selectedIcon={item.selectedIcon}
-                  isSelected={pathname === item.href}
-                  endContent={item.href === '/tasks' && remaining > 0 ? <Badge variant="purple" label={String(remaining)} /> : undefined}
+                  isSelected={pathname === item.href || pathname.startsWith(`${item.href}/`)}
+                  endContent={item.href === '/tasks' && remaining > 0 ? <Badge variant="purple" label={String(remaining)} />
+                    : item.href === '/messages' && unreadCount > 0 ? <Badge variant="error" label={String(unreadCount)} /> : undefined}
                 />
               ))}
             </SideNavSection>
           </SideNav>
         }>
         <Suspense fallback={<PageLoader />}>
-          <VStack className="app-frame__page" key={pathname}>
+          <VStack className="app-frame__page" key={pathname.split('/').slice(0, 2).join('/')}>
+            <AstronautNotices readOnly={!!user.demo} />
             {user.demo && <Banner status="info" title="Read-only demo" description="You can try meals and hydration here. These changes reset when you reload." />}
             <Outlet />
           </VStack>
