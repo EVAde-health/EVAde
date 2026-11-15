@@ -84,3 +84,43 @@
 .journal__bubble {
   white-space: pre-line;
 }
+
+@media (width < 768px) {
+  .app-frame__page:has(> .journal) {
+    block-size: auto;
+  }
+
+  .journal.page {
+    flex-direction: column;
+    block-size: auto;
+    min-block-size: 0;
+    min-inline-size: 0;
+    overflow: visible;
+    padding-inline: var(--spacing-4);
+    padding-bottom: calc(var(--spacing-6) + env(safe-area-inset-bottom, 0px) + var(--journal-keyboard-inset, 0px));
+  }
+
+  .journal > .journal__mood,
+  .journal > .voice-journal,
+  .journal > .journal__composer,
+  .journal > .journal__chat {
+    flex: 0 0 auto;
+    min-inline-size: 0;
+    inline-size: 100%;
+  }
+
+  .journal > .journal__composer :has([contenteditable='true']),
+  .journal > .journal__composer [contenteditable='true'] {
+    min-inline-size: 0;
+  }
+
+  .journal > .journal__composer [contenteditable='true'] {
+    inline-size: 100%;
+    min-block-size: 7.5rem;
+    overflow-wrap: anywhere;
+  }
+
+  .journal > .journal__chat {
+    max-block-size: 24rem;
+  }
+}
