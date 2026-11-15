@@ -54,7 +54,7 @@
     "CORS_ALLOW_ORIGINS": "https://evade.health,https://www.evade.health",
     "DEMO_OPEN": "true",
     "MAX_SESSION_SECONDS": "300",
-    "MAX_CONCURRENT_SESSIONS": "2"
+    "MAX_CONCURRENT_SESSIONS": "4"
   },
 
   // Secrets already live on the Worker and survive deploys. Set/rotate with

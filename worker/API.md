@@ -12,8 +12,7 @@ Base URL: `https://evade.health`. JSON everywhere. CORS is enabled for `/api/*`,
 | Voice socket only | `?ticket=<ticket>` from `POST /api/voice/start` (single use, 60 s). Use this on React Native so the long-lived token never goes in a URL. |
 | Red-alert call | Always required, even when the demo is open: `X-EVADE-Token: <EVADE_ALERT_TOKEN>` or `Authorization: Bearer <EVADE_ALERT_TOKEN>` |
 
-To require a token again after the demo, set `DEMO_OPEN` to `"false"` in `wrangler.jsonc` and
-redeploy.
+To require a token again after the demo, follow the [demo shutoff steps](README.md#turn-off-open-demo-access).
 
 Errors use FastAPI's shape: `{"detail": "..."}` (`403` bad/missing token, `401` bad alert token,
 `422` validation, `429` too many concurrent browser sessions, `503` Twilio not configured).
@@ -30,7 +29,7 @@ Twilio phone calls (phone calls still end after 600 s).
 | --- | --- | --- |
 | Max session length (`MAX_SESSION_SECONDS`) | 300 s (phone: 600 s) | Server sends `{"type":"notice","message":"session limit reached"}` and `{"type":"status","state":"ended","reason":"session limit reached"}`, then closes with code `1000` and that reason. |
 | No client audio | 60 s | Same close pattern, with message / reason `time-up`. |
-| Concurrent sessions (`MAX_CONCURRENT_SESSIONS`) | 2 | `POST /api/voice/start` returns `429 {"detail":"too many people talking"}`. A WebSocket upgrade is accepted only long enough to send a notice / error with that message, then closes with code `1000`. Phone calls are not counted. |
+| Concurrent sessions (`MAX_CONCURRENT_SESSIONS`) | 4 | `POST /api/voice/start` returns `429 {"detail":"too many people talking"}`. A WebSocket upgrade is accepted only long enough to send a notice / error with that message, then closes with code `1000`. Phone calls are not counted. |
 
 ## REST endpoints
 

@@ -39,8 +39,8 @@
     "XAI_VOICE": "atlas",
     "EVADE_COMMS_MODE": "online",
     "TWILIO_VALIDATE_SIGNATURE": "true",
-    // Comma-separated list of origins allowed by CORS, or "*". Auth is a bearer header
-    // (no cookies), so "*" is safe for the React Native app and web clients.
+    // Comma-separated CORS allowlist for browser clients. Origins must match exactly.
+    // Native requests without an Origin header do not need a CORS entry.
     "CORS_ALLOW_ORIGINS": "https://evade.health,https://www.evade.health",
     // Hackathon demo: when "true", the web/app voice page and read APIs are open
     // (no access key). Outbound alerts stay token-protected. Set to "false" and
@@ -49,7 +49,7 @@
     // Max length of a browser/app voice session, in seconds (phone calls use 600).
     "MAX_SESSION_SECONDS": "300",
     // Max concurrent browser/app voice sessions (phone calls are not counted).
-    "MAX_CONCURRENT_SESSIONS": "2"
+    "MAX_CONCURRENT_SESSIONS": "4"
   },
 
   // Set with `npx wrangler secret put <NAME>`; never commit values.
