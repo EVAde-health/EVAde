@@ -1,5 +1,5 @@
 // Journal / voice-session parser tests: extraction rules (pure), and the real Worker fetch handler against a D1 built
-// from the migrations (node:sqlite) with a fake Workers AI binding. No schema changes are involved.
+// from the migrations (node:sqlite) with xAI (api.x.ai) mocked through fetch. No schema changes are involved.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -64,23 +64,46 @@ const sha256 = async (s: string) =>
   btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
-// Fake Workers AI: the parser prompt gets `extraction`, the journal analysis prompt gets `analysis`, and the EVA
-// companion (the text version of the voice agent) gets `companion` as plain text.
+// Fake xAI (https://api.x.ai/v1): chat completions answer by system prompt. The parser prompt gets `extraction`, the
+// journal analysis prompt gets `analysis` (both as JSON text, like structured outputs), the EVA companion gets
+// `companion`, and the briefing gets `briefing`. POST /v1/stt returns `transcript`.
+const XAI_KEY = "test-xai-key";
 let extraction: any;
 let analysis: any;
 let companion: string;
+let briefing: string;
+let transcript: string;
 let companionInputs: any[];
-let aiFails: boolean;
+let xaiRequests: { url: string; model?: string; body: any; auth: string | null }[];
+let aiFails: boolean | ((model: string) => boolean);
 let aiCalls: number;
-const AI = {
-  run: async (_model: string, input: any) => {
-    aiCalls++;
-    if (aiFails) throw new Error("AI down");
-    const system = String(input?.messages?.[0]?.content ?? "");
-    if (system.startsWith("# Role\nYou are EVAde")) { companionInputs.push(input); return { response: companion }; }
-    return { response: system.startsWith("You extract health data") ? extraction : analysis };
-  },
-};
+const xaiEnv = { XAI_API_KEY: XAI_KEY };
+
+async function fakeFetch(input: RequestInfo | URL, init?: RequestInit) {
+  const req = new Request(input as any, init);
+  const url = new URL(req.url);
+  if (url.hostname !== "api.x.ai") throw new Error(`unexpected fetch ${req.url}`);
+  const auth = req.headers.get("Authorization");
+  if (url.pathname === "/v1/stt") {
+    const form = await req.formData();
+    xaiRequests.push({ url: req.url, model: String(form.get("model")), body: [...form.keys()], auth });
+    if (aiFails === true) return new Response("down", { status: 500 });
+    return Response.json({ text: transcript, language: "en", duration: 3.2 });
+  }
+  if (url.pathname !== "/v1/chat/completions") return new Response("not found", { status: 404 });
+  const body: any = await req.json();
+  xaiRequests.push({ url: req.url, model: body.model, body, auth });
+  aiCalls++;
+  if (auth !== `Bearer ${XAI_KEY}`) return new Response("unauthorized", { status: 401 });
+  if (aiFails === true || (typeof aiFails === "function" && aiFails(body.model))) return new Response("upstream error", { status: 503 });
+  const system = String(body.messages?.[0]?.content ?? "");
+  let content: string;
+  if (system.startsWith("# Role\nYou are EVAde")) { companionInputs.push(body); content = companion; }
+  else if (system.startsWith("You extract health data")) content = JSON.stringify(extraction);
+  else if (system.startsWith("You write a short daily health briefing")) content = briefing;
+  else content = JSON.stringify(analysis);
+  return Response.json({ id: "chatcmpl-test", object: "chat.completion", model: body.model, choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }] });
+}
 
 let env: any;
 // Background work (journal analysis + parser after a chat reply) is collected so tests can wait for it.
@@ -92,11 +115,14 @@ beforeEach(async () => {
   extraction = {};
   analysis = { summary: "A calm day.", sentiment: 0.4, mood_label: "calm", concern_level: "none", needs_human_review: false, themes: ["sleep"] };
   companion = "Thanks for telling me. How many hours did you sleep last night?";
+  briefing = "Overall you are green today.";
+  transcript = "";
   companionInputs = [];
+  xaiRequests = [];
   pending = [];
   aiFails = false;
   aiCalls = 0;
-  env = { DB: fakeD1(), SESSIONS: fakeKV(), AI, AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) }, ALLOWED_ORIGINS: FRONTEND };
+  env = { DB: fakeD1(), SESSIONS: fakeKV(), ...xaiEnv, AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) }, ALLOWED_ORIGINS: FRONTEND };
   const raw: DatabaseSync = env.DB.raw;
   const add = raw.prepare("INSERT INTO users (user_id, display_name, role, mission_start) VALUES (?,?,?,?)");
   add.run(ASTRONAUT, "Cmdr. Test", "astronaut", "2026-11-01T00:00:00Z");
@@ -104,7 +130,7 @@ beforeEach(async () => {
   for (const [token, user_id] of [["astro", ASTRONAUT], ["other", OTHER]]) {
     await env.SESSIONS.put(`sess:${await sha256(token)}`, JSON.stringify({ user_id, role: "astronaut", email: null, provider: "cloudflare_access" }));
   }
-  vi.stubGlobal("fetch", async () => { throw new Error("unexpected fetch"); });
+  vi.stubGlobal("fetch", fakeFetch);
 });
 afterEach(() => {
   env.DB.raw.close();
@@ -170,7 +196,7 @@ describe("extraction rules", () => {
       blood_pressure: { systolic: 130, diastolic: 85, quote: "130 over 85" },
       stress: { value: 2, scale_max: 5, quote: "not stressed" },
     };
-    const x = await P.extractHealth({ AI } as any, "Me: feeling great, slept 9 hours, 130 over 85, not stressed", CHECKIN);
+    const x = await P.extractHealth(xaiEnv, "Me: feeling great, slept 9 hours, 130 over 85, not stressed", CHECKIN);
     expect(x.ratings).toEqual({ mood: 3, stress: 2 });
     expect(x.values).toEqual({ sleep_hours: 6.5, systolic_bp: 118, diastolic_bp: 76 });
     expect(x.origin).toMatchObject({ mood: "checkin", stress: "ai", sleep_hours: "checkin", systolic_bp: "checkin" });
@@ -188,7 +214,7 @@ describe("extraction rules", () => {
 
   it("falls back to the check-in when AI is missing or fails", async () => {
     aiFails = true;
-    const failed = await P.extractHealth({ AI } as any, "Me: slept 9 hours", { mood: 4 });
+    const failed = await P.extractHealth(xaiEnv, "Me: slept 9 hours", { mood: 4 });
     expect(failed).toMatchObject({ ai_ok: false, model: null, ratings: { mood: 4 }, values: {} });
     const none = await P.extractHealth({} as any, "Me: slept 9 hours", null);
     expect(none.ratings).toEqual({});
@@ -327,6 +353,79 @@ describe("typed journal entries", () => {
   });
 });
 
+// ---------- xAI Grok client ----------
+describe("xAI Grok", () => {
+  const A = () => import("../src/ai");
+
+  it("calls chat completions with the key, the default Grok model and a strict JSON schema", async () => {
+    extraction = { mood: { value: 4, scale_max: 5, quote: "mood is a 4" } };
+    const x = await P.extractHealth(xaiEnv, "Me: my mood is a 4", null);
+    expect(x).toMatchObject({ ai_ok: true, model: "grok-4.20-0309-non-reasoning", ratings: { mood: 4 } });
+    const [r] = xaiRequests;
+    expect(r.url).toBe("https://api.x.ai/v1/chat/completions");
+    expect(r.auth).toBe(`Bearer ${XAI_KEY}`);
+    expect(r.body).toMatchObject({ model: "grok-4.20-0309-non-reasoning", temperature: 0, max_completion_tokens: 500 });
+    expect(r.body.response_format).toMatchObject({ type: "json_schema", json_schema: { name: "health_extraction", strict: true } });
+    expect(r.body.response_format.json_schema.schema.properties.mood).toBeDefined();
+  });
+
+  it("falls back to the second Grok model, honours XAI_TEXT_MODEL, and never calls a non-Grok model", async () => {
+    aiFails = (model) => model === "grok-4.20-0309-non-reasoning";
+    const a = await (await A()).analyzeJournal(xaiEnv, "Long day.");
+    expect(a).toMatchObject({ model: "grok-4.3", summary: "A calm day." });
+    expect(xaiRequests.map((r) => r.model)).toEqual(["grok-4.20-0309-non-reasoning", "grok-4.3"]);
+    aiFails = false;
+    xaiRequests = [];
+    await (await A()).analyzeJournal({ ...xaiEnv, XAI_TEXT_MODEL: "grok-4.7", XAI_FALLBACK_TEXT_MODEL: "" }, "Long day.");
+    expect(xaiRequests.map((r) => r.model)).toEqual(["grok-4.7"]);
+    expect((await A()).textModels({})).toEqual(["grok-4.20-0309-non-reasoning", "grok-4.3"]);
+    expect((await A()).textModels({}).every((m) => m.startsWith("grok-"))).toBe(true);
+  });
+
+  it("makes no call without XAI_API_KEY and keeps the safety net", async () => {
+    const a = await (await A()).analyzeJournal({}, "I don't want to wake up anymore.");
+    expect(a).toMatchObject({ model: null, concern_level: "high", needs_human_review: true });
+    expect(await (await A()).dailyBriefing({}, { overall: "green" })).toBeNull();
+    expect(xaiRequests).toEqual([]);
+  });
+
+  it("transcribes voice journals with xAI speech-to-text", async () => {
+    transcript = "Slept about six hours. Mood is a 3.";
+    const headers = new Headers({ Origin: FRONTEND, Cookie: "__Host-evade_session=astro", "Content-Type": "audio/webm" });
+    const res = await worker.fetch(new Request(`${API}/journal/voice`, { method: "POST", headers, body: new Uint8Array([26, 69, 223, 163, 1, 2, 3]) }), env, ctx);
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ transcript, analysis: "queued" });
+    const stt = xaiRequests.find((r) => r.url.endsWith("/v1/stt"))!;
+    expect(stt).toMatchObject({ model: "grok-voice-transcribe-2.0", auth: `Bearer ${XAI_KEY}` });
+    expect(stt.body).toEqual(["model", "file"]); // the file is the last field
+    await settle();
+    expect(rows("SELECT source, content FROM journal_entries WHERE user_id=?", ASTRONAUT)).toEqual([{ source: "voice", content: transcript }]);
+  });
+
+  it("reports speech-to-text as not configured without the key", async () => {
+    delete env.XAI_API_KEY;
+    const headers = new Headers({ Origin: FRONTEND, Cookie: "__Host-evade_session=astro", "Content-Type": "audio/webm" });
+    const res = await worker.fetch(new Request(`${API}/journal/voice`, { method: "POST", headers, body: new Uint8Array([1, 2, 3]) }), env, ctx);
+    expect(res.status).toBe(503);
+    expect(xaiRequests).toEqual([]);
+  });
+
+  it("generates the daily briefing with Grok and labels it with the model", async () => {
+    const res = await call("GET", `/users/${ASTRONAUT}/briefing?refresh=1`);
+    expect(res.status).toBe(200);
+    expect(res.data).toMatchObject({ briefing: briefing, generated_by: "grok-4.20-0309-non-reasoning" });
+  });
+
+  it("gives the companion's friendly fallback without a key", async () => {
+    delete env.XAI_API_KEY;
+    const res = await call("POST", "/journal/messages", { body: { id: crypto.randomUUID(), content: "Hello?" } });
+    await settle();
+    expect(res.data.reply.content).toBe((await import("../src/companion")).FALLBACK_REPLY);
+    expect(xaiRequests).toEqual([]);
+    expect(count("journal_entries")).toBe(1);
+  });
+});
+
 // ---------- EVA companion (text version of the voice agent) ----------
 describe("EVA companion chat", () => {
   const C = () => import("../src/companion");
@@ -349,7 +448,7 @@ describe("EVA companion chat", () => {
       { role: "user", content: "About 7 hours." },
     ]);
     const stored = rows("SELECT sender, content, model FROM journal_messages WHERE user_id=? AND sender='assistant' ORDER BY ts", ASTRONAUT);
-    expect(stored.map((m) => m.model)).toEqual(["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"]);
+    expect(stored.map((m) => m.model)).toEqual(["grok-4.20-0309-non-reasoning", "grok-4.20-0309-non-reasoning"]);
     // The analyzer still ran behind the scenes, on each message.
     await settle();
     expect(rows("SELECT ai_summary, mood_label FROM journal_entries WHERE user_id=? ORDER BY id", ASTRONAUT))
@@ -453,7 +552,10 @@ describe("EVA companion chat", () => {
   });
 });
 
-// ---------- real Workers AI output (captured from @cf/meta/llama-3.3-70b-instruct-fp8-fast via wrangler dev) ----------
+// ---------- real model output ----------
+// Raw outputs captured from a live model (Llama 3.3 on Workers AI, before the switch to Grok). They are kept because
+// the validation they test (quotes, context words, placeholders) runs on any model's JSON; Grok output still needs to
+// be captured once XAI_API_KEY is available.
 describe("real model output", () => {
   it("drops a heart rate the model also copied into SpO2", () => {
     const text = "Rough day. My temperature was 100.4 F this morning and I am completely exhausted. Heart rate 92 at rest.";
@@ -481,7 +583,7 @@ describe("real model output", () => {
       heart_rate: { value: 0, quote: "" },
       spo2: { value: 0, quote: "" },
     };
-    const x = await P.extractHealth({ AI } as any, text, null);
+    const x = await P.extractHealth(xaiEnv, text, null);
     expect(x.values).toEqual({ sleep_hours: 5, systolic_bp: 128, diastolic_bp: 82 });
     expect(x.ratings).toEqual({ stress: 4 });
   });

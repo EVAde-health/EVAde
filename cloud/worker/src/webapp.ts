@@ -4,16 +4,15 @@
 // filled in (or rejected) from the session, and cookie writes must come from an allowed origin.
 // Points are always read from D1 (task_templates, tutorials), never from the request.
 
+import type { AiEnv } from "./ai";
 import type { Principal } from "./auth";
 import { companionReply, SUPPORT_LINE, type ChatTurn } from "./companion";
 import { GOAL_TYPES, goalInserts, resolveGoals, type GoalType } from "./ops";
 
-export interface WebAppEnv {
+export interface WebAppEnv extends AiEnv {
   DB: D1Database;
   MEDIA?: R2Bucket;
   USDA_API_KEY?: string; // optional server-side FoodData Central key; Open Food Facts + the pantry work without it
-  AI?: Ai; // Workers AI: the EVA companion's replies
-  AI_GATEWAY?: string;
 }
 
 type Handler<E> = (req: Request, env: E, p: Record<string, string>, url: URL, ctx: ExecutionContext, who: Principal) => Promise<Response>;

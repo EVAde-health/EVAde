@@ -5,7 +5,7 @@
 // The persona and check-in below are a text-adapted copy of INSTRUCTIONS in worker/src/agent.ts (the voice agent,
 // a separate Worker with its own build, so the prompt is not imported across). Keep the two in step; the
 // "# Safety" section is identical and a test checks that.
-import { FALLBACK_TEXT_MODEL, keywordFlag, TEXT_MODEL, type AiEnv } from "./ai";
+import { grok, keywordFlag, type AiEnv } from "./ai";
 
 export const COMPANION_INSTRUCTIONS = `# Role
 You are EVAde, a calm onboard health co-pilot for astronauts, chatting by text in their private journal.
@@ -53,8 +53,6 @@ export const FALLBACK_REPLY = "Saved to your journal. I couldn't reply just now;
 
 export interface ChatTurn { sender: "user" | "assistant"; content: string }
 
-const runOpts = (env: AiEnv) => (env.AI_GATEWAY ? { gateway: { id: env.AI_GATEWAY } } : undefined);
-
 // Old journal replies were analysis summaries ("Saved to your journal." / "...\n\nMood: calm"). They are not part of
 // the conversation, so they are left out of the companion's context.
 const isOldSummary = (t: ChatTurn) => t.sender === "assistant" && (/^Saved to your journal\.?$/.test(t.content) || /\n\nMood: \w+/.test(t.content));
@@ -85,17 +83,7 @@ function cleanReply(text: string) {
 export async function companionReply(env: AiEnv, history: ChatTurn[]): Promise<{ content: string; model: string | null }> {
   const latest = [...history].reverse().find((t) => t.sender === "user")?.content ?? "";
   const withSupport = (text: string) => (keywordFlag(latest) && !text.includes(SUPPORT_LINE) ? `${text}\n\n${SUPPORT_LINE}` : text);
-  if (env.AI) {
-    const input = { messages: companionMessages(history), max_tokens: 300, temperature: 0.5 };
-    for (const model of [TEXT_MODEL, FALLBACK_TEXT_MODEL]) {
-      try {
-        const r: any = await env.AI.run(model as any, input as any, runOpts(env));
-        const text = typeof r?.response === "string" ? cleanReply(r.response) : "";
-        if (text) return { content: withSupport(text), model };
-      } catch (e) {
-        console.log("companion reply failed on", model, String(e));
-      }
-    }
-  }
+  const r = await grok(env, { messages: companionMessages(history), max_tokens: 300, temperature: 0.5 }, (t) => cleanReply(t) || null, "companion reply");
+  if (r) return { content: withSupport(r.value), model: r.model };
   return { content: withSupport(FALLBACK_REPLY), model: null };
 }

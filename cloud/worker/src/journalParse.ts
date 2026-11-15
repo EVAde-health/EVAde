@@ -7,8 +7,8 @@
 // - Structured check-in values from the voice agent (save_checkin) override anything the model extracted.
 // - Every value is range-checked; implausible values are dropped, never clamped.
 // - Units are converted to the unit stored in metric_definitions (°C, mg/dL, hours, mmHg, bpm, %, 1-5).
-// - If Workers AI is missing or fails, extraction falls back to the check-in values alone (possibly nothing).
-import { FALLBACK_TEXT_MODEL, parseModelJson, TEXT_MODEL, type AiEnv } from "./ai";
+// - If xAI Grok is not configured (XAI_API_KEY) or fails, extraction falls back to the check-in values alone (possibly nothing).
+import { grok, parseModelJson, type AiEnv } from "./ai";
 
 export const RATINGS = ["mood", "stress", "fatigue", "sleep_quality"] as const;
 export type Rating = (typeof RATINGS)[number];
@@ -277,8 +277,6 @@ For every field, "quote" must be the astronaut's exact words (copied verbatim, a
 - symptoms: physical symptoms the astronaut says they have now (for example headache, nausea, congestion, pain, rash),
   each with name (1-3 lowercase words) and quote. Leave out symptoms they deny ("no headache") or only ask about.`;
 
-const runOpts = (env: AiEnv) => (env.AI_GATEWAY ? { gateway: { id: env.AI_GATEWAY } } : undefined);
-
 /**
  * Validates raw model output against the text. A value is kept only when its quote is in the crew member's own
  * lines, any number in the quote matches, and the words around it name that metric. Exported for tests.
@@ -339,24 +337,16 @@ export function validateAi(out: any, text: string) {
   return { ratings, values, symptoms };
 }
 
-/** Runs Workers AI with a strict JSON schema; null when AI is unavailable or every model failed. */
+/** Runs Grok with a strict JSON schema; null when xAI is not configured or every model failed. */
 async function aiExtract(env: AiEnv, text: string): Promise<{ out: any; model: string } | null> {
-  if (!env.AI || !text.trim()) return null;
-  const input = {
+  if (!text.trim()) return null;
+  const r = await grok(env, {
     messages: [{ role: "system", content: SYSTEM }, { role: "user", content: text.slice(0, 6000) }],
-    response_format: { type: "json_schema", json_schema: SCHEMA },
+    schema: { name: "health_extraction", schema: SCHEMA },
     max_tokens: 500,
     temperature: 0,
-  };
-  for (const model of [TEXT_MODEL, FALLBACK_TEXT_MODEL]) {
-    try {
-      const out = parseModelJson(await env.AI.run(model as any, input as any, runOpts(env)));
-      if (out && typeof out === "object") return { out, model };
-    } catch (e) {
-      console.log("journal extraction failed on", model, String(e));
-    }
-  }
-  return null;
+  }, (t) => { const out = parseModelJson(t); return out && typeof out === "object" ? out : null; }, "journal extraction");
+  return r ? { out: r.value, model: r.model } : null;
 }
 
 /**

@@ -26,6 +26,7 @@ Both domains are Cloudflare Workers custom domains in the **EVAde** Cloudflare a
 - **The browser voice chat lives in the web app's Journal tab** (`EVAde/src/components/VoiceJournal.tsx`, `src/services/voiceAgent.ts`). The old `/voice/` page was removed. Keep the `/voice/incoming`, `/voice/stream`, `/voice/alert`, `/voice/browser`, `/voice/api/*` entries in `run_worker_first`: the phone line and API aliases depend on them.
 - Don't change existing Worker endpoints. The phone line (Twilio) and the React Native app depend on them.
 - Never commit secrets. Worker secrets (`XAI_API_KEY`, `TWILIO_AUTH_TOKEN`, `EVADE_BROWSER_TOKEN`, `EVADE_ALERT_TOKEN`) are stored on the Worker and survive deploys.
+- All AI is xAI Grok. The voice Worker uses the realtime voice API; `evade-api` (`cloud/worker`) uses Grok chat completions and speech-to-text through `cloud/worker/src/ai.ts` and needs its own `XAI_API_KEY` secret. Don't add other model providers (no Workers AI / Llama / Whisper).
 
 ## How evade.health is wired
 
