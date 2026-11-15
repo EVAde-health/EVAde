@@ -32,14 +32,17 @@ const datasets: Citation[] = [
   cite('nhanes', 'NHANES DXA, 2017 to March 2020', 'https://wwwn.cdc.gov/nchs/nhanes/', 'CDC'),
 ];
 
-const methods: Citation[] = [
+const registryMethods: Citation[] = [
   cite('ecg-benchmark', 'Deep Learning for ECG Analysis: Benchmarks and Insights from PTB-XL', doi + '10.1109/JBHI.2020.3022989', 'Strodthoff et al.', '2021', 'IEEE Journal of Biomedical and Health Informatics 25(5), 1519–1528'),
-  cite('shoeb-guttag', 'Patient-specific seizure classifiers on CHB-MIT (Shoeb and Guttag study)', lit + 'eeg-applications/README.md', 'Shoeb and Guttag', '2010', 'Proceedings of ICML, 975–982'),
-  cite('trees', 'Why do tree-based models still outperform deep learning on typical tabular data?', 'https://arxiv.org/abs/2207.08815', 'Grinsztajn et al.', '2022', 'NeurIPS Datasets and Benchmarks'),
   cite('sleep-method', 'Deep sleep staging method: TinySleepNet-style epoch CNN and bidirectional GRU', training + 'deep/README_sleep.md', 'EVAde model team', undefined, 'EVAde training documentation'),
   cite('seizure-method', 'Deep seizure-suspect windows: CHB-MIT, with Siena as an external test', training + 'deep/README_seizure.md', 'EVAde model team', '2026', 'EVAde training documentation'),
   cite('beta-method', 'EVAde beta training and held-out evaluation', training + 'README.md', 'EVAde model team', '2026', 'EVAde training documentation'),
   cite('spe-method', 'EVAde solar particle event onset forecasting and evaluation', backend + 'evade/spaceweather/README.md', 'EVAde model team', '2026', 'EVAde space weather documentation'),
+];
+
+const reviewedMethods: Citation[] = [
+  cite('shoeb-guttag', 'Patient-specific seizure classifiers on CHB-MIT (Shoeb and Guttag study)', lit + 'eeg-applications/README.md', 'Shoeb and Guttag', '2010', 'Proceedings of ICML, 975-982'),
+  cite('trees', 'Why do tree-based models still outperform deep learning on typical tabular data?', 'https://arxiv.org/abs/2207.08815', 'Grinsztajn et al.', '2022', 'NeurIPS Datasets and Benchmarks'),
   cite('pan-tompkins', 'Pan–Tompkins QRS detector', lit + 'model-architectures/README.md#ecg', 'Pan and Tompkins', '1985', 'IEEE Transactions on Biomedical Engineering 32(3), 230–236'),
   cite('eegnet', 'EEGNet', doi + '10.1088/1741-2552/aace8c', 'Lawhern et al.', '2018', 'Journal of Neural Engineering 15(5), 056013'),
   cite('szcore', 'SzCORE event-based evaluation', lit + 'planning/fitness-assessment.md', 'Dan et al.', '2025', 'Epilepsia 66 (Suppl. 3), 14–24'),
@@ -121,7 +124,11 @@ const weather: Citation[] = [
 
 export const bibliography = [
   { title: 'Datasets', entries: datasets },
-  { title: 'Models and methods', entries: methods },
+  {
+    title: 'Models and methods (including reviewed candidates)',
+    entries: [...registryMethods, ...reviewedMethods],
+    reviewedStart: registryMethods.length,
+  },
   { title: 'Space medicine and radiation', entries: medicine },
   { title: 'Space weather', entries: weather },
 ].map((group, index, groups) => {

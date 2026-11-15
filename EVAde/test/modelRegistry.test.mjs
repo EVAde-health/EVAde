@@ -62,6 +62,7 @@ test('renders every registry entry with the right live and evidence badges', () 
   }
   assert.match(catalogHtml, /Model API reachable/);
   assert.ok(catalogHtml.includes(checkedAt));
+  assert.match(catalogHtml, /href="\/roadmap"/);
 });
 
 test('keeps registry facts but does not claim availability when the live check fails', () => {
@@ -86,11 +87,26 @@ test('bibliography entries are unique and each one links to its source', () => {
 
 test('each model card links to its numbered bibliography entries', () => {
   const numbers = new Map(bibliography.flatMap(group => group.entries.map(entry => [entry.key, entry.number])));
+  const methods = bibliography.find(group => group.title === 'Models and methods (including reviewed candidates)');
+  assert.match(bibliographyHtml, /Models and methods \(including reviewed candidates\)/);
+  assert.match(bibliographyHtml, /EVAde trains and serves EVA-02, 06, 12, 13 and 14\./);
+  assert.match(bibliographyHtml, /candidates and are not used in the demo/);
+  const candidateKeys = new Set(methods.entries.slice(methods.reviewedStart).map(entry => entry.key));
+  const allowed = [
+    ['beta-method'], ['chb', 'siena', 'beta-method'],
+    ['beta-method'], ['sleep', 'beta-method'],
+    ['beta-method'], ['ptb', 'beta-method'],
+    ['spe-method'], ['goes-sem', 'spe-method'],
+    ['goes-sem', 'goes-r', 'spe-method'], ['spe-method'],
+    ['goes-sem', 'goes-r', 'cdaw', 'spe-method'], ['goes-sem', 'goes-r', 'spe-method'],
+    ['ptb', 'ecg-benchmark'], ['sleep', 'sleep-method'], ['chb', 'siena', 'seizure-method'],
+  ];
   for (const card of modelRegistry) {
     const id = formatModelId(card.id);
     const rendered = catalogHtml.split(`aria-labelledby="model-${id}"`)[1]?.split('</article>')[0];
-    assert.ok(card.citations.length >= 2, id);
+    assert.deepEqual(card.citations, allowed[Number(card.id.slice(4)) - 1], id);
     for (const key of card.citations) {
+      assert.equal(candidateKeys.has(key), false, key);
       const number = numbers.get(key);
       assert.ok(number && rendered.includes(`href="/bibliography#ref-${number}"`), `${id} cites ${key}`);
       assert.ok(bibliographyHtml.includes(`id="ref-${number}"`), key);

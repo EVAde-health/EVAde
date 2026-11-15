@@ -38,7 +38,7 @@ export function ModelsContent({ catalog, runs, runsError }: { catalog?: CatalogC
   return (
     <VStack gap={5} padding={6} className="page">
       <PageHeader title="Models" description="Training evidence and live availability for every EVAde model and architecture."
-        actions={<><Link href={modelRegistryUrl} isExternalLink>GitHub model registry</Link><Link href="/bibliography">Bibliography</Link></>} />
+        actions={<><Link href={modelRegistryUrl} isExternalLink>GitHub model registry</Link><Link href="/bibliography">Bibliography</Link><Link href="/roadmap">Roadmap</Link></>} />
       <Text type="supporting">Michael trained and evaluated the models as EVAde’s machine learning contributor.</Text>
       <HStack vAlign="center" gap={2} wrap="wrap" role="status">
         <StatusDot variant={live ? 'success' : catalog ? 'warning' : 'neutral'} label={label} />
@@ -92,7 +92,7 @@ export function ModelsContent({ catalog, runs, runsError }: { catalog?: CatalogC
                   {serving && <Text type="supporting">Last run{runs ? ` (${RUN_SCOPE[runs.scope]})` : ''}{' '}
                     {lastRun ? <Timestamp value={lastRun} /> : runsError ? 'unavailable' : runs ? 'not recorded' : 'loading…'}
                   </Text>}
-                  <Text type="supporting">Data and methods [{references.map((citation, i) => (
+                  <Text type="supporting">{model.type === 'architecture' ? 'Specification' : 'Data and methods'} [{references.map((citation, i) => (
                     <Link key={citation.key} href={`/bibliography#ref-${citation.number}`} aria-label={`Reference ${citation.number}: ${citation.title}`}>
                       {citation.number}{i === references.length - 1 ? '' : ', '}
                     </Link>

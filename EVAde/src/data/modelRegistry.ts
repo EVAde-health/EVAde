@@ -35,7 +35,7 @@ export const modelRegistry: RegistryEntry[] = [
     hasHeadlineInterval: false,
     created: "2026-11-14",
     commit: "8404bb1",
-    citations: ["chb","siena","shoeb-guttag","trees","beta-method"],
+    citations: ["beta-method"],
   },
   {
     id: "EVA-2",
@@ -51,7 +51,7 @@ export const modelRegistry: RegistryEntry[] = [
     hasHeadlineInterval: true,
     created: "2026-11-14",
     commit: "8404bb1",
-    citations: ["chb","siena","shoeb-guttag","trees","beta-method"],
+    citations: ["chb","siena","beta-method"],
   },
   {
     id: "EVA-3",
@@ -67,7 +67,7 @@ export const modelRegistry: RegistryEntry[] = [
     hasHeadlineInterval: false,
     created: "2026-11-14",
     commit: "c98e542",
-    citations: ["sleep","trees","beta-method"],
+    citations: ["beta-method"],
   },
   {
     id: "EVA-4",
@@ -83,7 +83,7 @@ export const modelRegistry: RegistryEntry[] = [
     hasHeadlineInterval: true,
     created: "2026-11-14",
     commit: "c98e542",
-    citations: ["sleep","trees","beta-method"],
+    citations: ["sleep","beta-method"],
     note: "EVA-14 serves sleep staging. On the registry’s five-subject comparison, this beta had higher subject-mean kappa.",
   },
   {
@@ -100,7 +100,7 @@ export const modelRegistry: RegistryEntry[] = [
     hasHeadlineInterval: false,
     created: "2026-11-14",
     commit: "c98e542",
-    citations: ["ptb","trees","beta-method"],
+    citations: ["beta-method"],
   },
   {
     id: "EVA-6",
@@ -116,7 +116,7 @@ export const modelRegistry: RegistryEntry[] = [
     hasHeadlineInterval: true,
     created: "2026-11-14",
     commit: "c98e542",
-    citations: ["ptb","trees","beta-method"],
+    citations: ["ptb","beta-method"],
   },
   {
     id: "EVA-7",
@@ -132,7 +132,7 @@ export const modelRegistry: RegistryEntry[] = [
     hasHeadlineInterval: false,
     created: "2026-11-14",
     commit: "a99b862",
-    citations: ["goes-sem","spe-method"],
+    citations: ["spe-method"],
   },
   {
     id: "EVA-8",
@@ -182,7 +182,7 @@ export const modelRegistry: RegistryEntry[] = [
     hasHeadlineInterval: false,
     created: "2026-11-15",
     commit: "1fa7ec7",
-    citations: ["goes-sem","goes-r","cdaw","donki","spe-method"],
+    citations: ["spe-method"],
   },
   {
     id: "EVA-11",
@@ -198,7 +198,7 @@ export const modelRegistry: RegistryEntry[] = [
     hasHeadlineInterval: false,
     created: "2026-11-15",
     commit: "1fa7ec7",
-    citations: ["goes-sem","goes-r","cdaw","donki","spe-method"],
+    citations: ["goes-sem","goes-r","cdaw","spe-method"],
     note: "Weights were not retained.",
   },
   {

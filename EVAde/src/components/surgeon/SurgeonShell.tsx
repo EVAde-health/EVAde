@@ -13,6 +13,7 @@ import {
   CpuChipIcon,
   ExclamationTriangleIcon,
   IdentificationIcon,
+  MapIcon,
   UserGroupIcon,
 } from '@heroicons/react/24/outline';
 import {
@@ -20,6 +21,7 @@ import {
   CpuChipIcon as CpuChipSolid,
   ExclamationTriangleIcon as ExclamationSolid,
   IdentificationIcon as IdentificationSolid,
+  MapIcon as MapSolid,
   UserGroupIcon as UserGroupSolid,
 } from '@heroicons/react/24/solid';
 import { SurgeonContext } from '../../context/SurgeonContext';
@@ -43,6 +45,7 @@ const NAV = [
   { href: '/admin/messages', label: 'Messages', icon: ChatBubbleLeftRightIcon, selectedIcon: ChatSolid },
   { href: '/admin/emergencies', label: 'Emergencies', icon: ExclamationTriangleIcon, selectedIcon: ExclamationSolid },
   { href: '/models', label: 'Models', icon: CpuChipIcon, selectedIcon: CpuChipSolid },
+  { href: '/roadmap', label: 'Roadmap', icon: MapIcon, selectedIcon: MapSolid },
 ];
 
 function selected(href: string, pathname: string) {
@@ -62,7 +65,7 @@ export default function SurgeonShell({ user }: { user: SessionUser }) {
     () => ({ user, notifications: notes.data, refreshNotifications: notes.reload }),
     [user, notes.data, notes.reload],
   );
-  if (!pathname.startsWith('/admin') && pathname !== '/models') return <Navigate to="/admin" replace />;
+  if (!pathname.startsWith('/admin') && !/^\/(?:models|roadmap)\/?$/.test(pathname)) return <Navigate to="/admin" replace />;
 
   // Signs out, then goes to the home screen (replace). A failed logout stays here with a toast.
   async function handleSignOut() {
