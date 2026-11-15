@@ -13,11 +13,13 @@ interface RequestOptions {
 export const SIGN_IN_REQUIRED = 'evade:sign-in-required';
 export const STAFF_ROLES = new Set(['flight_surgeon', 'therapist', 'admin']);
 
-// Validates VITE_API_URL: HTTPS only, except a loopback Worker during local development.
+// Validates VITE_API_URL: HTTPS only, except a loopback or private-LAN Worker during local development
+// (a LAN address lets a phone on the same Wi-Fi test against `wrangler dev`).
 function resolveApiOrigin() {
   const url = new URL(import.meta.env.VITE_API_URL || 'https://api.evade.health');
   const isLoopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  const isAllowedHttp = import.meta.env.DEV && url.protocol === 'http:' && isLoopback;
+  const isPrivateLan = /^(10\.\d+|172\.(1[6-9]|2\d|3[01])|192\.168)\.\d+\.\d+$/.test(url.hostname);
+  const isAllowedHttp = import.meta.env.DEV && url.protocol === 'http:' && (isLoopback || isPrivateLan);
   if ((url.protocol !== 'https:' && !isAllowedHttp) || url.username || url.password) {
     throw new Error('VITE_API_URL must be an HTTPS API origin.');
   }

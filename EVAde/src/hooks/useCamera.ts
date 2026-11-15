@@ -9,7 +9,7 @@ const CONSTRAINTS: MediaStreamConstraints = {
 
 // Turns a getUserMedia failure into a readable message.
 function describeError(error: unknown) {
-  if (error instanceof DOMException && error.name === 'NotAllowedError') return 'Camera access was blocked. Allow it in your browser settings.';
+  if (error instanceof DOMException && error.name === 'NotAllowedError') return 'Camera access was blocked. Allow it in your browser settings (or for the EVAde app in your phone settings).';
   if (error instanceof DOMException && error.name === 'NotFoundError') return 'No camera was found on this device.';
   return 'The camera could not be started.';
 }

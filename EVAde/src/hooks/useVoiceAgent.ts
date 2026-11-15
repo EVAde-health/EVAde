@@ -298,6 +298,11 @@ export function useVoiceAgent({ crew = 'browser-demo', onCheckinSaved }: UseVoic
       if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
         throw new Error('Voice needs HTTPS (or localhost) and a browser with microphone support.');
       }
+      // Create and resume the AudioContext inside the tap, before any await: iOS Safari and the iOS app's
+      // WebView keep a context created later (after the microphone prompt) suspended, so nothing would play.
+      const ctx = new AudioContext();
+      session.ctx = ctx;
+      const resumed = ctx.resume();
       session.stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
@@ -306,9 +311,7 @@ export function useVoiceAgent({ crew = 'browser-demo', onCheckinSaved }: UseVoic
         return;
       }
 
-      const ctx = new AudioContext();
-      session.ctx = ctx;
-      await ctx.resume();
+      await resumed;
       await addMicWorklet(ctx);
       if (session.closed) {
         releaseLate(session);
@@ -362,7 +365,7 @@ export function useVoiceAgent({ crew = 'browser-demo', onCheckinSaved }: UseVoic
       const error = err as { name?: string; message?: string };
       const text =
         error?.name === 'NotAllowedError'
-          ? 'Microphone blocked. Allow it in the address bar and try again.'
+          ? 'Microphone blocked. Allow microphone access for EVAde (browser site settings, or the app in your phone settings) and try again.'
           : `Could not start voice: ${error?.message || String(err)}`;
       fail(session, text, false);
       teardown(session, false);
