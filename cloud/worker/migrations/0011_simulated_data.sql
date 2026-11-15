@@ -1,4 +1,4 @@
--- apply after 0010_surgeon_console.sql.
+-- apply after 0010_surgeon_console.sql
 -- Keep the deployed CHECK constraints and foreign keys on the existing source columns.
 -- The explicit simulation source takes precedence in API representations.
 ALTER TABLE observations ADD COLUMN simulation_source TEXT CHECK(simulation_source IS NULL OR simulation_source='simulated');
