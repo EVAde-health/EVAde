@@ -131,8 +131,9 @@ describe("AI companion routes", () => {
   it("sends crisis guidance, skips the model, and records one staff emergency without copying the text", async () => {
     const run = vi.fn();
     env.AI = { run };
+    const marker = "private-companion-test-marker";
     for (let attempt = 0; attempt < 2; attempt++) {
-      const result = await call("POST", "/journal/chat", { body: { message: "I want to die and I can't stay safe." } });
+      const result = await call("POST", "/journal/chat", { body: { message: "I want to die and I can't stay safe. " + marker } });
       expect(result.status).toBe(201);
       expect(result.data.reply.content).toContain("call or text 988");
     }
@@ -147,6 +148,15 @@ describe("AI companion routes", () => {
     expect(visible.status).toBe(200);
     expect(visible.data).toEqual(expect.arrayContaining([expect.objectContaining({ level: "red", metric: "emergency" })]));
     expect(JSON.stringify(visible.data)).not.toContain("want to die");
+    const astro = "/admin/astronauts/" + ASTRONAUT;
+    const emergencies = await call("GET", "/admin/emergencies", { token: staff });
+    expect(emergencies.status).toBe(200);
+    expect(emergencies.data).toEqual([expect.objectContaining({ message: "The journal companion flagged a safety concern." })]);
+    for (const path of [astro + "/journal", astro + "/mood", astro + "/alerts", "/admin/therapist-feed", "/admin/alerts", "/admin/notifications"]) {
+      const result = await call("GET", path, { token: staff });
+      expect(result.status, path).toBe(200);
+      expect(JSON.stringify(result.data), path).not.toContain(marker);
+    }
   });
 
   it("uses the per-user limiter and falls back after 15 seconds", async () => {
@@ -177,6 +187,7 @@ describe("AI companion routes", () => {
     insert.run(OTHER, 9876, "other@example.test", ts);
     raw.prepare("INSERT INTO journal_entries (user_id,ts,content,sentiment) VALUES (?,?,?,?)")
       .run(ASTRONAUT, ts, "private journal content", 0.25);
+    expect((await call("POST", "/journal/chat", { body: { message: "private companion content" } })).status).toBe(201);
     const run = vi.fn(async () => ({ response: '{"bullets":["Vitals recorded.","No alerts.","Mood score recorded."]}' }));
     env.AI = { run };
     const path = "/admin/astronauts/" + ASTRONAUT + "/summary";
@@ -187,7 +198,7 @@ describe("AI companion routes", () => {
     expect(result.data.bullets).toHaveLength(3);
     const modelInput = JSON.stringify(run.mock.calls);
     expect(modelInput).toContain("journal_samples");
-    for (const excluded of ["example.test", "9876", "private journal content", ASTRONAUT, OTHER]) {
+    for (const excluded of ["example.test", "9876", "private journal content", "private companion content", ASTRONAUT, OTHER]) {
       expect(modelInput).not.toContain(excluded);
     }
   });
