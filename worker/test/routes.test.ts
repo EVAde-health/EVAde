@@ -139,13 +139,16 @@ describe("phone routes (api/voice.py)", () => {
     expect(await (await call(new Request("https://evade.health/health"), makeEnv())).json()).toEqual({ status: "ok" });
   });
 
-  it("landing page links to /voice/ and the voice page is served from static assets", async () => {
+  it("landing page has no /voice/ link and the old /voice/ page is gone (404, not an error)", async () => {
     const home = await exports.default.fetch("https://evade.health/");
-    expect(await home.text()).toContain('href="/voice/"');
-    const page = await exports.default.fetch("https://evade.health/voice/");
-    expect(page.status).toBe(200);
-    expect(await page.text()).toContain("Talk to EVAde");
-    expect((await exports.default.fetch("https://evade.health/voice/app.js")).status).toBe(200);
-    expect(await (await exports.default.fetch("https://evade.health/voice/mic-worklet.js")).text()).toContain("registerProcessor");
+    expect(home.status).toBe(200);
+    const html = await home.text();
+    expect(html).not.toContain('href="/voice/"');
+    expect(html).toContain("tel:+19086631285");
+    for (const p of ["/voice/", "/voice", "/voice/app.js", "/voice/mic-worklet.js"]) {
+      const r = await exports.default.fetch("https://evade.health" + p);
+      expect(r.status, p).toBe(404);
+      await r.arrayBuffer();
+    }
   });
 });

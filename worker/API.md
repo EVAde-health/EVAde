@@ -43,7 +43,7 @@ Twilio phone calls (phone calls still end after 600 s).
 | `GET /health` | Liveness | `{"status": "ok"}` |
 | `GET /api` | Endpoint list | |
 
-`/voice/api/checkins/latest` and `/voice/api/downlink` are aliases (used by the `/voice/` web page),
+`/voice/api/checkins/latest` and `/voice/api/downlink` are aliases (kept for older clients),
 and `/voice/alert` is an alias of `/api/alert`.
 
 `checkin` object: `id, created_at, crew_id, source, sleep_hours, mood, symptoms[], systolic,

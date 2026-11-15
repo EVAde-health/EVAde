@@ -5,13 +5,13 @@
  *   POST /voice/incoming          Twilio voice webhook -> TwiML <Connect><Stream>
  *   WS   /voice/stream            Twilio Media Stream (one-time token checked on "start")
  *   POST /voice/alert             outbound red-alert call (alias POST /api/alert)
- * App / browser (React Native or /voice/ page) - see worker/API.md
+ * App / browser (React Native or the web app's Journal tab) - see worker/API.md
  *   POST /api/voice/start         one-time WebSocket ticket for the voice socket
  *   WS   /api/voice/ws            voice WebSocket (alias WS /voice/browser)
  *   GET  /api/checkins/latest     (alias /voice/api/checkins/latest)
  *   GET  /api/downlink            (alias /voice/api/downlink)
  * Other
- *   GET  /                        landing page; /voice/ static page from ../frontend
+ *   GET  /                        landing page (on evade.health, / and other pages come from the web app assets)
  *   GET  /health
  */
 import { log } from "./agent";
@@ -200,6 +200,9 @@ const ROUTES: Record<string, Partial<Record<string, Handler>>> = {
 /** Paths that get CORS headers (JSON API used by the React Native app). */
 const isApiPath = (p: string) => p === "/api" || p.startsWith("/api/") || p.startsWith("/voice/api/") || p === "/voice/alert" || p === "/health";
 
+/** Static assets binding. Only bound in the evade.health deploy config (web app build), not in worker/wrangler.jsonc. */
+const assets = (env: Env): Fetcher | undefined => (env as { ASSETS?: Fetcher }).ASSETS;
+
 /** Route one request (exported so tests can pass a custom env). */
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
@@ -220,8 +223,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         response = errorResponse(500, "Internal Server Error");
       }
     }
-  } else if (env.ASSETS) {
-    response = await env.ASSETS.fetch(request); // frontend/ (e.g. /voice/, /voice/app.js)
+  } else if (assets(env)) {
+    response = await assets(env)!.fetch(request); // web app assets (deploy/wrangler.jsonc), SPA fallback
   } else {
     response = errorResponse(404, "Not Found");
   }

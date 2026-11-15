@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 app = FastAPI(title="EVAde · Crew Health Monitor (voice agent)")
 app.include_router(voice_router)          # phone: /voice/incoming, /voice/stream, /voice/alert
-app.include_router(voice_browser_router)  # browser: /voice/, /voice/browser, /voice/api/*
+app.include_router(voice_browser_router)  # browser: /voice/browser, /voice/api/*
 
 
 @app.get("/health")

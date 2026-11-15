@@ -162,13 +162,10 @@ def test_browser_token_allows_remote(monkeypatch, fake_xai):
         ws.send_text(json.dumps({"type": "stop"}))
 
 
-def test_page_and_assets_served():
+def test_old_voice_page_removed():
     client = TestClient(app)
-    r = client.get("/voice/")
-    assert r.status_code == 200 and "Talk to EVAde" in r.text
-    assert client.get("/voice/app.js").status_code == 200
-    w = client.get("/voice/mic-worklet.js")
-    assert w.status_code == 200 and "registerProcessor" in w.text
+    for path in ("/voice/", "/voice/app.js", "/voice/mic-worklet.js"):
+        assert client.get(path).status_code == 404
 
 
 def test_latest_checkin_and_downlink_endpoints():

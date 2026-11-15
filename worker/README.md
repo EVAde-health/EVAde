@@ -6,7 +6,7 @@ rules, Twilio flow and security checks; the Python version stays in the repo for
 
 - **Phone:** Twilio number → `POST /voice/incoming` (signature-checked TwiML `<Connect><Stream>`)
   → `wss://evade.health/voice/stream` → xAI Grok realtime voice (`audio/pcmu`, 8 kHz, no resampling).
-- **App / browser:** React Native app or the `/voice/` page → `wss://evade.health/api/voice/ws`
+- **App / browser:** React Native app or the web app's Journal tab → `wss://evade.health/api/voice/ws`
   (alias `/voice/browser`) → xAI (`audio/pcm`, 24 kHz). JSON REST under `/api/`. See [API.md](API.md).
 - **Red-alert call:** `POST /api/alert` (alias `/voice/alert`) places an outbound Twilio call.
 
@@ -14,7 +14,7 @@ rules, Twilio flow and security checks; the Python version stays in the repo for
 
 | Piece | How |
 | --- | --- |
-| Router | `src/index.ts` (plain Worker). Static files from the repo's `frontend/` via Workers Static Assets, so `frontend/voice/index.html` is `/voice/`. `/` is a small landing page. |
+| Router | `src/index.ts` (plain Worker). `/` is a small landing page; unknown paths are 404. On evade.health, `deploy/wrangler.jsonc` adds the web app build as static assets (SPA fallback). |
 | Voice bridge | `src/session.ts`: **one Durable Object (`VoiceSession`) per call or app session.** The Worker forwards the WebSocket upgrade to a fresh DO, which accepts the listener socket and opens the outbound xAI socket with `fetch()` + `Upgrade: websocket` + `Authorization: Bearer`. |
 | Why a DO | A call is minutes of ~50 frames/s each way. A plain Worker request has one CPU budget for its whole life (10 ms on Free), which a call would exhaust; in a DO every incoming WebSocket message resets the CPU budget, and the object stays alive while the sockets are open. |
 | Agent logic | `src/agent.ts` (persona, `session.update`, greeting, barge-in, tool calls, playback marks) and `src/bridges.ts` (Twilio / app transports). Transport-free, so tests drive them directly. |
@@ -69,8 +69,8 @@ npx wrangler deploy              # creates the evade.health custom domain on fir
 ```
 
 Then in the Twilio Console set the number's **"A call comes in"** webhook to
-`https://evade.health/voice/incoming` (HTTP POST). Browser: `https://evade.health/voice/`
-(open for the hackathon demo while `DEMO_OPEN` is `"true"`).
+`https://evade.health/voice/incoming` (HTTP POST). Browser: the web app's Journal tab at
+`https://evade.health/journal` (open for the hackathon demo while `DEMO_OPEN` is `"true"`).
 
 `evade.health` must be an active zone in the same Cloudflare account. The custom-domain route
 creates the DNS record and certificate; remove any existing A/CNAME record on the apex first.
@@ -80,7 +80,7 @@ creates the DNS record and certificate; remove any existing A/CNAME record on th
 ```bash
 cp .dev.vars.example .dev.vars   # fill in XAI_API_KEY etc.
 npm run db:migrate:local
-npm run dev                      # http://localhost:8787/voice/
+npm run dev                      # http://localhost:8787/ (API + phone webhooks)
 ```
 
 On `localhost` the app API is open without a token (like the Python localhost-only mode).
