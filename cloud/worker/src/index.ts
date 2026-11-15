@@ -11,20 +11,25 @@ import {
   xrayClass,
   Level,
 } from "./health";
-import { AuthEnv, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, STAFF_ROLES, trustedOrigin } from "./auth";
+import {
+  AuthEnv, clearSessionCookie, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, sha256hex, STAFF_ROLES, trustedOrigin,
+} from "./auth";
 import { analyzeJournal, dailyBriefing, transcribe, TEXT_MODEL } from "./ai";
 import type { LiveEvent } from "./live";
+import {
+  callModelApi, deleteModelUser, isMock, ModelApiError, ModelEnv, modelsConfigured, modelUserId, PREDICT_KINDS, PredictKind,
+  REVIEW_NOTE, riskRow, summarize,
+} from "./models";
+import { DELETE_USER_SQL } from "./deleteUser";
 export { CrewFeed } from "./live";
 
-export interface Env extends AuthEnv {
+export interface Env extends AuthEnv, ModelEnv {
   DB: D1Database;
   AI?: Ai; // Workers AI
   AI_GATEWAY?: string; // optional AI Gateway id
   MEDIA?: R2Bucket; // R2 bucket evade-media
   LIVE?: DurableObjectNamespace; // CrewFeed Durable Object
   EVADE_API_KEY?: string;
-  FASTAPI_URL?: string;
-  FASTAPI_KEY?: string;
   ALLOWED_ORIGINS?: string;
 }
 
@@ -377,7 +382,7 @@ const route = (method: string, path: string, h: Handler) =>
 
 route("GET", "/health", async (_r, env) => {
   const t = await env.DB.prepare("SELECT COUNT(*) n FROM users").first<{ n: number }>();
-  return json({ ok: true, service: "evade-api", users: t?.n ?? 0, fastapi: !!env.FASTAPI_URL, time: now() });
+  return json({ ok: true, service: "evade-api", users: t?.n ?? 0, models: modelsConfigured(env), time: now() });
 });
 
 // Health indicator catalogue: thresholds for color coding + tutorial text
@@ -901,23 +906,80 @@ route("POST", "/model-results", async (req, env) => {
 route("GET", "/users/:id/model-results", async (_r, env, p) =>
   json((await env.DB.prepare("SELECT * FROM model_results WHERE user_id=? ORDER BY ts DESC LIMIT 100").bind(p.id).all()).results));
 
-// ... or proxy: frontend -> Worker -> FastAPI /predict/<kind>, result stored in D1
-route("POST", "/predict/:kind", async (req, env, p) => {
-  if (!env.FASTAPI_URL) throw new HttpError(503, "FASTAPI_URL not configured yet");
-  if (!["ecg", "eeg", "radiation-risk", "risk"].includes(p.kind)) throw new HttpError(404, "unknown model endpoint");
-  const payload = await body(req);
-  await requireUser(env, payload.user_id);
-  const r = await fetch(`${env.FASTAPI_URL.replace(/\/$/, "")}/predict/${p.kind}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(env.FASTAPI_KEY ? { "X-EVAde-Key": env.FASTAPI_KEY } : {}) },
-    body: JSON.stringify(payload),
-  });
-  const out = await r.json<any>().catch(() => ({ error: "non-JSON response from model service" }));
-  if (r.ok) {
-    await env.DB.prepare("INSERT INTO model_results (user_id,endpoint,model_id,ts,output,flag,confidence) VALUES (?,?,?,?,?,?,?)")
-      .bind(payload.user_id, `/predict/${p.kind}`, out.model_id ?? null, now(), JSON.stringify(out), out.flag ?? null, out.confidence ?? null).run();
+// Model predictions: frontend -> this Worker -> evade-gateway -> Michael's FastAPI container (/v1/predict/<kind>).
+// Only real model results are stored (model_results, and risk_scores for /risk). Placeholders ("source": "mock")
+// are returned with placeholder: true and never stored or alerted on. Every result is a flag for human review.
+const modelError = (e: unknown) => (e instanceof ModelApiError ? new HttpError(e.status, e.message) : e);
+
+route("GET", "/models", async (_r, env) => {
+  try {
+    const r = await callModelApi(env, "GET", "/v1/models");
+    return json({ ...(r.out ?? {}), review_note: REVIEW_NOTE }, r.ok ? 200 : r.status);
+  } catch (e) {
+    throw modelError(e);
   }
-  return json(out, r.status);
+});
+
+route("POST", "/predict/:kind", async (req, env, p) => {
+  if (!(PREDICT_KINDS as readonly string[]).includes(p.kind)) throw new HttpError(404, "unknown model endpoint");
+  const kind = p.kind as PredictKind;
+  const payload = await body<Record<string, unknown>>(req);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new HttpError(400, "Body must be a JSON object");
+  const user = await requireUser(env, payload.user_id as string | undefined);
+  try {
+    // space-weather is not per-user; everything else is sent under the model service's own id for this user
+    const forward = { ...payload };
+    if (kind === "space-weather") delete forward.user_id;
+    else forward.user_id = await modelUserId(env, user.user_id);
+    const r = await callModelApi(env, "POST", `/v1/predict/${kind}`, forward);
+    const out = r.out ?? { error: { code: "bad_response", message: "non-JSON response from model service" } };
+    const placeholder = isMock(out);
+    if (r.ok && !placeholder) {
+      const sum = summarize(kind, out);
+      const ts = typeof out.server_time === "string" ? out.server_time : now();
+      const stmts = [
+        env.DB.prepare("INSERT INTO model_results (user_id,endpoint,model_id,ts,output,flag,confidence) VALUES (?,?,?,?,?,?,?)")
+          .bind(user.user_id, `/v1/predict/${kind}`, sum.model_id, ts, JSON.stringify(out), sum.flag, sum.confidence),
+      ];
+      const risk = kind === "risk" ? riskRow(out) : null;
+      if (risk) {
+        stmts.push(env.DB.prepare("INSERT INTO risk_scores (user_id,ts,r,band,mdtr,domains,top_domains,override,source) VALUES (?,?,?,?,?,?,?,?,'fastapi')")
+          .bind(user.user_id, ts, risk.r, risk.band, risk.mdtr, risk.domains, risk.top_domains, risk.override));
+      }
+      await env.DB.batch(stmts);
+    }
+    // never echo the model service's own user id back to the browser
+    const { user_id: _drop, ...rest } = out;
+    const headers: Record<string, string> = r.retryAfter ? { "Retry-After": r.retryAfter } : {};
+    return json({ ...rest, placeholder, stored: r.ok && !placeholder, review_note: REVIEW_NOTE }, r.status, headers);
+  } catch (e) {
+    throw modelError(e);
+  }
+});
+
+// "Delete my account": signed-in astronauts only (not the shared demo account, not service keys).
+// Order: R2 objects, the model service's copy, then every D1 row in one batch, then this session.
+route("DELETE", "/me", async (req, env, _p, _u, _c, who) => {
+  if (who.kind !== "user" || !who.user_id) throw new HttpError(403, "Sign in to delete your own account");
+  if (who.demo) throw new HttpError(403, "The demo account can't be deleted");
+  const b = await body<{ confirm?: string }>(req).catch(() => ({} as { confirm?: string }));
+  if (b.confirm !== "DELETE") throw new HttpError(400, 'Send {"confirm":"DELETE"} to delete your account and all its data');
+  const uid = who.user_id;
+  if (env.MEDIA) {
+    const { results } = await env.DB.prepare("SELECT r2_key FROM media WHERE user_id=?").bind(uid).all<{ r2_key: string }>();
+    const keys = results.map((m) => m.r2_key).filter(Boolean);
+    for (let i = 0; i < keys.length; i += 1000) await env.MEDIA.delete(keys.slice(i, i + 1000));
+  }
+  let models: string;
+  try {
+    models = await deleteModelUser(env, uid);
+  } catch (e) {
+    throw modelError(e); // nothing in D1 is deleted yet, so the user can simply retry
+  }
+  await env.DB.batch(DELETE_USER_SQL.map((sql) => env.DB.prepare(sql).bind(uid)));
+  const token = sessionCookie(req);
+  if (token) await env.SESSIONS.delete(`sess:${await sha256hex(token)}`);
+  return json({ deleted: true, model_service: models }, 200, { "Set-Cookie": clearSessionCookie(new URL(req.url)) });
 });
 
 // Offline-first sync: the frontend queues records in IndexedDB and flushes them here when a link is up.

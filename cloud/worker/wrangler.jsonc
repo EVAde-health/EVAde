@@ -33,8 +33,12 @@
   "vars": {
     // Exact HTTPS origins allowed to use the browser session. Override locally for local development.
     "ALLOWED_ORIGINS": "https://evade.health,https://www.evade.health",
-    // Michael's FastAPI model service. Leave empty until it is deployed; /predict/* then returns 503.
-    "FASTAPI_URL": "",
+    // Michael's model API sits behind the "evade-gateway" Worker (Cloudflare Container). Preferred: the "MODELS"
+    // service binding below (no public URL). Fallback only: set MODEL_API_URL to the gateway's HTTPS URL.
+    // Until either is set, /predict/* and /models return 503.
+    "MODEL_API_URL": "",
+    // "true" enables GET /auth/demo: a 2-hour session as the seeded fake astronaut Cmdr. Vega (demo). Never a real user.
+    "DEMO_LOGIN": "true",
     // Where users land after signing in if no redirect was requested.
     "FRONTEND_URL": "https://evade.health",
     // A blank staff application audience disables staff sign-in.
@@ -48,7 +52,7 @@
   }
   // Secrets (set with `npx wrangler secret put <NAME>`):
   //   EVADE_API_KEY  server-side service key for the X-EVAde-Key header
-  //   FASTAPI_KEY    optional key forwarded to FastAPI in X-EVAde-Key
+  //   MODEL_GATEWAY_KEY  sent as X-Gateway-Key to evade-gateway (same value as the gateway's GATEWAY_CALLER_KEY)
   //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   Google OAuth client
   //   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET   GitHub OAuth app
   //   TURNSTILE_SITE_KEY, TURNSTILE_SECRET     Turnstile widget site key and private secret

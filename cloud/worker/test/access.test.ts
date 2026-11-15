@@ -198,7 +198,7 @@ describe("GET /auth/access", () => {
   it("reuses the same astronaut on later logins", async () => {
     await login(await sign({}));
     await login(await sign({}));
-    expect(row("SELECT COUNT(*) AS n FROM users").n).toBe(1);
+    expect(row("SELECT COUNT(*) AS n FROM users WHERE user_id NOT LIKE '00000000-0000-4000-8000-%'").n).toBe(1);
     expect(seeded).toHaveLength(1);
   });
 
@@ -208,7 +208,7 @@ describe("GET /auth/access", () => {
     expect(none.headers.get("Set-Cookie")).toBeNull();
     const forged = await login(await sign({}, { key: otherSigner.privateKey }));
     expect(forged.status).toBe(401);
-    expect(row("SELECT COUNT(*) AS n FROM users").n).toBe(0);
+    expect(row("SELECT COUNT(*) AS n FROM users WHERE user_id NOT LIKE '00000000-0000-4000-8000-%'").n).toBe(0);
   });
 
   it("does not open-redirect", async () => {
@@ -261,7 +261,7 @@ describe("staff login (/auth/access/staff)", () => {
     const response = await login(await sign({ aud: [STAFF_AUD] }), "/auth/access/staff");
     expect(response.status).toBe(403);
     expect(response.headers.get("Set-Cookie")).toBeNull();
-    expect(row("SELECT COUNT(*) AS n FROM users").n).toBe(0);
+    expect(row("SELECT COUNT(*) AS n FROM users WHERE user_id NOT LIKE '00000000-0000-4000-8000-%'").n).toBe(0);
   });
 
   it("invalidates a staff API session when the D1 role is revoked", async () => {
