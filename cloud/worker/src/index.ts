@@ -20,7 +20,9 @@ import {
   callModelApi, deleteModelUser, isMock, ModelApiError, ModelEnv, modelsConfigured, modelUserId, PREDICT_KINDS, PredictKind,
   REVIEW_NOTE, riskRow, summarize,
 } from "./models";
-import { DELETE_USER_SQL } from "./deleteUser";
+import { deleteUserStatements } from "./deleteUser";
+import { HttpError } from "./http";
+import { crewOverview, registerOps } from "./ops";
 export { CrewFeed } from "./live";
 
 export interface Env extends AuthEnv, ModelEnv {
@@ -31,12 +33,6 @@ export interface Env extends AuthEnv, ModelEnv {
   LIVE?: DurableObjectNamespace; // CrewFeed Durable Object
   EVADE_API_KEY?: string;
   ALLOWED_ORIGINS?: string;
-}
-
-class HttpError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
 }
 
 const now = () => new Date().toISOString();
@@ -430,7 +426,7 @@ route("GET", "/auth/identities/:provider/:subject", async (_r, env, p) => {
 });
 
 // Admin panel (doctors / therapists)
-route("GET", "/admin/crew", async (_r, env) => json((await env.DB.prepare("SELECT * FROM v_crew_overview ORDER BY escalated_alerts DESC, last_r DESC").all()).results));
+route("GET", "/admin/crew", async (_r, env) => json(await crewOverview(env.DB)));
 route("GET", "/admin/escalations", async (_r, env) => json((await env.DB.prepare("SELECT * FROM v_escalations ORDER BY ts DESC").all()).results));
 route("GET", "/admin/therapist-feed", async (_r, env, _p, url) => {
   const uid = url.searchParams.get("user_id");
@@ -976,7 +972,7 @@ route("DELETE", "/me", async (req, env, _p, _u, _c, who) => {
   } catch (e) {
     throw modelError(e); // nothing in D1 is deleted yet, so the user can simply retry
   }
-  await env.DB.batch(DELETE_USER_SQL.map((sql) => env.DB.prepare(sql).bind(uid)));
+  await env.DB.batch(await deleteUserStatements(env.DB, uid));
   const token = sessionCookie(req);
   if (token) await env.SESSIONS.delete(`sess:${await sha256hex(token)}`);
   return json({ deleted: true, model_service: models }, 200, { "Set-Cookie": clearSessionCookie(new URL(req.url)) });
@@ -999,8 +995,10 @@ route("POST", "/sync", async (req, env) => {
   return json({ ok: true, ...res, synced_at: now() });
 });
 
+registerOps(route, { json, body, now });
+
 // ---------- Access control ----------
-// service  = X-EVAde-Key (Python seeding, Michael's FastAPI, Ryan B's edge functions): full access
+// service  = X-EVAde-Key (Python seeding, Michael's FastAPI, Ryan B's edge functions): integration routes
 // staff    = session with role flight_surgeon / therapist / admin: every astronaut + admin routes
 // user     = astronaut session: only their own user_id; missing user_id in a body is filled in for them
 const STAFF_ONLY: [string, RegExp][] = [
@@ -1023,8 +1021,12 @@ const OWNED_BY_ID: [RegExp, string][] = [
 ];
 
 async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Request; principal: Principal }> {
+  const path = url.pathname.replace(/\/$/, "");
   const key = req.headers.get("X-EVAde-Key");
-  if (env.EVADE_API_KEY && key === env.EVADE_API_KEY) return { req, principal: { kind: "service" } };
+  if (env.EVADE_API_KEY && key === env.EVADE_API_KEY) {
+    if (path.startsWith("/admin/")) throw new HttpError(403, "Staff sign-in required");
+    return { req, principal: { kind: "service" } };
+  }
   const session = await getSessionPrincipal(req, env);
   if (!session) throw new HttpError(401, "Sign in at /login, or send X-EVAde-Key");
   // Cookie-authenticated writes must come from our own frontend (CSRF guard on top of SameSite=Lax)
@@ -1034,7 +1036,6 @@ async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Reque
       throw new HttpError(403, "Cross-origin request blocked");
   }
   const staff = STAFF_ROLES.has(session.role ?? "");
-  const path = url.pathname.replace(/\/$/, "");
   if (STAFF_ONLY.some(([m, re]) => (m === "*" || m === req.method) && re.test(path)) && !staff)
     throw new HttpError(403, "Flight surgeon / admin access only");
   if (staff) return { req, principal: session };

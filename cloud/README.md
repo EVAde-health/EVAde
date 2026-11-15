@@ -69,7 +69,7 @@ The website links to the Cloudflare Access login. The Worker verifies the Access
 Who can do what:
 - **Astronaut** (session): only their own data. A body without `user_id` is filled in from the session; a different `user_id` gets 403.
 - **Staff** (`flight_surgeon` / `therapist` / `admin`; staff sign in through Cloudflare Access at `/auth/access/staff`; roles are set in D1 by an admin, see `worker/ACCESS_SETUP.md`): every astronaut, plus `/admin/*`.
-- **Service** (`X-EVAde-Key`): full access, for Python, FastAPI and edge functions.
+- **Service** (`X-EVAde-Key`): integration endpoints for Python, FastAPI and edge functions. Console routes require a staff sign-in.
 - Cookie-authenticated writes from another origin are blocked (CSRF), on top of SameSite=Lax.
 
 Frontend call: `fetch("https://api.evade.health/users/<id>/dashboard", { credentials: "include" })`. Get `<id>` from `/auth/me`.

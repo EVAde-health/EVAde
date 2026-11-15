@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
+import { sha256hex } from "../src/auth";
 import { DELETE_USER_SQL } from "../src/deleteUser";
 
 vi.mock("../src/live", () => ({ CrewFeed: class {} }));
@@ -200,6 +201,37 @@ describe("DELETE /me", () => {
     deleteStatus = 503;
     expect((await call("DELETE", "/me", { cookie: token, body: { confirm: "DELETE" } })).status).toBe(503);
     expect(count("users", uid)).toBe(1);
+  });
+
+  it("removes console rows and data in deployed legacy tables while preserving other accounts", async () => {
+    const { uid, token } = await astronaut();
+    const other = await astronaut("Other");
+    const sql = db.raw;
+    sql.exec("CREATE TABLE journal_messages (user_id TEXT, content TEXT); CREATE TABLE user_settings (user_id TEXT)");
+    sql.prepare("INSERT INTO journal_messages VALUES (?, 'fixture')").run(uid);
+    sql.prepare("INSERT INTO user_settings VALUES (?)").run(uid);
+    sql.prepare("INSERT INTO user_settings VALUES (?)").run(other.uid);
+    sql.prepare("INSERT INTO daily_goals (user_id,metric,target,set_by) VALUES (?, 'sleep_hours', 8,?)").run(uid, other.uid);
+    sql.prepare("INSERT INTO daily_goals (user_id,metric,target,set_by) VALUES (?, 'sleep_hours', 8,?)").run(other.uid, uid);
+    sql.prepare("INSERT INTO emergencies (user_id,status,acknowledged_by,resolved_by) VALUES (?,'resolved',?,?)").run(other.uid, uid, uid);
+    sql.prepare("INSERT INTO emergencies (user_id,status) VALUES (?,'open')").run(uid);
+    const thread = sql.prepare("INSERT INTO staff_threads (astronaut_id,staff_id) VALUES (?,?)").run(other.uid, uid).lastInsertRowid;
+    sql.prepare("INSERT INTO staff_messages (thread_id,sender_id,body) VALUES (?,?, 'fixture')").run(thread, other.uid);
+
+    const remainingLogin = crypto.randomUUID();
+    await kv.put(`sess:${await sha256hex(remainingLogin)}`, JSON.stringify({
+      user_id: uid, provider: "cloudflare_access", role: "astronaut", expires: Date.now() + 3600_000,
+    }));
+    const response = await call("DELETE", "/me", { cookie: token, body: { confirm: "DELETE" } });
+    expect(response.status).toBe(200);
+    for (const table of ["journal_messages", "user_settings", "daily_goals", "emergencies"]) expect(count(table, uid)).toBe(0);
+    expect(count("user_settings", other.uid)).toBe(1);
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM staff_threads").get()).toMatchObject({ n: 0 });
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM staff_messages").get()).toMatchObject({ n: 0 });
+    expect(sql.prepare("SELECT set_by FROM daily_goals WHERE user_id=?").get(other.uid)).toMatchObject({ set_by: null });
+    expect(sql.prepare("SELECT acknowledged_by, resolved_by FROM emergencies WHERE user_id=?").get(other.uid))
+      .toMatchObject({ acknowledged_by: null, resolved_by: null });
+    expect((await call("GET", "/staff", { cookie: remainingLogin })).status).toBe(401);
   });
 
   it("the generated SQL matches every table that has a user_id column", () => {

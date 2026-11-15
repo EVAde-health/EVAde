@@ -257,13 +257,21 @@ describe("staff login (/auth/access/staff)", () => {
     }
   });
 
-  it("refuses to provision or elevate a non-staff identity at the staff endpoint", async () => {
-    const response = await login(await sign({ aud: [STAFF_AUD] }), "/auth/access/staff");
+  it("enrolls a verified staff-app identity without granting a session until D1 promotion", async () => {
+    const token = await sign({ aud: [STAFF_AUD], sub: "pending-staff" });
+    const response = await login(token, "/auth/access/staff");
     expect(response.status).toBe(403);
     expect(response.headers.get("Set-Cookie")).toBeNull();
-    expect(row("SELECT COUNT(*) AS n FROM users WHERE user_id NOT LIKE '00000000-0000-4000-8000-%'").n).toBe(0);
-  });
+    const identity = row("SELECT user_id FROM auth_identities WHERE provider='cloudflare_access' AND subject=?", "pending-staff");
+    expect((await response.text())).toContain(identity.user_id);
+    expect(row("SELECT role FROM users WHERE user_id=?", identity.user_id).role).toBe("astronaut");
 
+    (env.DB as any).raw.prepare("UPDATE users SET role='flight_surgeon' WHERE user_id=?").run(identity.user_id);
+    const approved = await login(token, "/auth/access/staff");
+    expect(approved.status).toBe(302);
+    const session = await call("GET", "/auth/me", { Cookie: `__Host-evade_session=${tokenFrom(approved)}` });
+    expect((await session.json<any>())).toMatchObject({ user: { user_id: identity.user_id }, role: "flight_surgeon", demo: false });
+  });
   it("invalidates a staff API session when the D1 role is revoked", async () => {
     const userId = await makeStaff("doc");
     const session = await login(await sign({ sub: "doc", aud: [STAFF_AUD] }), "/auth/access/staff");

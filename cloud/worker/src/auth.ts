@@ -129,12 +129,12 @@ export async function getSessionPrincipal(req: Request, env: AuthEnv): Promise<P
     user_id: string; role: string; email: string | null; provider?: SessionProvider; audience?: string; expires?: number;
   }>(`sess:${await sha256(token)}`, "json");
   if (!s?.provider || !SESSION_PROVIDERS.has(s.provider) || (s.expires !== undefined && s.expires <= Date.now())) return null;
+  const user = await env.DB.prepare("SELECT role FROM users WHERE user_id=?").bind(s.user_id).first<{ role: string }>();
+  if (!user) return null;
   let role = "astronaut";
   if (s.provider === "cloudflare_access_staff") {
     const audience = staffAudience(env);
-    if (!audience || s.audience !== audience || !STAFF_ROLES.has(s.role)) return null;
-    const user = await env.DB.prepare("SELECT role FROM users WHERE user_id=?").bind(s.user_id).first<{ role: string }>();
-    if (user?.role !== s.role) return null;
+    if (!audience || s.audience !== audience || !STAFF_ROLES.has(user.role) || user.role !== s.role) return null;
     role = user.role;
   }
   return { kind: "user", user_id: s.user_id, role, email: s.email, demo: s.provider === "demo" };
@@ -395,17 +395,11 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
       return fail("Sign-in could not be verified. Try again.");
     }
     try {
-      if (staff) {
-        const existing = await env.DB.prepare(
-          "SELECT u.role FROM users u JOIN auth_identities i ON i.user_id=u.user_id WHERE i.provider='cloudflare_access' AND i.subject=?"
-        ).bind(identity.subject).first<{ role: string }>();
-        if (!existing || !STAFF_ROLES.has(existing.role)) return fail("Staff sign-in requires a staff account.", 403);
-      }
       const user = await linkIdentity(env, {
         provider: "cloudflare_access", subject: identity.subject, email: identity.email, display_name: identity.name,
       }, seedTasks);
       if (staff !== STAFF_ROLES.has(user.role)) {
-        return fail(staff ? "Staff sign-in requires a staff account." : "Staff accounts sign in at /auth/access/staff.", 403);
+        return fail(staff ? `Staff access is pending. Give your EVAde administrator your account reference: ${user.user_id}` : "Staff accounts sign in at /auth/access/staff.", 403);
       }
       const ttl = staff ? Math.min(1800, identity.expiresAt - Math.floor(Date.now() / 1000)) : SESSION_TTL;
       if (ttl <= 0) return fail("Your Cloudflare Access sign-in expired. Try again.");
@@ -442,7 +436,7 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     if (!p) return Response.json({ error: "Not signed in", login: `${url.origin}/login` }, { status: 401 });
     const user = await env.DB.prepare("SELECT * FROM users WHERE user_id=?").bind(p.user_id).first();
     if (!user) return Response.json({ error: "Not signed in" }, { status: 401 });
-    return Response.json({ user: { ...user, role: p.role }, role: p.role, email: p.email });
+    return Response.json({ user: { ...user, role: p.role }, role: p.role, email: p.email, demo: p.demo === true });
   }
 
   if (path === "/auth/logout") {

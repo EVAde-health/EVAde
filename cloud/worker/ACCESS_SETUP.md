@@ -17,9 +17,7 @@ host-only, HttpOnly, Secure and SameSite=Lax.
    `api.evade.health/auth/access/staff`. Require a staff allowlist and MFA through Access or its
    identity provider. Copy its distinct audience to `ACCESS_STAFF_AUD`. Leave the value empty
    until the application and policy are ready.
-4. Give each authorized staff member the correct D1 role using their verified user ID after their
-   first crew login, or link their confirmed Access subject to an existing user via the service-only
-   identity endpoint. Verify identity ownership before linking. Accounts are never merged by email.
+4. Enroll and assign roles using the [staff setup instructions](../../docs/STAFF_SETUP.md). Accounts are never merged by email.
 
 ## Verification
 

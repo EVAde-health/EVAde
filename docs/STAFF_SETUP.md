@@ -1,0 +1,43 @@
+# EVAde staff sign-in
+
+## Configure Cloudflare Access
+
+1. In Zero Trust, create a second **Self-hosted** Access application for `api.evade.health/auth/access/staff`. Keep the existing astronaut application on `api.evade.health/auth/access` and leave the rest of the API available to the website and service clients.
+2. Select **One-time PIN** as the login method. Create an **Allow** policy with an **Emails** include rule for the approved staff only. Set the application session duration to **30 minutes**.
+3. Copy the staff application's Audience (AUD) Tag into `ACCESS_STAFF_AUD` in `cloud/worker/wrangler.jsonc`. Use a different audience from `ACCESS_AUD`. A blank staff value disables staff sign-in. Deploy the backend using the documented procedure before testing the staff application.
+4. Have each approved staff member open the staff sign-in link once. The Worker verifies the staff application assertion, registers their Access identity, and displays an account reference. Pending enrollment returns HTTP 403 without creating a staff session.
+
+## Assign a D1 role
+
+Confirm the account reference with the approved staff member using a trusted channel. The reference is their `users.user_id`. Access identities use the `cloudflare_access` provider and a verified Access subject. The `cloudflare_access_staff` value identifies a session issued through the separate staff application.
+
+Send a parameterized query with the [D1 API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/). Use the EVAde account and `evade-db` IDs from the dashboard. Use an existing D1 Write token in the current shell and keep its value private. Choose `flight_surgeon`, `therapist`, or `admin` for the assigned role.
+
+```powershell
+$accountId = Read-Host 'EVAde account ID'
+$databaseId = Read-Host 'evade-db database ID'
+$userId = Read-Host 'Verified EVAde account reference'
+$role = Read-Host 'Staff role (flight_surgeon, therapist, or admin)'
+
+$sql = @'
+UPDATE users
+SET role = ?
+WHERE user_id = ? AND role = 'astronaut'
+  AND EXISTS (
+    SELECT 1 FROM auth_identities AS identity
+    WHERE identity.user_id = users.user_id AND identity.provider = 'cloudflare_access'
+  )
+'@
+$payload = @{ sql = $sql; params = @($role, $userId) } | ConvertTo-Json -Compress
+$result = Invoke-RestMethod -Method Post `
+  -Uri "https://api.cloudflare.com/client/v4/accounts/$accountId/d1/database/$databaseId/query" `
+  -Headers @{ Authorization = "Bearer $env:CLOUDFLARE_API_TOKEN" } `
+  -ContentType 'application/json' -Body $payload
+if (-not $result.success -or $result.result[0].meta.changes -ne 1) {
+  throw 'Expected exactly one approved account to be updated.'
+}
+```
+
+Have the staff member open staff sign-in again. `GET /auth/me` should show the assigned role, and `/admin` should open. Verify that crew and demo accounts receive HTTP 403 on the staff API. The Worker rechecks the D1 role on each API request. To remove staff access immediately, revoke the D1 role and remove the user from the Access allow policy.
+
+Use synthetic accounts and data for judging. The emergency control creates an alert inside EVAde and does not contact emergency services. A real deployment with health data needs a separate privacy and clinical safety review.
