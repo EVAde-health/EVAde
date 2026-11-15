@@ -263,19 +263,26 @@ describe("staff login (/auth/access/staff)", () => {
   });
 
   it("enrolls a verified staff-app identity without granting a session until D1 promotion", async () => {
-    const token = await sign({ aud: [STAFF_AUD], sub: "pending-staff" });
-    const response = await login(token, "/auth/access/staff");
+    const token = await sign({ aud: [STAFF_AUD], sub: "pending-staff", email: "New.Staff@evade.health" });
+    const staffPath = `/auth/access/staff?redirect=${encodeURIComponent("https://evade.health/admin")}`;
+    const response = await login(token, staffPath);
     expect(response.status).toBe(403);
     expect(response.headers.get("Set-Cookie")).toBeNull();
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
     const identity = row("SELECT user_id FROM auth_identities WHERE provider='cloudflare_access' AND subject=?", "pending-staff");
-    expect((await response.text())).toContain(identity.user_id);
+    const page = await response.text();
+    expect(page).toContain(`Staff access is pending for new.staff@evade.health.`);
+    expect(page).toContain(identity.user_id);
+    expect(page).toContain('href="https://evade.health/login"');
+    expect(page).toContain("Use a different email");
     expect(row("SELECT role FROM users WHERE user_id=?", identity.user_id).role).toBe("astronaut");
     expect(row("SELECT user_id FROM auth_identities WHERE provider='cloudflare_access_staff' AND subject=?", "pending-staff"))
       .toMatchObject({ user_id: identity.user_id });
 
     (env.DB as any).raw.prepare("UPDATE users SET role='flight_surgeon' WHERE user_id=?").run(identity.user_id);
-    const approved = await login(token, "/auth/access/staff");
+    const approved = await login(token, staffPath);
     expect(approved.status).toBe(302);
+    expect(approved.headers.get("Location")).toBe("https://evade.health/admin");
     const session = await call("GET", "/auth/me", { Cookie: `__Host-evade_session=${tokenFrom(approved)}` });
     expect((await session.json<any>())).toMatchObject({ user: { user_id: identity.user_id }, role: "flight_surgeon", demo: false });
   });

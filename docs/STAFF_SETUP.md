@@ -5,7 +5,8 @@
 1. In Zero Trust, create a second **Self-hosted** Access application for `api.evade.health/auth/access/staff`. Keep the existing astronaut application on `api.evade.health/auth/access` and leave the rest of the API available to the website and service clients.
 2. Select **One-time PIN** as the login method. Create an **Allow** policy with an **Emails** include rule for the approved staff only. Set the application session duration to **30 minutes**. For staff access to real health data, also require an independent second factor. [Cloudflare Access independent MFA](https://developers.cloudflare.com/cloudflare-one/access-controls/access-settings/independent-mfa/)
 3. Copy the staff application's Audience (AUD) Tag into `ACCESS_STAFF_AUD` in `cloud/worker/wrangler.jsonc`. Use a different audience from `ACCESS_AUD`. A blank staff value disables staff sign-in. Deploy the backend using the documented procedure before testing the staff application.
-4. Have each approved staff member open the staff sign-in link once. The Worker verifies the staff application assertion, registers their Access identity, and displays an account reference. Pending enrollment returns HTTP 403 without creating a staff session.
+4. Have each approved staff member open [Staff sign-in](https://api.evade.health/auth/access/staff?redirect=https%3A%2F%2Fevade.health%2Fadmin) and enter their own allowlisted email and one-time PIN. The staff route creates an EVAde account if needed and records the verified staff enrollment. Pending enrollment shows the verified email and account reference without opening a staff session.
+5. If Access is already signed in under someone else's email, choose **Use a different email** on the website login page, or start the staff sign-in in a fresh private browser window. Confirm that the pending page shows your own email before sharing the account reference.
 
 ## Assign a D1 role
 

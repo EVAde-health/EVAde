@@ -270,6 +270,12 @@ function loginPage(env: AuthEnv, url: URL, redirect: string, error?: string, sta
   const accessLink = accessConfigured(env)
     ? `<a class="btn" href="/auth/access?redirect=${encodeURIComponent(redirect)}">Sign in or create account</a>`
     : "";
+  const staffLink = staffAudience(env)
+    ? `<a class="btn" href="/auth/access/staff?redirect=${encodeURIComponent(safeRedirect(env, "/admin", url))}">Staff sign-in</a>`
+    : "";
+  const switchLink = staffLink && env.FRONTEND_URL
+    ? `<small>Using the wrong email? On the <a href="${esc(safeRedirect(env, "/login", url))}">EVAde sign-in page</a>, choose Use a different email.</small>`
+    : "";
   const devField = providers.includes("dev") ? `<input name="dev_email" placeholder="test email (dev login)" />` : "";
   const ts = providers.some((p) => p !== "dev") && env.TURNSTILE_SITE_KEY
     ? `<div class="cf-turnstile" data-sitekey="${esc(env.TURNSTILE_SITE_KEY)}" data-action="login" data-theme="dark"></div>
@@ -290,6 +296,8 @@ function loginPage(env: AuthEnv, url: URL, redirect: string, error?: string, sta
 <h1>EVAde</h1><p>Astronaut health monitoring</p>
 ${error ? `<p class="err">${esc(error)}</p>` : ""}
 ${accessLink}
+${staffLink}
+${switchLink}
 <form method="post" action="/auth/start">
   <input type="hidden" name="redirect" value="${esc(redirect)}">${devField}${ts}${buttons}
 </form>
@@ -297,6 +305,7 @@ ${accessLink}
 </main></body></html>`;
   return new Response(html, { status, headers: {
     "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
     "Content-Security-Policy": `default-src 'none'; script-src ${TURNSTILE_ORIGIN}; frame-src ${TURNSTILE_ORIGIN}; connect-src ${TURNSTILE_ORIGIN}; style-src 'nonce-${nonce}'; form-action 'self' https://accounts.google.com https://github.com; base-uri 'none'; frame-ancestors 'none'`,
   } });
 }
@@ -416,7 +425,9 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
         if (!enrolled.meta.changes) return fail("This staff identity is linked to another account.", 403);
       }
       if (staff !== STAFF_ROLES.has(user.role)) {
-        return fail(staff ? `Staff access is pending. Give your EVAde administrator your account reference: ${user.user_id}` : "Staff accounts sign in at /auth/access/staff.", 403);
+        return fail(staff
+          ? `Staff access is pending for ${identity.email}. If this is your email, give your EVAde administrator your account reference: ${user.user_id}`
+          : "Staff accounts sign in at /auth/access/staff.", 403);
       }
       const ttl = staff ? Math.min(1800, identity.expiresAt - Math.floor(Date.now() / 1000)) : SESSION_TTL;
       if (ttl <= 0) return fail("Your Cloudflare Access sign-in expired. Try again.");
