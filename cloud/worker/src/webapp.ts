@@ -297,7 +297,7 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
     const user = await requireUser(env, p.id);
     const days = Math.max(1, Math.min(Number(url.searchParams.get("days")) || 180, 1000));
     const { results } = await env.DB.prepare(
-      "SELECT ts, daily_dose_msv, cumulative_msv, dose_rate_usv_h, spe_flag, location FROM radiation_doses WHERE user_id=? AND ts>=? ORDER BY ts"
+      "SELECT ts, daily_dose_msv, cumulative_msv, dose_rate_usv_h, spe_flag, location, source FROM radiation_doses WHERE user_id=? AND ts>=? ORDER BY ts"
     ).bind(p.id, new Date(Date.now() - days * DAY_MS).toISOString()).all();
     return json({ limit_msv: user.radiation_limit_msv ?? 600, doses: results });
   });

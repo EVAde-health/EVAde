@@ -274,3 +274,78 @@ describe("food search", () => {
     expect((await call("GET", "/foods/search?q=a")).status).toBe(422);
   });
 });
+
+describe("synthetic simulation", () => {
+  it("checks the admin role and simulates only seeded or explicitly synthetic astronauts", async () => {
+    const raw: DatabaseSync = env.DB.raw;
+    const demo = "00000000-0000-4000-8000-00000000d001";
+    const demoStaff = "00000000-0000-4000-8000-00000000d002";
+    raw.exec("ALTER TABLE users ADD COLUMN synthetic INTEGER NOT NULL DEFAULT 0");
+    raw.prepare("UPDATE users SET synthetic=1 WHERE user_id=?").run(OTHER);
+    raw.prepare("UPDATE users SET role='admin' WHERE user_id=?").run(SURGEON);
+    Object.assign(env, { ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com", ACCESS_AUD: "crew", ACCESS_STAFF_AUD: "staff" });
+    await env.SESSIONS.put("sess:" + await sha256("sim-admin"), JSON.stringify({
+      user_id: SURGEON, role: "admin", provider: "cloudflare_access_staff", audience: "staff",
+    }));
+    const old = "2000-01-01T00:00:00.000Z";
+    const insert = raw.prepare("INSERT INTO observations (user_id,metric,value,unit,ts,source,simulation_source) VALUES (?,'heart_rate',70,'bpm',?,'synthetic','simulated')");
+    insert.run(demo, old);
+    insert.run(ASTRONAUT, old);
+    const readReal = () => raw.prepare("SELECT * FROM observations WHERE user_id=?").all(ASTRONAUT);
+    const before = readReal();
+    expect((await call("POST", "/admin/simulate")).status).toBe(403);
+    const refreshed = await call("POST", "/admin/simulate", { token: "sim-admin" });
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.data).toMatchObject({ astronauts: 2, model_failures: 0 });
+    expect(readReal()).toEqual(before);
+    expect(raw.prepare("SELECT 1 FROM observations WHERE user_id=? AND ts=?").get(demo, old)).toBeUndefined();
+    expect(raw.prepare("SELECT 1 FROM observations WHERE user_id=?").get(demoStaff)).toBeUndefined();
+    const count = () => raw.prepare("SELECT count(*) AS n FROM observations WHERE simulation_source='simulated'").get();
+    const firstCount = count();
+    await call("POST", "/admin/simulate", { token: "sim-admin" });
+    expect(count()).toEqual(firstCount);
+    const observations = await call("GET", "/users/" + OTHER + "/observations", { token: "other" });
+    expect(observations.data.some((row: { source: string }) => row.source === "simulated")).toBe(true);
+    for (const table of ["meals", "hydration", "radiation_doses", "risk_scores"]) {
+      expect(raw.prepare("SELECT 1 FROM " + table + " WHERE user_id=? AND source='simulated'").get(demo), table).toBeDefined();
+    }
+  });
+
+  it("runs on the quarter-hour schedule and stores model results with synthetic provenance", async () => {
+    const id = "00000000-0000-4000-8000-00000000d001";
+    const scheduledTime = Date.parse("2026-11-15T15:00:00Z");
+    const pending: Promise<unknown>[] = [];
+    const requested: [string, Record<string, unknown>][] = [];
+    vi.stubGlobal("fetch", async () => Response.json([]));
+    env.MODEL_GATEWAY_KEY = crypto.randomUUID();
+    env.MODELS = {
+      fetch: async (request: Request) => {
+        const path = new URL(request.url).pathname;
+        const input = await request.json() as Record<string, unknown>;
+        requested.push([path, input]);
+        if (path === "/v1/users") return Response.json({ data: { user_id: "model-simulation-fixture" } });
+        if (path === "/v1/predict/risk") return Response.json({ data: { risk: { r: 0.4, band: "elevated" }, mdtr: { display: "60" } } });
+        return Response.json({ data: { radiation: { level: "yellow" } } });
+      },
+    };
+    const run = () => worker.scheduled(
+      { scheduledTime, cron: "*/15 * * * *", noRetry: () => {} },
+      env,
+      { ...ctx, waitUntil: (promise: Promise<unknown>) => pending.push(promise) },
+    );
+    await run();
+    await Promise.all(pending.splice(0));
+    await run();
+    await Promise.all(pending.splice(0));
+    expect(requested.map(([path]) => path).sort()).toEqual(["/v1/predict/radiation-risk", "/v1/predict/risk", "/v1/users"]);
+    expect(requested.slice(1).map(([, input]) => input.user_id)).toEqual(["model-simulation-fixture", "model-simulation-fixture"]);
+    const raw: DatabaseSync = env.DB.raw;
+    expect(raw.prepare("SELECT endpoint FROM model_results WHERE user_id=? AND source='simulated'").all(id)).toHaveLength(2);
+    expect(raw.prepare("SELECT r,mdtr FROM risk_scores WHERE user_id=? AND source='simulated'").get(id))
+      .toMatchObject({ r: 0.4, mdtr: "60" });
+    const doses = raw.prepare("SELECT cumulative_msv FROM radiation_doses WHERE user_id=? AND source='simulated' ORDER BY ts").all(id);
+    expect(doses.length).toBeGreaterThan(1);
+    expect(doses.every((row, i) => i === 0 || Number(row.cumulative_msv) >= Number(doses[i - 1].cumulative_msv))).toBe(true);
+    expect(raw.prepare("SELECT 1 FROM alerts WHERE user_id=? AND level='red' AND simulation_source='simulated'").get(id)).toBeDefined();
+  });
+});

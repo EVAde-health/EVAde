@@ -7,7 +7,7 @@
 --   * vital_corrections     audit trail when a surgeon corrects a recorded vital
 --   * user_notifications    notes shown to a user (goal changed, surgeon responding, ...)
 -- emergencies (0009) is reused as-is. daily_goals / staff_threads / staff_messages (0009)
--- are superseded: their rows are copied here once and the Worker no longer reads them.
+-- remain for migration and backward-compatible cleanup. The message API writes only to conversations.
 -- No DROP, RENAME, or rewrite of existing tables. Timestamps are ISO-8601 UTC text.
 -- =============================================================================
 
@@ -75,20 +75,47 @@ CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications(use
 
 -- Carry over anything written through the 0009 console so nothing already saved is lost.
 INSERT INTO user_goals (user_id, goal_type, target, unit, note, set_by, created_at)
-SELECT user_id,
-       CASE metric WHEN 'kcal_intake' THEN 'calories' WHEN 'protein_intake_g' THEN 'protein'
-                   WHEN 'carbs_intake_g' THEN 'carbs' WHEN 'fat_intake_g' THEN 'fat'
-                   WHEN 'water_intake_ml' THEN 'water_ml' ELSE 'sleep_h' END,
-       target,
-       CASE metric WHEN 'kcal_intake' THEN 'kcal' WHEN 'water_intake_ml' THEN 'ml' WHEN 'sleep_hours' THEN 'h' ELSE 'g' END,
-       note, set_by, effective_at
-FROM daily_goals
-WHERE metric IN ('kcal_intake','protein_intake_g','carbs_intake_g','fat_intake_g','water_intake_ml','sleep_hours')
-ORDER BY effective_at, id;
+SELECT legacy.user_id, legacy.goal_type, legacy.target, legacy.unit, legacy.note, legacy.set_by, legacy.effective_at
+FROM (
+  SELECT id, user_id, target, note, set_by, effective_at,
+         CASE metric WHEN 'kcal_intake' THEN 'calories' WHEN 'protein_intake_g' THEN 'protein'
+                     WHEN 'carbs_intake_g' THEN 'carbs' WHEN 'fat_intake_g' THEN 'fat'
+                     WHEN 'water_intake_ml' THEN 'water_ml' ELSE 'sleep_h' END AS goal_type,
+         CASE metric WHEN 'kcal_intake' THEN 'kcal' WHEN 'water_intake_ml' THEN 'ml' WHEN 'sleep_hours' THEN 'h' ELSE 'g' END AS unit
+  FROM daily_goals
+  WHERE metric IN ('kcal_intake','protein_intake_g','carbs_intake_g','fat_intake_g','water_intake_ml','sleep_hours')
+) legacy
+WHERE NOT EXISTS (
+  SELECT 1 FROM user_goals g WHERE g.user_id=legacy.user_id AND g.goal_type=legacy.goal_type
+    AND g.target=legacy.target AND g.unit=legacy.unit AND g.note IS legacy.note
+    AND g.set_by IS legacy.set_by AND g.created_at=legacy.effective_at
+)
+ORDER BY legacy.effective_at, legacy.id;
 
 INSERT OR IGNORE INTO conversations (id, astronaut_id, surgeon_id, created_at, updated_at)
 SELECT id, astronaut_id, staff_id, created_at, updated_at FROM staff_threads;
 
+-- A conversation ID may already belong to another pair. Always map messages by the verified pair.
+INSERT OR IGNORE INTO conversations (astronaut_id, surgeon_id, created_at, updated_at)
+SELECT t.astronaut_id, t.staff_id, t.created_at, t.updated_at FROM staff_threads t
+WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.astronaut_id=t.astronaut_id AND c.surgeon_id=t.staff_id);
+
 INSERT OR IGNORE INTO conversation_messages (id, conversation_id, sender_id, body, created_at, read_at)
-SELECT m.id, m.thread_id, m.sender_id, m.body, m.created_at, m.read_at
-FROM staff_messages m WHERE EXISTS (SELECT 1 FROM conversations c WHERE c.id = m.thread_id);
+SELECT m.id, c.id, m.sender_id, m.body, m.created_at, m.read_at
+FROM staff_messages m JOIN staff_threads t ON t.id=m.thread_id
+JOIN conversations c ON c.astronaut_id=t.astronaut_id AND c.surgeon_id=t.staff_id
+WHERE m.sender_id IN (c.astronaut_id,c.surgeon_id)
+AND NOT EXISTS (
+  SELECT 1 FROM conversation_messages saved WHERE saved.conversation_id=c.id
+    AND saved.sender_id=m.sender_id AND saved.body=m.body AND saved.created_at=m.created_at
+);
+
+INSERT INTO conversation_messages (conversation_id, sender_id, body, created_at, read_at)
+SELECT c.id, m.sender_id, m.body, m.created_at, m.read_at
+FROM staff_messages m JOIN staff_threads t ON t.id=m.thread_id
+JOIN conversations c ON c.astronaut_id=t.astronaut_id AND c.surgeon_id=t.staff_id
+WHERE m.sender_id IN (c.astronaut_id,c.surgeon_id)
+AND NOT EXISTS (
+  SELECT 1 FROM conversation_messages saved WHERE saved.conversation_id=c.id
+    AND saved.sender_id=m.sender_id AND saved.body=m.body AND saved.created_at=m.created_at
+);
