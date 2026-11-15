@@ -14,7 +14,8 @@ import {
 import {
   AuthEnv, clearSessionCookie, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, sessionReference, sha256hex, STAFF_ACCESS_PROVIDER, STAFF_ROLES, trustedOrigin,
 } from "./auth";
-import { analyzeJournal, dailyBriefing, transcribe, TEXT_MODEL } from "./ai";
+import { aiConfigured, analyzeJournal, dailyBriefing, transcribe, type AiEnv } from "./ai";
+import { registerCompanion } from "./companion";
 import type { LiveEvent } from "./live";
 import {
   callModelApi, deleteModelUser, isMock, ModelApiError, ModelEnv, modelsConfigured, modelUserId, PREDICT_KINDS, PredictKind,
@@ -22,16 +23,15 @@ import {
 } from "./models";
 import { deleteUserStatements } from "./deleteUser";
 import { HttpError } from "./http";
-import { registerOps } from "./ops";
+import { refreshSimulation, type SimulationPrediction } from "./simulation";
+import { crewOverview, registerOps } from "./ops";
 import { registerMessaging } from "./messages";
 import { awardDaily, voiceSavedReply, materializeTasks, registerWebAppRoutes, type WebAppEnv } from "./webapp";
 import { extractHealth, rowsFor, stableId, type CheckinIn, type Extraction } from "./journalParse";
 export { CrewFeed } from "./live";
 
-export interface Env extends AuthEnv, ModelEnv, WebAppEnv {
+export interface Env extends AuthEnv, ModelEnv, WebAppEnv, AiEnv {
   DB: D1Database;
-  AI?: Ai; // Workers AI
-  AI_GATEWAY?: string; // optional AI Gateway id
   MEDIA?: R2Bucket; // R2 bucket evade-media
   LIVE?: DurableObjectNamespace; // CrewFeed Durable Object
   EVADE_API_KEY?: string;
@@ -324,7 +324,7 @@ function publish(env: Env, ctx: ExecutionContext, ev: LiveEvent & { staff_only?:
 }
 const isStaff = (who: Principal) => who.kind === "service" || STAFF_ROLES.has(who.role ?? "");
 
-// ---------- Journal analysis (Workers AI) ----------
+// ---------- Journal analysis (xAI Grok) ----------
 interface JournalProcessOpts {
   checkin?: CheckinIn | null; // the voice agent's structured check-in, when the entry is a voice session
   callRef?: string | null; // voice session id, stored in self_reports.call_ref
@@ -385,10 +385,32 @@ async function saveExtraction(env: Env, ctx: ExecutionContext, entryId: number, 
   const entry = await env.DB.prepare("SELECT client_id, ts, source FROM journal_entries WHERE id=?")
     .bind(entryId).first<{ client_id: string | null; ts: string; source: string }>();
   if (!entry) return { self_report: null, observations: [] as { metric: string; value: number; unit: string; source: string }[] };
-  const base = entry.client_id ?? `journal:${entryId}`;
-  const parsedTs = Date.parse(entry.ts);
+  return saveParsed(env, ctx, userId, x, entry.client_id ?? `journal:${entryId}`, entry.ts, entry.source === "voice" ? "voice" : "text", callRef);
+}
+
+/**
+ * Parser only, for one message in the private /journal/chat check-in (companion.ts). No journal entry and no
+ * analysis are written for those messages (they stay private); only the values the astronaut stated become
+ * self_reports / observations rows, with client_ids derived from the message id (chat:<id>), so a retry adds nothing.
+ * The companion's previous question (same thread, last day) gives a short answer such as "about 7" its context.
+ */
+async function parseChatMessage(env: Env, ctx: ExecutionContext, userId: string, messageId: string, content: string, ts: string) {
+  try {
+    const prev = await env.DB.prepare(
+      "SELECT content FROM journal_messages WHERE user_id=? AND thread_id IS NULL AND sender='assistant' AND ts<? AND ts>=? ORDER BY ts DESC LIMIT 1"
+    ).bind(userId, ts, new Date(Date.parse(ts) - 864e5).toISOString()).first<{ content: string }>();
+    const parseText = prev ? `EVAde: ${prev.content.replace(/\s*\n\s*/g, " ").slice(0, 1000)}\nMe: ${content}` : content;
+    const x = await extractHealth(env, parseText, null);
+    await saveParsed(env, ctx, userId, x, `chat:${messageId}`, ts, "text", null);
+  } catch (e) {
+    console.error("journal chat extraction", e instanceof Error ? e.name : "Error");
+  }
+}
+
+async function saveParsed(env: Env, ctx: ExecutionContext, userId: string, x: Extraction, base: string, entryTs: string, kind: "text" | "voice", callRef: string | null) {
+  const parsedTs = Date.parse(entryTs);
   const ts = Number.isFinite(parsedTs) && parsedTs <= Date.now() ? new Date(parsedTs).toISOString() : now();
-  const { selfReport: sr, observations } = rowsFor(x, base, ts, entry.source === "voice" ? "voice" : "text", callRef);
+  const { selfReport: sr, observations } = rowsFor(x, base, ts, kind, callRef);
   if (sr) {
     await env.DB.prepare(
       `INSERT INTO self_reports (client_id,user_id,ts,mood,stress,fatigue,sleep_quality,note,source,sleep_hours,symptoms,checkin_level,reasons,actions,call_ref)
@@ -499,9 +521,7 @@ route("POST", "/auth/identities", async (req, env) => {
   if (!b.provider || !b.subject) throw new HttpError(422, "provider and subject are required");
   if (b.provider === STAFF_ACCESS_PROVIDER) throw new HttpError(403, "Staff enrollment requires the staff Access application");
   if (b.user_id) await requireUser(env, b.user_id);
-  // A service link never counts as a verified email and can't pick a role through the dev path.
-  const { email_verified: _verified, dev_role: _devRole, ...identity } = b;
-  return json(await linkIdentity(env, identity, (id) => seedTasks(env, id)), 201);
+  return json(await linkIdentity(env, b, (id) => seedTasks(env, id)), 201);
 });
 route("GET", "/auth/identities/:provider/:subject", async (_r, env, p) => {
   const row = await env.DB.prepare(
@@ -512,6 +532,7 @@ route("GET", "/auth/identities/:provider/:subject", async (_r, env, p) => {
 });
 
 // Admin panel (doctors / therapists)
+route("GET", "/admin/crew", async (_r, env, _p, _u, _c, who) => json(await crewOverview(env.DB, who.user_id ?? null)));
 route("GET", "/admin/escalations", async (_r, env) => json((await env.DB.prepare("SELECT * FROM v_escalations ORDER BY ts DESC").all()).results));
 route("GET", "/admin/therapist-feed", async (_r, env, _p, url) => {
   const uid = url.searchParams.get("user_id");
@@ -542,8 +563,8 @@ route("GET", "/users/:id/observations", async (_r, env, p, url) => {
   const metric = url.searchParams.get("metric");
   const since = new Date(Date.now() - days * 864e5).toISOString();
   const q = metric
-    ? env.DB.prepare("SELECT metric,value,unit,ts,level,z,source FROM observations WHERE user_id=? AND metric=? AND ts>=? ORDER BY ts").bind(p.id, metric, since)
-    : env.DB.prepare("SELECT metric,value,unit,ts,level,z,source FROM observations WHERE user_id=? AND ts>=? ORDER BY ts").bind(p.id, since);
+    ? env.DB.prepare("SELECT metric,value,unit,ts,level,z,COALESCE(simulation_source,source) AS source FROM observations WHERE user_id=? AND metric=? AND ts>=? ORDER BY ts").bind(p.id, metric, since)
+    : env.DB.prepare("SELECT metric,value,unit,ts,level,z,COALESCE(simulation_source,source) AS source FROM observations WHERE user_id=? AND ts>=? ORDER BY ts").bind(p.id, since);
   return json((await q.all()).results);
 });
 
@@ -619,7 +640,7 @@ route("POST", "/journal", async (req, env, _p, url, ctx) => {
     `UPDATE tasks SET completed_at=? WHERE id=(SELECT id FROM tasks WHERE user_id=? AND title LIKE 'Journal%' AND completed_at IS NULL ORDER BY due_at LIMIT 1)`
   ).bind(now(), b.user_id).run();
   if (!r?.id) return json({ id: null, duplicate: true }, 200);
-  // Workers AI analysis runs after the response; ?analyze=sync waits for it (handy for demos)
+  // Grok analysis runs after the response; ?analyze=sync waits for it (handy for demos)
   if (url.searchParams.get("analyze") === "sync") {
     const a = await processJournal(env, ctx, r.id, b.user_id, String(b.content));
     return json({ id: r.id, analysis: { summary: a.summary, mood_label: a.mood_label, sentiment: a.sentiment, themes: a.themes, model: a.model } }, 201);
@@ -628,11 +649,12 @@ route("POST", "/journal", async (req, env, _p, url, ctx) => {
   return json({ id: r.id, analysis: "queued" }, 201);
 });
 
-// Voice journal: audio -> R2 (if enabled) -> Whisper transcript -> journal entry -> AI analysis
+// Voice journal: audio -> R2 (if enabled) -> xAI speech-to-text transcript -> journal entry -> AI analysis
 route("POST", "/journal/voice", async (req, env, _p, url, ctx, who) => {
   const userId = targetUser(who, url);
   await requireUser(env, userId);
-  if (!env.AI) throw new HttpError(503, "Workers AI not configured");
+  if (!aiConfigured(env)) throw new HttpError(503, "Speech-to-text is not configured (XAI_API_KEY)");
+  const audioType = req.headers.get("Content-Type")?.split(";")[0].trim() || "application/octet-stream";
   let audio: ArrayBuffer;
   let mediaId: string | null = null;
   if (env.MEDIA) {
@@ -645,9 +667,9 @@ route("POST", "/journal/voice", async (req, env, _p, url, ctx, who) => {
   }
   let text: string;
   try {
-    ({ text } = await transcribe(env, audio));
+    ({ text } = await transcribe(env, audio, audioType));
   } catch (e) {
-    console.error("transcribe", e);
+    console.error("transcribe", e instanceof Error ? e.message : "Error");
     throw new HttpError(502, mediaId ? `Transcription failed; the recording was saved as media ${mediaId}` : "Transcription failed, try again");
   }
   if (!text) throw new HttpError(422, "No speech recognised in the recording");
@@ -741,8 +763,10 @@ route("POST", "/journal/:jid/analyze", async (_r, env, p, _u, ctx) => {
   if (!j) throw new HttpError(404, "journal entry not found");
   return json(await processJournal(env, ctx, Number(p.jid), j.user_id, j.content));
 });
-route("GET", "/users/:id/journal", async (_r, env, p) =>
-  json((await env.DB.prepare("SELECT * FROM journal_entries WHERE user_id=? ORDER BY ts DESC LIMIT 100").bind(p.id).all()).results));
+route("GET", "/users/:id/journal", async (_r, env, p, _u, _c, who) => {
+  if (who.kind === "user" && p.id !== who.user_id) throw new HttpError(403, "Only the astronaut can read their journal");
+  return json((await env.DB.prepare("SELECT * FROM journal_entries WHERE user_id=? ORDER BY ts DESC LIMIT 100").bind(p.id).all()).results);
+});
 route("PATCH", "/journal/:jid", async (req, env, p) => {
   const b = await body(req);
   await env.DB.prepare("UPDATE journal_entries SET ai_summary=COALESCE(?,ai_summary), sentiment=COALESCE(?,sentiment), flags=COALESCE(?,flags) WHERE id=?")
@@ -800,7 +824,7 @@ route("GET", "/users/:id/risk", async (_r, env, p, url, ctx, who) => {
   return json(risk);
 });
 
-// Plain-language daily briefing (Workers AI), cached in KV for 30 minutes
+// Plain-language daily briefing (xAI Grok), cached in KV for 30 minutes
 route("GET", "/users/:id/briefing", async (_r, env, p, url, _c, who) => {
   const user = await requireUser(env, p.id);
   const cacheKey = `brief:${p.id}`;
@@ -821,12 +845,13 @@ route("GET", "/users/:id/briefing", async (_r, env, p, url, _c, who) => {
       action: l.level !== "green" ? defs.get(l.metric)?.what_to_do : undefined })),
     overrides: risk.overrides, space_weather: sw,
   };
-  const text = who.demo ? null : await dailyBriefing(env, facts);
+  const brief = who.demo ? null : await dailyBriefing(env, facts);
+  const text = brief?.text ?? null;
   const flagged = facts.readings.filter((r) => r.level !== "green");
   const fallback = [`Overall status: ${risk.band}. ${risk.action}`,
     ...flagged.map((r) => `${r.label} is ${r.value} ${r.unit} (${r.level}). ${r.action ?? ""}`.trim()),
     flagged.some((r) => r.level === "red") ? "A reading is red: contact the flight surgeon." : ""].filter(Boolean).join(" ");
-  const out = { briefing: text ?? fallback, generated_by: text ? TEXT_MODEL : "rules", generated_at: now(),
+  const out = { briefing: text ?? fallback, generated_by: brief ? brief.model : "rules", generated_at: now(),
     note: "Generated from your readings for information only; it is not a diagnosis." };
   if (text) await env.SESSIONS?.put(cacheKey, JSON.stringify(out), { expirationTtl: 1800 });
   return json(out);
@@ -1106,31 +1131,26 @@ route("GET", "/models", async (_r, env) => {
   }
 });
 
-route("POST", "/predict/:kind", async (req, env, p) => {
-  if (!(PREDICT_KINDS as readonly string[]).includes(p.kind)) throw new HttpError(404, "unknown model endpoint");
-  const kind = p.kind as PredictKind;
-  const payload = await body<Record<string, unknown>>(req);
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new HttpError(400, "Body must be a JSON object");
-  const user = await requireUser(env, payload.user_id as string | undefined);
+async function predictFor(env: Env, kind: PredictKind, userId: string, payload: Record<string, unknown>, simulation?: { ts: string; modelUserId: string }) {
   try {
     // space-weather is not per-user; everything else is sent under the model service's own id for this user
     const forward = { ...payload };
     if (kind === "space-weather") delete forward.user_id;
-    else forward.user_id = await modelUserId(env, user.user_id);
+    else forward.user_id = simulation?.modelUserId ?? await modelUserId(env, userId);
     const r = await callModelApi(env, "POST", `/v1/predict/${kind}`, forward);
     const out = r.out ?? { error: { code: "bad_response", message: "non-JSON response from model service" } };
     const placeholder = isMock(out);
     if (r.ok && !placeholder) {
       const sum = summarize(kind, out);
-      const ts = typeof out.server_time === "string" ? out.server_time : now();
+      const ts = simulation?.ts ?? (typeof out.server_time === "string" ? out.server_time : now());
       const stmts = [
-        env.DB.prepare("INSERT INTO model_results (user_id,endpoint,model_id,ts,output,flag,confidence) VALUES (?,?,?,?,?,?,?)")
-          .bind(user.user_id, `/v1/predict/${kind}`, sum.model_id, ts, JSON.stringify(out), sum.flag, sum.confidence),
+        env.DB.prepare("INSERT INTO model_results (user_id,endpoint,model_id,ts,output,flag,confidence,source) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING")
+          .bind(userId, `/v1/predict/${kind}`, sum.model_id, ts, JSON.stringify(out), sum.flag, sum.confidence, simulation ? "simulated" : "model"),
       ];
       const risk = kind === "risk" ? riskRow(out) : null;
       if (risk) {
-        stmts.push(env.DB.prepare("INSERT INTO risk_scores (user_id,ts,r,band,mdtr,domains,top_domains,override,source) VALUES (?,?,?,?,?,?,?,?,'fastapi')")
-          .bind(user.user_id, ts, risk.r, risk.band, risk.mdtr, risk.domains, risk.top_domains, risk.override));
+        stmts.push(env.DB.prepare("INSERT INTO risk_scores (user_id,ts,r,band,mdtr,domains,top_domains,override,source) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,ts) WHERE source='simulated' DO UPDATE SET r=excluded.r, band=excluded.band, mdtr=excluded.mdtr, domains=excluded.domains, top_domains=excluded.top_domains, override=excluded.override")
+          .bind(userId, ts, risk.r, risk.band, risk.mdtr, risk.domains, risk.top_domains, risk.override, simulation ? "simulated" : "fastapi"));
       }
       await env.DB.batch(stmts);
     }
@@ -1141,6 +1161,56 @@ route("POST", "/predict/:kind", async (req, env, p) => {
   } catch (e) {
     throw modelError(e);
   }
+}
+
+route("POST", "/predict/:kind", async (req, env, p) => {
+  if (!(PREDICT_KINDS as readonly string[]).includes(p.kind)) throw new HttpError(404, "unknown model endpoint");
+  const kind = p.kind as PredictKind;
+  const payload = await body<Record<string, unknown>>(req);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new HttpError(400, "Body must be a JSON object");
+  const user = await requireUser(env, payload.user_id as string | undefined);
+  return predictFor(env, kind, user.user_id, payload);
+});
+
+function simulationPredictor(env: Env, manual: boolean): SimulationPrediction {
+  return async (id, ts, point) => {
+    const risk = computeRisk({
+      latest: point.readings, sleep7d: point.readings.sleep_hours, cumulativeMsv: point.cumulative,
+      speMsv: point.radiation ? point.dailyDose : undefined, doseRateRatio: point.dailyDose / 0.42,
+    });
+    await env.DB.prepare("INSERT INTO risk_scores (user_id,ts,r,band,mdtr,domains,top_domains,override,source) VALUES (?,?,?,?,?,?,?,?,'simulated') ON CONFLICT DO NOTHING")
+      .bind(id, ts, risk.r, risk.band, risk.mdtr, JSON.stringify(risk.domains), JSON.stringify(risk.top_domains), JSON.stringify(risk.overrides)).run();
+    if (!modelsConfigured(env) || (!manual && new Date(ts).getUTCMinutes() !== 0)) return;
+    const simulation = { ts, modelUserId: await modelUserId(env, id) };
+
+    const requests = [
+      ["risk", {
+        domain_inputs: Object.fromEntries(Object.entries(risk.domains)
+          .filter(([key, value]) => ["cardiac", "behavioral", "neuro", "radiation", "bone"].includes(key) && typeof value === "number")
+          .map(([key, value]) => [key, { s: value }])),
+        cumulative_dose_msv: point.cumulative,
+        dose_rate_msv_day: point.dailyDose,
+      }],
+      ["radiation-risk", {
+        t_utc: ts, cumulative_dose_msv: point.cumulative, dose_equivalent_rate_msv_per_day: point.dailyDose,
+        rate_ratio_to_7d_median: point.dailyDose / 0.42, spe_active: point.radiation,
+        spe_dose_msv: point.radiation ? point.dailyDose : 0,
+      }],
+    ] as const;
+    const results = await Promise.allSettled(requests.map(async ([kind, data]) => {
+      const prior = await env.DB.prepare("SELECT 1 FROM model_results WHERE user_id=? AND endpoint=? AND ts=? AND source='simulated'")
+        .bind(id, "/v1/predict/" + kind, ts).first();
+      if (prior) return;
+      const response = await predictFor(env, kind, id, data, simulation);
+      if (!response.ok) throw new Error("Simulation model request failed");
+    }));
+    if (results.some(result => result.status === "rejected")) throw new Error("Simulation model request failed");
+  };
+}
+
+route("POST", "/admin/simulate", async (_req, env, _p, _url, _ctx, who) => {
+  if (who.kind !== "user" || who.role !== "admin") throw new HttpError(403, "Administrator sign-in required");
+  return json(await refreshSimulation(env.DB, Date.now(), simulationPredictor(env, true)));
 });
 
 // "Delete my account": signed-in astronauts only (not the shared demo account, not service keys).
@@ -1195,6 +1265,7 @@ registerWebAppRoutes<Env>({
 });
 registerOps(route, { json, body, now });
 registerMessaging(route, { json, body, now });
+registerCompanion<Env>(route, { json, body, parse: parseChatMessage });
 
 // ---------- Access control ----------
 // service  = X-EVAde-Key (Python seeding, Michael's FastAPI, Ryan B's edge functions): integration routes
@@ -1310,7 +1381,10 @@ export default {
     }
   },
 
-  async scheduled(_c: ScheduledController, env: Env, ctx: ExecutionContext) {
+  async scheduled(c: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(refreshSimulation(env.DB, c.scheduledTime, simulationPredictor(env, false)).catch(() => {
+      console.error("Simulated data refresh failed");
+    }));
     const row = await pullSpaceWeather(env);
     if (!(row as any).error) publish(env, ctx, { type: "space_weather", data: row });
   },
