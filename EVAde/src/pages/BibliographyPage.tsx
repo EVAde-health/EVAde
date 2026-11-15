@@ -25,6 +25,9 @@ export default function BibliographyPage() {
       {bibliography.map(group => (
         <VStack as="section" key={group.title} gap={2}>
           <Heading level={2}>{group.title}</Heading>
+          {group.title === 'Models and methods' && (
+            <Text type="supporting">Michael ran EVAde’s model training and evaluation.</Text>
+          )}
           <ol start={group.entries[0].number}>
             {group.entries.map(entry => (
               <li id={`ref-${entry.number}`} key={entry.key} tabIndex={-1}>

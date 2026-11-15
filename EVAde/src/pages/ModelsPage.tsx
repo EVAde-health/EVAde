@@ -39,6 +39,7 @@ export function ModelsContent({ catalog, runs, runsError }: { catalog?: CatalogC
     <VStack gap={5} padding={6} className="page">
       <PageHeader title="Models" description="Training evidence and live availability for every EVAde model and architecture."
         actions={<><Link href={modelRegistryUrl} isExternalLink>GitHub model registry</Link><Link href="/bibliography">Bibliography</Link></>} />
+      <Text type="supporting">Michael trained and evaluated the models as EVAde’s machine learning contributor.</Text>
       <HStack vAlign="center" gap={2} wrap="wrap" role="status">
         <StatusDot variant={live ? 'success' : catalog ? 'warning' : 'neutral'} label={label} />
         <Text>{label}</Text>
