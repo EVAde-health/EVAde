@@ -345,6 +345,9 @@ ${accessLink}
 // ---------- route handler (returns null when the path isn't an auth route) ----------
 export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks: (id: string) => Promise<void>): Promise<Response | null> {
   const path = url.pathname.replace(/\/$/, "");
+  if (path === "/auth/access/staff" && req.method === "GET") {
+    return Response.redirect(`${url.origin}/auth/access${url.search}`, 302);
+  }
   const ip = req.headers.get("CF-Connecting-IP");
   const accessPath = path === "/auth/access";
   if (accessPath || path === "/auth/demo" || path === "/auth/start" || path.startsWith("/auth/callback/")) {

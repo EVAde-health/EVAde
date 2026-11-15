@@ -3,6 +3,7 @@ import { Card } from '@astryxdesign/core/Card';
 import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { Heading, Text } from '@astryxdesign/core/Text';
 import { Timestamp } from '@astryxdesign/core/Timestamp';
+import { formatModelId, isModelPlaceholder, type ModelCatalog } from '../../services/modelCatalog';
 
 const MODELS = [
   { kind: 'ecg-deep', task: 'ecg_deep', label: 'Deep 12-lead ECG', confidence: 'top class probability' },
@@ -20,7 +21,6 @@ type RecordedResult = {
   minutes_per_stage: Partial<Record<(typeof STAGES)[number], number | null>> | null;
 };
 export type StaffDeepModelResults = Record<(typeof MODELS)[number]['kind'], RecordedResult | { status: 'placeholder' } | null>;
-export type DeepModelCatalog = { data?: { deep_models?: { task: string; state: string; source: string }[] } };
 
 function formatConfidence(value: string | null) {
   if (!value?.trim()) return 'Not reported';
@@ -30,7 +30,7 @@ function formatConfidence(value: string | null) {
     : value;
 }
 
-export default function DeepModelResults({ results, catalog }: { results: StaffDeepModelResults; catalog?: DeepModelCatalog }) {
+export default function DeepModelResults({ results, catalog }: { results: StaffDeepModelResults; catalog?: ModelCatalog }) {
   return (
     <Card padding={4}>
       <VStack gap={4}>
@@ -41,7 +41,7 @@ export default function DeepModelResults({ results, catalog }: { results: StaffD
         {MODELS.map(model => {
           const result = results[model.kind];
           const placeholder = result?.status === 'placeholder' || (!result &&
-            catalog?.data?.deep_models?.some(entry => entry.task === model.task && (entry.state === 'mock' || entry.source === 'mock')));
+            catalog?.data?.deep_models?.some(entry => entry.task === model.task && isModelPlaceholder(entry)));
           return (
             <VStack gap={1} key={model.kind}>
               <HStack gap={2} wrap="wrap" vAlign="center">
@@ -51,7 +51,7 @@ export default function DeepModelResults({ results, catalog }: { results: StaffD
               {placeholder ? <Text type="supporting">placeholder</Text> :
                 result?.status === 'result' ? (
                   <>
-                    <Text type="supporting">Model ID {result.model_id ?? 'Not reported'} · <Timestamp value={result.ts} /></Text>
+                    <Text type="supporting">Model ID {result.model_id ? formatModelId(result.model_id) : 'Not reported'} · <Timestamp value={result.ts} /></Text>
                     <Text type="supporting">Flag {result.flag ?? 'Not reported'}</Text>
                     <Text type="supporting">Confidence ({model.confidence}) {formatConfidence(result.confidence)}</Text>
                     {model.kind === 'sleep-deep' && result.minutes_per_stage && (

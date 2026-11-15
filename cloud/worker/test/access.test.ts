@@ -251,8 +251,12 @@ describe("flight surgeon role", () => {
     expect((await me(again)).role).toBe("astronaut");
   });
 
-  it("has no separate staff sign-in route", async () => {
-    await expect(login(await sign({ sub: "doc" }), "/auth/access/staff")).rejects.toThrow("not an auth route");
+  it("redirects the legacy staff URL to the shared sign-in without changing its query", async () => {
+    const query = "?redirect=https%3A%2F%2Fevade.health%2Fadmin&hint=staff+member&hint=second";
+    const res = await call("GET", "/auth/access/staff" + query);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("https://api.evade.health/auth/access" + query);
+    expect(res.headers.has("Set-Cookie")).toBe(false);
   });
 });
 

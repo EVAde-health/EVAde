@@ -10,12 +10,14 @@ import { useToast } from '../../context/ToastCenterContext';
 import {
   ArrowLeftStartOnRectangleIcon,
   ChatBubbleLeftRightIcon,
+  CpuChipIcon,
   ExclamationTriangleIcon,
   IdentificationIcon,
   UserGroupIcon,
 } from '@heroicons/react/24/outline';
 import {
   ChatBubbleLeftRightIcon as ChatSolid,
+  CpuChipIcon as CpuChipSolid,
   ExclamationTriangleIcon as ExclamationSolid,
   IdentificationIcon as IdentificationSolid,
   UserGroupIcon as UserGroupSolid,
@@ -40,6 +42,7 @@ const NAV = [
   { href: '/admin/astronauts', label: 'Astronaut', icon: IdentificationIcon, selectedIcon: IdentificationSolid },
   { href: '/admin/messages', label: 'Messages', icon: ChatBubbleLeftRightIcon, selectedIcon: ChatSolid },
   { href: '/admin/emergencies', label: 'Emergencies', icon: ExclamationTriangleIcon, selectedIcon: ExclamationSolid },
+  { href: '/models', label: 'Models', icon: CpuChipIcon, selectedIcon: CpuChipSolid },
 ];
 
 function selected(href: string, pathname: string) {
@@ -59,7 +62,7 @@ export default function SurgeonShell({ user }: { user: SessionUser }) {
     () => ({ user, notifications: notes.data, refreshNotifications: notes.reload }),
     [user, notes.data, notes.reload],
   );
-  if (!pathname.startsWith('/admin')) return <Navigate to="/admin" replace />;
+  if (!pathname.startsWith('/admin') && pathname !== '/models') return <Navigate to="/admin" replace />;
 
   // Signs out, then goes to the home screen (replace). A failed logout stays here with a toast.
   async function handleSignOut() {

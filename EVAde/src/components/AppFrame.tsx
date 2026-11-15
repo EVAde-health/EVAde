@@ -16,6 +16,7 @@ import {
   CameraIcon,
   ChatBubbleLeftRightIcon,
   CheckCircleIcon,
+  CpuChipIcon,
   PlayCircleIcon,
   Squares2X2Icon,
 } from '@heroicons/react/24/outline';
@@ -25,6 +26,7 @@ import {
   CameraIcon as CameraSolid,
   ChatBubbleLeftRightIcon as ChatSolid,
   CheckCircleIcon as CheckCircleSolid,
+  CpuChipIcon as CpuChipSolid,
   PlayCircleIcon as PlayCircleSolid,
   Squares2X2Icon as Squares2X2Solid,
 } from '@heroicons/react/24/solid';
@@ -55,6 +57,7 @@ const NAV_ITEMS = [
   { href: '/selfies', label: 'Selfies', icon: CameraIcon, selectedIcon: CameraSolid },
   { href: '/messages', label: 'Messages', icon: ChatBubbleLeftRightIcon, selectedIcon: ChatSolid },
   { href: '/research', label: 'Research', icon: BeakerIcon, selectedIcon: BeakerSolid },
+  { href: '/models', label: 'Models', icon: CpuChipIcon, selectedIcon: CpuChipSolid },
 ];
 
 type SessionState = SessionUser | 'loading' | 'signed-out' | 'error';

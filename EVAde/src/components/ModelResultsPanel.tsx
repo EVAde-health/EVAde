@@ -5,6 +5,7 @@ import { Timestamp } from '@astryxdesign/core/Timestamp';
 import { CpuChipIcon } from '@heroicons/react/24/outline';
 import { useMission } from '../context/MissionContext';
 import { userPath } from '../services/api';
+import { formatModelId } from '../services/modelCatalog';
 import { usePoll } from '../hooks/usePoll';
 import NoReadings from './NoReadings';
 import PanelCard from './PanelCard';
@@ -88,7 +89,7 @@ export default function ModelResultsPanel() {
             return (
               <HStack key={r.id} gap={2} wrap="wrap" vAlign="center">
                 <Text weight="semibold">{MODEL_LABEL[r.endpoint] ?? r.endpoint}</Text>
-                {r.model_id && <Text type="supporting">{r.model_id}</Text>}
+                {r.model_id && <Text type="supporting">{formatModelId(r.model_id)}</Text>}
                 {text && <Text type="supporting" hasTabularNumbers>{text}</Text>}
                 {r.source && <Text type="supporting">{r.source === 'simulated' ? 'simulated data' : r.source}</Text>}
                 <Timestamp value={r.ts} />

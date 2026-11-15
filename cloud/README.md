@@ -126,6 +126,8 @@ Local testing: set `DEV_LOGIN=true`, `FRONTEND_URL=http://localhost:5173`, and `
 | GET / POST | `/users/:id/alerts`, `/alerts/escalated`, `/alerts/:id/ack` | alerts; escalated = needs the flight surgeon |
 | POST | `/predict/{ecg,eeg,radiation-risk,risk}` | proxy to FastAPI; the result is stored in `model_results` |
 | POST | `/model-results` | FastAPI can push results directly instead |
+| GET | `/models` | Live model catalog proxied from FastAPI |
+| GET | `/models/runs` | Model IDs, counts and latest stored run times. Staff see totals across accounts, demo sees seeded crew totals, and signed-in astronauts see their own totals. |
 | POST | `/auth/identities` | **server-side only (API key or staff)**: links an external login manually; `{provider, subject, email?, display_name?}`. Links a login to an astronaut and creates the astronaut on first login. Returns the user with `user_id` |
 | GET | `/auth/identities/:provider/:subject` | look up the astronaut behind a login |
 | GET | `/admin/crew`, `/admin/escalations`, `/admin/therapist-feed?user_id=` | doctor/therapist panel: crew overview with risk band and alert counts, escalations waiting for the flight surgeon, journal summaries with that day's mood |

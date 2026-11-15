@@ -23,7 +23,7 @@ import {
   REVIEW_NOTE, riskRow, summarize,
 } from "./models";
 import { deleteUserStatements } from "./deleteUser";
-import { assertDemoScope, resetDemo, scrubDemoResponse } from "./demo";
+import { assertDemoScope, DEMO_ID_PREFIX, resetDemo, scrubDemoResponse } from "./demo";
 import { HttpError } from "./http";
 import { refreshSimulation, type SimulationPrediction } from "./simulation";
 import { simulatedEcgDeep, simulatedSleepDeep } from "./simulationSignals";
@@ -1230,6 +1230,28 @@ route("GET", "/models", async (_r, env) => {
   } catch (e) {
     throw modelError(e);
   }
+});
+
+route("GET", "/models/runs", async (_r, env, _p, _url, _ctx, who) => {
+  // Demo identities see only the seeded crew. Other astronauts see only their own history.
+  const scope = who.demo ? "demo" : isStaff(who) ? "staff" : "personal";
+  const filter = scope === "demo" ? "AND user_id GLOB ?" : scope === "personal" ? "AND user_id = ?" : "";
+  const stmt = env.DB.prepare(`
+    SELECT model_id, COUNT(*) AS count, MAX(strftime('%Y-%m-%dT%H:%M:%fZ', ts)) AS last_run
+    FROM model_results
+    WHERE model_id GLOB 'EVA-[1-9]*' AND COALESCE(source, '') != 'mock'
+    AND CASE WHEN json_valid(output) THEN
+      COALESCE(json_extract(output, '$.source'), '') != 'mock'
+      AND COALESCE(json_extract(output, '$.data.source'), '') != 'mock'
+      AND COALESCE(json_extract(output, '$.placeholder'), 0) != 1
+    ELSE 1 END
+    ${filter}
+    GROUP BY model_id
+  `);
+  const query = scope === "demo" ? stmt.bind(DEMO_ID_PREFIX + "*")
+    : scope === "personal" ? stmt.bind(who.user_id!) : stmt;
+  const { results } = await query.all<{ model_id: string; count: number; last_run: string | null }>();
+  return json({ scope, models: results.filter(row => /^EVA-[1-9]\d*$/.test(row.model_id)) });
 });
 
 async function predictFor(env: Env, kind: PredictKind, userId: string, payload: Record<string, unknown>, simulation?: { ts: string; modelUserId: string }) {
