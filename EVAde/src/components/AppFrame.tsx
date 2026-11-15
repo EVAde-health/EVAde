@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useState } from 'react';
-import { matchRoutes, Navigate, Outlet, useLocation } from 'react-router-dom';
+import { matchRoutes, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@astryxdesign/core/Button';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Text } from '@astryxdesign/core/Text';
@@ -100,7 +100,7 @@ export default function AppFrame() {
   }
 
   if (STAFF_ROLES.has(session.role) && !session.demo) {
-    return <AdminShell key={session.user_id} user={session} onSignOut={() => setSession('signed-out')} />;
+    return <AdminShell key={session.user_id} user={session} />;
   }
   if (matchRoutes([{ path: '/admin/*' }], location) || (session.demo && matchRoutes([{ path: '/chat/*' }], location))) {
     return <Navigate to="/dashboard" replace />;
@@ -109,29 +109,34 @@ export default function AppFrame() {
   return (
     <AccountStorageContext.Provider value={session.demo ? null : session.user_id}>
       <MissionProvider key={`${session.user_id}:${session.demo}`} user={session}>
-        <SignedInFrame onSignOut={() => setSession('signed-out')} />
+        <SignedInFrame />
       </MissionProvider>
     </AccountStorageContext.Provider>
   );
 }
 
 // Signed-in shell: side navigation, level meter, sign-out and the routed page.
-function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
+function SignedInFrame() {
   const [signingOut, setSigningOut] = useState(false);
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const { completed, tasks, user } = useMission();
   const showToast = useToast();
   const remaining = tasks.length - completed.length;
 
+  // Signs out, then goes to the home screen. Only a successful logout leaves the page (replace: Back can't
+  // return to a signed-in page); a failed one stays here with a toast.
   async function handleSignOut() {
     if (signingOut) return;
     setSigningOut(true);
     try {
-      if (!(await signOut({ clearAccess: !user.demo }))) onSignOut();
+      await signOut({ clearAccess: !user.demo, redirect: false });
     } catch {
       showToast({ body: 'Sign-out failed. Please try again.' });
       setSigningOut(false);
+      return;
     }
+    navigate('/', { replace: true });
   }
 
   return (

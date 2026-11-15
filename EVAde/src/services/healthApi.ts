@@ -202,10 +202,17 @@ export const fetchSession = ({ signal }: Signal = {}) => api<{ user: SessionUser
 export const fetchAuthProviders = ({ signal }: Signal = {}) => api<AuthProviders>('/auth/providers', { signal });
 
 // End the EVAde session before navigating to the Access logout on the configured API host.
-export async function signOut({ clearAccess = true } = {}) {
+// Throws when the EVAde logout fails. Returns true when the page is navigating away to the Access logout.
+// With redirect: false the Access session is ended in the background (same-site request) and the caller
+// decides where the user lands.
+export async function signOut({ clearAccess = true, redirect = true } = {}) {
   await api<void>('/auth/logout', { method: 'POST' });
   const accessLogout = new URL('/cdn-cgi/access/logout', API_ORIGIN);
   if (!clearAccess || accessLogout.protocol !== 'https:') return false;
+  if (!redirect) {
+    await fetch(accessLogout, { method: 'GET', mode: 'no-cors', credentials: 'include', cache: 'no-store' }).catch(() => undefined);
+    return false;
+  }
   window.location.assign(accessLogout.href);
   return true;
 }
