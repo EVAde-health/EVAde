@@ -443,7 +443,7 @@ route("GET", "/auth/identities/:provider/:subject", async (_r, env, p) => {
 });
 
 // Admin panel (doctors / therapists)
-route("GET", "/admin/crew", async (_r, env) => json(await crewOverview(env.DB)));
+route("GET", "/admin/crew", async (_r, env, _p, _u, _c, who) => json(await crewOverview(env.DB, who.user_id ?? null)));
 route("GET", "/admin/escalations", async (_r, env) => json((await env.DB.prepare("SELECT * FROM v_escalations ORDER BY ts DESC").all()).results));
 route("GET", "/admin/therapist-feed", async (_r, env, _p, url) => {
   const uid = url.searchParams.get("user_id");
