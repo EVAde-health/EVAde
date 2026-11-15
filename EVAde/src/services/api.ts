@@ -5,7 +5,7 @@ if ((!local && apiUrl.protocol !== 'https:') || apiUrl.username || apiUrl.passwo
 }
 
 export const API_ORIGIN = apiUrl.origin;
-export const DASHBOARD_REDIRECT = 'https://evade.health/dashboard';
+export const ACCESS_LOGIN_URL = 'https://api.evade.health/auth/access?redirect=https://evade.health/dashboard';
 export const SIGN_IN_REQUIRED = 'evade:sign-in-required';
 
 export class ApiError extends Error {
