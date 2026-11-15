@@ -15,3 +15,10 @@ USDA_API_KEY=
 # front localhost, so leave these blank locally; scripts can use EVADE_API_KEY instead.
 ACCESS_TEAM_DOMAIN=
 ACCESS_AUD=
+# Staff Access application audience. Blank disables staff sign-in. Not a secret; production value is in wrangler.jsonc.
+ACCESS_STAFF_AUD=
+
+# "true" enables GET /auth/demo (the seeded fake astronaut). Never a real user.
+DEMO_LOGIN=true
+# "true" shows a loopback-only test login. Keep false except on localhost.
+DEV_LOGIN=false

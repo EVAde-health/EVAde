@@ -2,6 +2,7 @@
 // Staff sockets (flight surgeon, therapist, admin, service) get every event; an astronaut's socket gets only their own
 // events plus crew-wide ones (space weather). The Worker publishes events with POST /publish on the object.
 import { DurableObject } from "cloudflare:workers";
+import { getSessionPrincipalByReference, STAFF_ROLES, type AuthEnv } from "./auth";
 
 export interface LiveEvent {
   type: "observation" | "alert" | "risk" | "journal" | "space_weather" | "media" | "task";
@@ -10,11 +11,30 @@ export interface LiveEvent {
   ts?: string;
 }
 
-export class CrewFeed extends DurableObject {
-  constructor(ctx: DurableObjectState, env: unknown) {
-    super(ctx, env as any);
+interface FeedConnection {
+  kind: "user" | "service";
+  staff: boolean;
+  user_id: string | null;
+  sessionRef: string | null;
+}
+
+export class CrewFeed extends DurableObject<AuthEnv> {
+  constructor(ctx: DurableObjectState, env: AuthEnv) {
+    super(ctx, env);
     // Keepalive answered by the runtime without waking the object
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+  }
+
+  private async verifyConnection(ws: WebSocket) {
+    const connection = ws.deserializeAttachment() as FeedConnection | null;
+    if (connection?.kind === "service") return true;
+    const session = connection?.sessionRef
+      ? await getSessionPrincipalByReference(connection.sessionRef, this.env)
+      : null;
+    if (connection && session && session.user_id === connection.user_id &&
+        STAFF_ROLES.has(session.role ?? "") === connection.staff) return true;
+    ws.close(1008, "Sign in again");
+    return false;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -29,9 +49,16 @@ export class CrewFeed extends DurableObject {
           ? [...this.ctx.getWebSockets("staff"), ...this.ctx.getWebSockets(`user:${ev.user_id}`)]
           : this.ctx.getWebSockets();
       let sent = 0;
-      for (const ws of new Set(targets)) {
-        try { ws.send(msg); sent++; } catch {}
-      }
+      await Promise.all([...new Set(targets)].map(async (ws) => {
+        try {
+          if (await this.verifyConnection(ws)) {
+            ws.send(msg);
+            sent++;
+          }
+        } catch {
+          // Drop this event if the session could not be checked.
+        }
+      }));
       return Response.json({ sent });
     }
 
@@ -41,9 +68,9 @@ export class CrewFeed extends DurableObject {
 
     if (request.headers.get("Upgrade") !== "websocket") return new Response("Expected WebSocket", { status: 426 });
     // The Worker has already authenticated the caller and passes who they are in this internal header.
-    const who = JSON.parse(request.headers.get("X-Live-Principal") ?? "{}") as { staff?: boolean; user_id?: string };
+    const who = JSON.parse(request.headers.get("X-Live-Principal") ?? "{}") as FeedConnection;
     const tags = who.staff ? ["staff"] : who.user_id ? [`user:${who.user_id}`] : [];
-    if (!tags.length) return new Response("Forbidden", { status: 403 });
+    if (!tags.length || (who.kind !== "service" && !who.sessionRef)) return new Response("Forbidden", { status: 403 });
 
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server, tags);
@@ -54,7 +81,7 @@ export class CrewFeed extends DurableObject {
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     // Clients only listen; answer a manual "stats" request, ignore everything else.
-    if (message === "stats") ws.send(JSON.stringify({ type: "stats", data: { connections: this.ctx.getWebSockets().length } }));
+    if (message === "stats" && await this.verifyConnection(ws)) ws.send(JSON.stringify({ type: "stats", data: { connections: this.ctx.getWebSockets().length } }));
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string) {
