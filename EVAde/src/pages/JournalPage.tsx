@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   ChatComposer,
   ChatLayout,
@@ -39,6 +39,15 @@ const PROMPTS = [
 
 
 const VOICE_SAVE_ATTEMPTS = 3;
+const MOBILE_JOURNAL = '(width < 768px)';
+
+function subscribeToJournalWidth(onChange: () => void) {
+  const query = window.matchMedia(MOBILE_JOURNAL);
+  query.addEventListener('change', onChange);
+  return () => query.removeEventListener('change', onChange);
+}
+
+const isMobileJournal = () => window.matchMedia(MOBILE_JOURNAL).matches;
 
 // One-line summary of what the voice agent recorded in a check-in.
 function checkinSummary(checkin: VoiceCheckin) {
@@ -93,9 +102,51 @@ export default function JournalPage() {
   const abortRef = useRef<AbortController | null>(null);
   const failedRef = useRef<{ id: string; text: string } | null>(null);
   const checkinRef = useRef<VoiceCheckin | null>(null);
+  const mobile = useSyncExternalStore(subscribeToJournalWidth, isMobileJournal);
+  const mobileComposerRef = useRef<HTMLDivElement>(null);
   const { user, logMood: saveMood, refreshToday } = useMission();
   const showToast = useToast();
   const userId = user.user_id;
+
+  // iOS can shrink the visual viewport for the keyboard while the shell's scroll area keeps its layout height.
+  useEffect(() => {
+    const composer = mobileComposerRef.current;
+    const viewport = window.visualViewport;
+    const journal = composer?.closest<HTMLElement>('.journal');
+    const scroller = journal?.closest<HTMLElement>('.astryx-layout-content');
+    if (!mobile || !composer || !viewport || !journal || !scroller) return;
+
+    let frame = 0;
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const focused = composer.contains(document.activeElement);
+        const visibleBottom = viewport.height + viewport.offsetTop;
+        const inset = focused && viewport.scale === 1 ? Math.max(0, scroller.getBoundingClientRect().bottom - visibleBottom) : 0;
+        journal.style.setProperty('--journal-keyboard-inset', inset + 'px');
+        if (inset > 0) {
+          const hidden = composer.getBoundingClientRect().bottom - visibleBottom;
+          if (hidden > 1) scroller.scrollTop += hidden;
+        }
+      });
+    };
+
+    const composerSize = new ResizeObserver(update);
+    composerSize.observe(composer);
+    composer.addEventListener('focusin', update);
+    composer.addEventListener('focusout', update);
+    viewport.addEventListener('resize', update);
+    viewport.addEventListener('scroll', update);
+    return () => {
+      cancelAnimationFrame(frame);
+      composerSize.disconnect();
+      composer.removeEventListener('focusin', update);
+      composer.removeEventListener('focusout', update);
+      viewport.removeEventListener('resize', update);
+      viewport.removeEventListener('scroll', update);
+      journal.style.removeProperty('--journal-keyboard-inset');
+    };
+  }, [mobile]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => {
@@ -199,6 +250,19 @@ export default function JournalPage() {
     showToast({ body: 'Your voice check-in could not be saved to the journal.' });
   }
 
+  const composer = (
+    <ChatComposer
+      ref={mobile ? mobileComposerRef : undefined}
+      className="journal__composer"
+      value={draft}
+      onChange={value => setDraft(value.slice(0, 2000))}
+      onSubmit={sendMessage}
+      onStop={stopReply}
+      isStopShown={isReplying}
+      placeholder="Write about your day…"
+    />
+  );
+
   return (
     <VStack gap={4} padding={6} className="page journal">
       <PageHeader
@@ -232,18 +296,10 @@ export default function JournalPage() {
 
       <VoiceJournal crew={`crew-${userId}`} onCheckinSaved={handleVoiceCheckin} onSessionEnded={saveVoiceTurns} />
 
+      {mobile && composer}
       <StackItem size="fill" className="journal__chat">
         <ChatLayout
-          composer={
-            <ChatComposer
-              value={draft}
-              onChange={value => setDraft(value.slice(0, 2000))}
-              onSubmit={sendMessage}
-              onStop={stopReply}
-              isStopShown={isReplying}
-              placeholder="Write about your day…"
-            />
-          }
+          composer={mobile ? null : composer}
           emptyState={
             <EmptyState
               icon={<BrandMark size="lg" />}
