@@ -42,26 +42,34 @@ Config: [`deploy/wrangler.jsonc`](deploy/wrangler.jsonc). It mirrors `worker/wra
 - `POST /api/voice/start` returns a one-time WebSocket ticket.
 - `WS /api/voice/ws` is the voice socket (24 kHz PCM16 audio; see `EVAde/src/services/voiceAgent.ts` and `micWorklet.ts` for a working client).
 - `GET /api/checkins/latest`, `GET /api/downlink` return crew data.
-- `DEMO_OPEN=true` (hackathon demo) means no access key is needed for voice or read APIs. Limits: 5 concurrent browser sessions, 300 s each.
+- Both Wrangler configs set `CORS_ALLOW_ORIGINS` to `https://evade.health,https://www.evade.health`. Browser API responses grant CORS only to those exact origins.
+- `DEMO_OPEN=true` (hackathon demo) means no access key is needed for voice or read APIs. Limits: 4 concurrent browser/app sessions, 300 s each.
 
 ## Deploying
 
 Prereqs: git, Node 20+, and a Wrangler login with access to the EVAde Cloudflare account (`npx wrangler login`, check with `npx wrangler whoami`).
 
-```bash
-node deploy/deploy.mjs --dry-run   # build everything and validate config, no upload
-node deploy/deploy.mjs             # build and deploy to https://evade.health
+Deploy only from the repository root on merged `main` in PowerShell.
+
+```powershell
+$env:WORKER_REF = (git rev-parse HEAD); node deploy/deploy.mjs
 ```
 
+**Do not run `npx wrangler deploy` from `worker/`.** It would replace the live site with the voice Worker alone and leave `/`, `/journal`, and `/admin` returning 404.
+
+For build and config validation without uploading, use the same `WORKER_REF` and add `--dry-run` to the script command.
+
 The script:
-1. checks out `origin/feature/twilio-grok-voice-agent` into `.deploy/worker-src` (a git worktree; override with `WORKER_REF=<ref>`),
+1. checks out the commit pinned by `WORKER_REF` into `.deploy/worker-src`,
 2. runs `npm ci && npm run build` in `EVAde/`,
 3. assembles `.deploy/site` = `EVAde/dist`,
 4. runs `wrangler deploy -c deploy/wrangler.jsonc` using the Worker's own Wrangler.
 
 `.deploy/` is gitignored.
 
-After deploying, smoke-test:
+After deploying, open [the Journal](https://evade.health/journal), start a voice check-in, and confirm it connects. PR #11 removed the standalone `/voice/` page.
+
+Additional smoke checks:
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" https://evade.health/          # 200, web app
