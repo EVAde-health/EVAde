@@ -44,7 +44,7 @@
     "AI_GATEWAY": ""
   }
   // Secrets (set with `npx wrangler secret put <NAME>`):
-  //   API_KEY        shared key the frontend / Python send in the X-EVAde-Key header
+  //   EVADE_API_KEY  server-side service key for the X-EVAde-Key header
   //   FASTAPI_KEY    optional key forwarded to FastAPI in X-EVAde-Key
   //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   Google OAuth client
   //   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET   GitHub OAuth app

@@ -22,7 +22,7 @@ export interface Env extends AuthEnv {
   AI_GATEWAY?: string; // optional AI Gateway id
   MEDIA?: R2Bucket; // R2 bucket evade-media
   LIVE?: DurableObjectNamespace; // CrewFeed Durable Object
-  API_KEY?: string;
+  EVADE_API_KEY?: string;
   FASTAPI_URL?: string;
   FASTAPI_KEY?: string;
   ALLOWED_ORIGINS?: string;
@@ -840,12 +840,9 @@ const OWNED_BY_ID: [RegExp, string][] = [
 
 async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Request; principal: Principal }> {
   const key = req.headers.get("X-EVAde-Key");
-  if (env.API_KEY && key === env.API_KEY) return { req, principal: { kind: "service" } };
+  if (env.EVADE_API_KEY && key === env.EVADE_API_KEY) return { req, principal: { kind: "service" } };
   const session = await getSessionPrincipal(req, env);
-  if (!session) {
-    if (!env.API_KEY) return { req, principal: { kind: "service" } }; // local dev with no key configured
-    throw new HttpError(401, "Sign in at /login, or send X-EVAde-Key");
-  }
+  if (!session) throw new HttpError(401, "Sign in at /login, or send X-EVAde-Key");
   // Cookie-authenticated writes must come from our own frontend (CSRF guard on top of SameSite=Lax)
   if (req.method !== "GET") {
     const origin = req.headers.get("Origin");

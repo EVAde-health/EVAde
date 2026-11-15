@@ -37,7 +37,7 @@ Python evade_space ──► /observations, /radiation, /space-weather (demo dat
 cd worker
 npm install
 npx wrangler login                 # sign in to Cloudflare, pick the EVAde account
-npx wrangler secret put API_KEY    # make up a shared key, give it to the team
+npx wrangler secret put EVADE_API_KEY # supply the service key at the masked prompt
 npx wrangler deploy                # prints https://evade-api.<subdomain>.workers.dev
 ```
 Then seed demo crew into the live DB:
@@ -48,6 +48,8 @@ EVADE_API_URL=https://evade-api.<subdomain>.workers.dev EVADE_API_KEY=<key> pyth
 If `deploy` says the D1 database isn't found, the database was created in a different Cloudflare account. Run `npx wrangler d1 create evade-db`, paste the new id into `wrangler.jsonc`, then `npx wrangler d1 migrations apply evade-db --remote`.
 
 When Michael's FastAPI is up: set `FASTAPI_URL` in `wrangler.jsonc` and redeploy. CORS already allows https://evade.health and https://www.evade.health. If deploy fails on the custom domain, evade.health is not a zone in this Cloudflare account yet: remove the `routes` line, deploy on workers.dev, and add the domain once Daniel moves the zone.
+
+Set `EVADE_API_KEY` in `worker/.dev.vars` for local development. Git ignores this file. Keep the service key in server-side configuration. For local Python commands, set `EVADE_API_KEY` in the Python process environment to the same value.
 
 Local dev: `npx wrangler d1 migrations apply evade-db --local && npx wrangler dev`, which serves the API on http://localhost:8787.
 
@@ -105,7 +107,7 @@ Local testing: create `worker/.dev.vars` with `DEV_LOGIN=true`, `COOKIE_DOMAIN=`
 | R2 | photos, ultrasound images, voice journal audio, PDFs (private, access-checked per astronaut) |
 | Durable Objects | live crew feed over WebSockets (hibernating), staff see the whole crew in real time |
 
-## API (sign in, or send header `X-EVAde-Key: <API_KEY>`; /health and /metrics are public)
+## API (sign in, or send header `X-EVAde-Key: <EVADE_API_KEY>`; /health and /metrics are public)
 
 | Method | Path | What it does |
 |---|---|---|
