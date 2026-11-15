@@ -1,0 +1,9 @@
+# EVAde voice agent (merge with the team's requirements.txt when the main app lands)
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+websockets>=13.0,<18.0
+twilio>=9.0,<10.0
+python-dotenv>=1.0,<2.0
+# tests
+pytest>=8.0,<10.0
+httpx>=0.27,<1.0

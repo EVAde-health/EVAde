@@ -1,0 +1,9 @@
+# Copy to .dev.vars for `npm run dev` (wrangler dev). Never commit .dev.vars.
+XAI_API_KEY=
+TWILIO_AUTH_TOKEN=
+EVADE_BROWSER_TOKEN=
+EVADE_ALERT_TOKEN=
+# Local dev only: Twilio can't reach localhost, so skip the signature check and
+# build the stream URL from the Host header.
+TWILIO_VALIDATE_SIGNATURE=false
+PUBLIC_BASE_URL=
