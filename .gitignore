@@ -1,0 +1,2 @@
+# Staging area for deploy/deploy.mjs (build output + Worker checkout)
+.deploy/
