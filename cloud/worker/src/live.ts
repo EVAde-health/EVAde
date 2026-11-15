@@ -4,10 +4,12 @@
 import { DurableObject } from "cloudflare:workers";
 
 export interface LiveEvent {
-  type: "observation" | "alert" | "risk" | "journal" | "space_weather" | "media" | "task";
+  type: "observation" | "alert" | "risk" | "journal" | "space_weather" | "media" | "task" | "emergency" | "chat";
   user_id?: string;
   data: unknown;
   ts?: string;
+  /** Socket tags to deliver to. `staff` or `user:<id>`. Omitted events keep the older staff/user rules. */
+  audience?: string[];
 }
 
 export class CrewFeed extends DurableObject {
@@ -21,13 +23,16 @@ export class CrewFeed extends DurableObject {
     const url = new URL(request.url);
 
     if (url.pathname === "/publish" && request.method === "POST") {
-      const { staff_only, ...ev } = (await request.json()) as LiveEvent & { staff_only?: boolean };
+      const { staff_only, audience, ...ev } = (await request.json()) as LiveEvent & { staff_only?: boolean };
       const msg = JSON.stringify({ ...ev, ts: ev.ts ?? new Date().toISOString() });
-      const targets = staff_only
-        ? this.ctx.getWebSockets("staff")
-        : ev.user_id
-          ? [...this.ctx.getWebSockets("staff"), ...this.ctx.getWebSockets(`user:${ev.user_id}`)]
-          : this.ctx.getWebSockets();
+      const directed = (audience ?? []).filter((tag) => tag === "staff" || /^user:[A-Za-z0-9-]{8,80}$/.test(tag));
+      const targets = directed.length
+        ? directed.flatMap((tag) => this.ctx.getWebSockets(tag))
+        : staff_only
+          ? this.ctx.getWebSockets("staff")
+          : ev.user_id
+            ? [...this.ctx.getWebSockets("staff"), ...this.ctx.getWebSockets(`user:${ev.user_id}`)]
+            : this.ctx.getWebSockets();
       let sent = 0;
       for (const ws of new Set(targets)) {
         try { ws.send(msg); sent++; } catch {}
@@ -42,7 +47,7 @@ export class CrewFeed extends DurableObject {
     if (request.headers.get("Upgrade") !== "websocket") return new Response("Expected WebSocket", { status: 426 });
     // The Worker has already authenticated the caller and passes who they are in this internal header.
     const who = JSON.parse(request.headers.get("X-Live-Principal") ?? "{}") as { staff?: boolean; user_id?: string };
-    const tags = who.staff ? ["staff"] : who.user_id ? [`user:${who.user_id}`] : [];
+    const tags = [...(who.staff ? ["staff"] : []), ...(who.user_id ? [`user:${who.user_id}`] : [])];
     if (!tags.length) return new Response("Forbidden", { status: 403 });
 
     const [client, server] = Object.values(new WebSocketPair());

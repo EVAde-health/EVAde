@@ -13,6 +13,7 @@ import {
   ArrowLeftStartOnRectangleIcon,
   BookOpenIcon,
   CameraIcon,
+  ChatBubbleLeftRightIcon,
   CheckCircleIcon,
   PlayCircleIcon,
   Squares2X2Icon,
@@ -20,12 +21,15 @@ import {
 import {
   BookOpenIcon as BookOpenSolid,
   CameraIcon as CameraSolid,
+  ChatBubbleLeftRightIcon as ChatSolid,
   CheckCircleIcon as CheckCircleSolid,
   PlayCircleIcon as PlayCircleSolid,
   Squares2X2Icon as Squares2X2Solid,
 } from '@heroicons/react/24/solid';
 import { useMission } from '../context/MissionContext';
-import { api, ApiError, SIGN_IN_REQUIRED, type SessionUser } from '../services/api';
+import { api, ApiError, SIGN_IN_REQUIRED, STAFF_ROLES, type SessionUser } from '../services/api';
+import AdminShell from './AdminShell';
+import EmergencyButton from './EmergencyButton';
 import AmbientBackdrop from './AmbientBackdrop';
 import BrandMark from './BrandMark';
 import LevelMeter from './LevelMeter';
@@ -41,6 +45,7 @@ const NAV_ITEMS = [
   { href: '/tasks', label: 'Missions', icon: CheckCircleIcon, selectedIcon: CheckCircleSolid },
   { href: '/journal', label: 'Journal', icon: BookOpenIcon, selectedIcon: BookOpenSolid },
   { href: '/selfies', label: 'Selfies', icon: CameraIcon, selectedIcon: CameraSolid },
+  { href: '/chat', label: 'Team line', icon: ChatBubbleLeftRightIcon, selectedIcon: ChatSolid },
 ];
 
 export default function AppFrame() {
@@ -70,6 +75,10 @@ export default function AppFrame() {
     </VStack>
   );
 
+  if (STAFF_ROLES.has(session.role)) {
+    return <AdminShell user={session} onSignOut={() => setSession('signed-out')} />;
+  }
+
   return (
     <MissionProvider key={session.user_id} user={session}>
       <SignedInFrame onSignOut={() => setSession('signed-out')} />
@@ -80,6 +89,7 @@ export default function AppFrame() {
 function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
   const { pathname } = useLocation();
   const { completed, tasks, user } = useMission();
+  if (pathname.startsWith('/admin')) return <Navigate to="/dashboard" replace />;
   const remaining = tasks.length - completed.length;
   const [signingOut, setSigningOut] = useState(false);
   const showToast = useToast();
@@ -116,6 +126,7 @@ function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
             footer={
               <VStack gap={2}>
                 <LevelMeter />
+                <EmergencyButton />
                 <Divider />
                 <HStack gap={1} vAlign="center" hAlign="between">
                   <SideNavItem label="Sign out" icon={ArrowLeftStartOnRectangleIcon} onClick={signOut} isDisabled={signingOut} />

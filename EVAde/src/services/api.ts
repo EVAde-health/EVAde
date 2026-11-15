@@ -5,14 +5,17 @@ if ((!local && apiUrl.protocol !== 'https:') || apiUrl.username || apiUrl.passwo
 }
 
 export const API_ORIGIN = apiUrl.origin;
-export const ACCESS_LOGIN_URL = 'https://api.evade.health/auth/access?redirect=https://evade.health/dashboard';
+const siteOrigin = import.meta.env.DEV ? window.location.origin : 'https://evade.health';
+export const ACCESS_LOGIN_URL = `${API_ORIGIN}/auth/access?redirect=${encodeURIComponent(`${siteOrigin}/dashboard`)}`;
+export const ACCESS_STAFF_LOGIN_URL = `${API_ORIGIN}/auth/access/staff?redirect=${encodeURIComponent(`${siteOrigin}/admin`)}`;
 export const SIGN_IN_REQUIRED = 'evade:sign-in-required';
+export const STAFF_ROLES = new Set(['flight_surgeon', 'therapist', 'admin']);
 
 export class ApiError extends Error {
   readonly status: number;
 
-  constructor(status: number) {
-    super(`EVAde request failed (HTTP ${status})`);
+  constructor(status: number, detail?: string) {
+    super(detail || `EVAde request failed (HTTP ${status})`);
     this.status = status;
   }
 }
@@ -31,8 +34,12 @@ export async function api<T>(
     signal,
     ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   });
-  if (response.status === 401) window.dispatchEvent(new Event(SIGN_IN_REQUIRED));
-  if (!response.ok) throw new ApiError(response.status);
+  if (!response.ok) {
+    let detail = '';
+    try { detail = ((await response.json()) as { error?: string }).error ?? ''; } catch { /* no body */ }
+    if (response.status === 401) window.dispatchEvent(new Event(SIGN_IN_REQUIRED));
+    throw new ApiError(response.status, detail);
+  }
   return response.status === 204 ? undefined as T : response.json() as Promise<T>;
 }
 
@@ -41,6 +48,7 @@ export const userPath = (userId: string, resource: string) => `/users/${encodeUR
 export interface SessionUser {
   user_id: string;
   display_name: string;
+  role: string;
   mission_name: string | null;
   mission_start: string | null;
   points: number;

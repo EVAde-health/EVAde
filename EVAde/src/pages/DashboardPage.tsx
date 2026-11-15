@@ -9,6 +9,7 @@ import { ProgressBar } from '@astryxdesign/core/ProgressBar';
 import { Icon } from '@astryxdesign/core/Icon';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { ArrowPathIcon, ArrowRightIcon } from '@heroicons/react/24/outline';
+import { EmergencyBanner } from '../components/EmergencyButton';
 import NutritionPanel from '../components/NutritionPanel';
 import PageHeader from '../components/PageHeader';
 import SectionTitle from '../components/SectionTitle';
@@ -82,6 +83,7 @@ export default function DashboardPage() {
           </HStack>
         }
       />
+      <EmergencyBanner />
       {loading && !data && <Text role="status">Loading your dashboard…</Text>}
       {failed && <Text role="alert">Dashboard data could not refresh. Use Refresh to try again.</Text>}
       {data && (

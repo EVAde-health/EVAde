@@ -1,0 +1,24 @@
+.clinic-chat-log {
+  max-block-size: 32rem;
+  overflow: auto;
+  padding: var(--spacing-3);
+  border-radius: var(--radius-xl);
+  background: color-mix(in oklab, var(--color-background-body) 42%, transparent);
+}
+
+.clinic-note {
+  min-inline-size: min(22rem, 80vw);
+  max-inline-size: 28rem;
+}
+
+.emergency-launch {
+  animation: emergency-glow 2.4s ease-in-out infinite;
+}
+
+@keyframes emergency-glow {
+  50% { box-shadow: 0 0 var(--spacing-4) color-mix(in oklab, var(--color-error) 55%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .emergency-launch { animation: none; }
+}

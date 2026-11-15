@@ -11,6 +11,14 @@ export interface MealEntry {
   loggedAt: number;
 }
 
+export interface DailyGoals {
+  kcal: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  waterMl: number;
+}
+
 export interface MissionState {
   user: SessionUser;
   xp: number;
@@ -19,6 +27,7 @@ export interface MissionState {
   completed: string[];
   waterMl: number;
   meals: MealEntry[];
+  goals: DailyGoals;
   watchedTutorials: string[];
   loading: boolean;
   loadError: boolean;

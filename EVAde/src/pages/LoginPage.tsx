@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
 import { Grid } from '@astryxdesign/core/Grid';
 import { Heading, Text } from '@astryxdesign/core/Text';
+import { TextInput } from '@astryxdesign/core/TextInput';
 import { HStack, Stack, VStack } from '@astryxdesign/core/Stack';
 import { Icon } from '@astryxdesign/core/Icon';
 import { LockClosedIcon } from '@heroicons/react/24/outline';
@@ -9,7 +11,7 @@ import BrandMark from '../components/BrandMark';
 import NebulaCanvas from '../components/NebulaCanvas';
 import OrbitalHud from '../components/OrbitalHud';
 import ThemeToggle from '../components/ThemeToggle';
-import { ACCESS_LOGIN_URL } from '../services/api';
+import { ACCESS_LOGIN_URL, ACCESS_STAFF_LOGIN_URL, API_ORIGIN } from '../services/api';
 import './css/LoginPage.css';
 
 export default function LoginPage() {
@@ -30,11 +32,15 @@ export default function LoginPage() {
           </VStack>
 
           <Card padding={6} className="login__card">
-            <Button variant="primary" size="lg" width="100%" label="Sign in or sign up" href={ACCESS_LOGIN_URL} />
+            <VStack gap={3}>
+              <Button variant="primary" size="lg" width="100%" label="Sign in or sign up" href={ACCESS_LOGIN_URL} />
+              <Button variant="secondary" size="lg" width="100%" label="Flight surgeon sign-in" href={ACCESS_STAFF_LOGIN_URL} />
+              {import.meta.env.DEV && <DevSignIn />}
+            </VStack>
           </Card>
           <HStack gap={2} vAlign="center">
             <Icon icon={LockClosedIcon} size="xsm" color="secondary" />
-            <Text type="supporting">Sign in through Cloudflare Access.</Text>
+            <Text type="supporting">Crew and staff each sign in through their own Cloudflare Access application.</Text>
           </HStack>
         </VStack>
       </VStack>
@@ -50,5 +56,21 @@ export default function LoginPage() {
         </VStack>
       </Stack>
     </Grid>
+  );
+}
+
+function DevSignIn() {
+  const [email, setEmail] = useState('hale@evade.health');
+  const redirect = `${window.location.origin}/dashboard`;
+  return (
+    <form method="post" action={`${API_ORIGIN}/auth/start`}>
+      <VStack gap={2}>
+        <Text type="supporting">Local test sign-in. A staff email opens the console only when that account’s database role is staff and ACCESS_STAFF_AUD is set.</Text>
+        <input type="hidden" name="provider" value="dev" />
+        <input type="hidden" name="redirect" value={redirect} />
+        <TextInput label="Dev email" htmlName="dev_email" type="email" value={email} onChange={setEmail} />
+        <Button type="submit" variant="ghost" label="Dev sign in" />
+      </VStack>
+    </form>
   );
 }

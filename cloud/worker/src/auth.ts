@@ -357,10 +357,15 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     try {
       const profile = await exchangeAndProfile(env, provider, code, saved.verifier, `${url.origin}/auth/callback/${provider}`, saved.dev_email ?? undefined);
       const user = await linkIdentity(env, { provider, subject: profile.subject, email: profile.email, display_name: profile.name }, seedTasks);
-      const token = await createSession(env, user, profile.email, provider);
-      await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, provider).run();
+      // Loopback dev login can open a staff session only when the D1 role is already staff
+      // and ACCESS_STAFF_AUD is set. The session still has to pass the Access staff checks.
+      const devStaff = provider === "dev" && STAFF_ROLES.has(user.role) ? staffAudience(env) : null;
+      const sessionProvider = devStaff ? "cloudflare_access_staff" : provider;
+      const ttl = devStaff ? 1800 : SESSION_TTL;
+      const token = await createSession(env, user, profile.email, sessionProvider, ttl, devStaff ?? undefined);
+      await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, sessionProvider).run();
       const headers = new Headers({ Location: safeRedirect(env, saved.redirect, url) });
-      headers.append("Set-Cookie", cookieHeader(url, "session", token, SESSION_TTL));
+      headers.append("Set-Cookie", cookieHeader(url, "session", token, ttl));
       headers.append("Set-Cookie", cookieHeader(url, "oauth", "", 0));
       return new Response(null, { status: 302, headers });
     } catch {

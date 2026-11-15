@@ -21,6 +21,16 @@ host-only, HttpOnly, Secure and SameSite=Lax.
    first crew login, or link their confirmed Access subject to an existing user via the service-only
    identity endpoint. Verify identity ownership before linking. Accounts are never merged by email.
 
+## Who counts as staff
+
+A session is `flight_surgeon`, `therapist`, or `admin` only when every check below holds. The Access JWT does not carry an EVAde role.
+
+1. The person signs in at `/auth/access/staff`, the separate Access application.
+2. `ACCESS_STAFF_AUD` is that application's audience and is different from `ACCESS_AUD`. While it is empty, staff sign-in returns 503 and no session is staff.
+3. `users.role` in D1 is already `flight_surgeon`, `therapist`, or `admin`. Set that with the service identity API after confirming the Access subject. Email addresses are not used to merge or promote accounts.
+4. The session provider is `cloudflare_access_staff` and its stored audience equals `ACCESS_STAFF_AUD`.
+5. Each request re-reads `users.role`. A crew application token stays an astronaut even if the D1 role was later changed to staff, until they sign in again through the staff application.
+
 ## Verification
 
 - Sign in as an approved test crew user and check that `GET /auth/me` returns that D1 user.

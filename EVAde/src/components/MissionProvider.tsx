@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { CheckCircleIcon } from '@heroicons/react/24/outline';
-import { MissionContext, type MealEntry, type MissionContextValue } from '../context/MissionContext';
-import { PROTOCOL_TASKS, type MissionTask } from '../data/tasks';
+import { MissionContext, type DailyGoals, type MealEntry, type MissionContextValue } from '../context/MissionContext';
+import { NUTRITION_GOALS, PROTOCOL_TASKS, WATER_GOAL_ML, type MissionTask } from '../data/tasks';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { api, userPath, type ApiTask, type SessionUser } from '../services/api';
 
 type ApiMeal = Omit<MealEntry, 'loggedAt'> & { ts: string };
 type LocalProgress = { xp: number; selfieDay: string; watchedTutorials: string[] };
+
+const FALLBACK_GOALS: DailyGoals = {
+  kcal: NUTRITION_GOALS.kcal, protein: NUTRITION_GOALS.protein, carbs: NUTRITION_GOALS.carbs, fat: NUTRITION_GOALS.fat, waterMl: WATER_GOAL_ML,
+};
 
 const tutorialByMetric: Record<string, string> = {
   systolic_bp: 'bp-cuff', hrv_rmssd: 'ecg-patch', body_temp: 'temp-sensor', blood_glucose: 'glucose-cgm',
@@ -43,6 +47,7 @@ export default function MissionProvider({ user, children }: { user: SessionUser;
   const [tasks, setTasks] = useState<ApiTask[]>([]);
   const [meals, setMeals] = useState<MealEntry[]>([]);
   const [waterMl, setWaterMl] = useState(0);
+  const [goals, setGoals] = useState<DailyGoals>(FALLBACK_GOALS);
   const [points, setPoints] = useState(user.points);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -59,11 +64,22 @@ export default function MissionProvider({ user, children }: { user: SessionUser;
       api<ApiTask[]>(userPath(userId, 'tasks'), options),
       api<ApiMeal[]>(userPath(userId, 'meals?' + query), options),
       api<{ total_ml: number }>(userPath(userId, 'hydration?' + query), options),
-    ]).then(([taskResult, mealResult, waterResult]) => {
+      api<{ goals: { metric: string; target: number }[] }>(userPath(userId, 'goals'), options),
+    ]).then(([taskResult, mealResult, waterResult, goalResult]) => {
       if (controller.signal.aborted) return;
       if (taskResult.status === 'fulfilled') setTasks(taskResult.value);
       if (mealResult.status === 'fulfilled') setMeals(mealResult.value.map(toMeal));
       if (waterResult.status === 'fulfilled') setWaterMl(Math.max(0, waterResult.value.total_ml));
+      if (goalResult.status === 'fulfilled') {
+        const value = (metric: string, fallback: number) => goalResult.value.goals.find(goal => goal.metric === metric)?.target ?? fallback;
+        setGoals({
+          kcal: value('kcal_intake', FALLBACK_GOALS.kcal),
+          protein: value('protein_intake_g', FALLBACK_GOALS.protein),
+          carbs: value('carbs_intake_g', FALLBACK_GOALS.carbs),
+          fat: value('fat_intake_g', FALLBACK_GOALS.fat),
+          waterMl: value('water_intake_ml', FALLBACK_GOALS.waterMl),
+        });
+      }
       setLoadError([taskResult, mealResult, waterResult].some(result => result.status === 'rejected'));
       setLoading(false);
     });
@@ -134,7 +150,7 @@ export default function MissionProvider({ user, children }: { user: SessionUser;
   const value: MissionContextValue = {
     user, xp: points + progress.xp, streak: user.streak_days, tasks: tasks.map(toTask),
     completed: tasks.filter(row => row.completed_at).map(row => String(row.id)),
-    meals, waterMl, watchedTutorials: progress.watchedTutorials, loading, loadError,
+    meals, waterMl, goals, watchedTutorials: progress.watchedTutorials, loading, loadError,
     toggleTask, addWater, addMeal, removeMeal, reload, awardSelfie, completeTutorial,
   };
   return <MissionContext.Provider value={value}>{children}</MissionContext.Provider>;

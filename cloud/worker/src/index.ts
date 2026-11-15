@@ -13,7 +13,9 @@ import {
 } from "./health";
 import { AuthEnv, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, STAFF_ROLES, trustedOrigin } from "./auth";
 import { analyzeJournal, dailyBriefing, transcribe, TEXT_MODEL } from "./ai";
+import { HttpError } from "./http";
 import type { LiveEvent } from "./live";
+import { crewOverview, registerOps } from "./ops";
 export { CrewFeed } from "./live";
 
 export interface Env extends AuthEnv {
@@ -26,12 +28,6 @@ export interface Env extends AuthEnv {
   FASTAPI_URL?: string;
   FASTAPI_KEY?: string;
   ALLOWED_ORIGINS?: string;
-}
-
-class HttpError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
 }
 
 const now = () => new Date().toISOString();
@@ -425,7 +421,7 @@ route("GET", "/auth/identities/:provider/:subject", async (_r, env, p) => {
 });
 
 // Admin panel (doctors / therapists)
-route("GET", "/admin/crew", async (_r, env) => json((await env.DB.prepare("SELECT * FROM v_crew_overview ORDER BY escalated_alerts DESC, last_r DESC").all()).results));
+route("GET", "/admin/crew", async (_r, env) => json(await crewOverview(env.DB)));
 route("GET", "/admin/escalations", async (_r, env) => json((await env.DB.prepare("SELECT * FROM v_escalations ORDER BY ts DESC").all()).results));
 route("GET", "/admin/therapist-feed", async (_r, env, _p, url) => {
   const uid = url.searchParams.get("user_id");
@@ -936,6 +932,8 @@ route("POST", "/sync", async (req, env) => {
   }
   return json({ ok: true, ...res, synced_at: now() });
 });
+
+registerOps(route, { json, body, publish, now });
 
 // ---------- Access control ----------
 // service  = X-EVAde-Key (Python seeding, Michael's FastAPI, Ryan B's edge functions): full access
