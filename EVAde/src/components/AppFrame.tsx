@@ -12,6 +12,7 @@ import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { Divider } from '@astryxdesign/core/Divider';
 import {
   ArrowLeftStartOnRectangleIcon,
+  BeakerIcon,
   BookOpenIcon,
   CameraIcon,
   ChatBubbleLeftRightIcon,
@@ -20,6 +21,7 @@ import {
   Squares2X2Icon,
 } from '@heroicons/react/24/outline';
 import {
+  BeakerIcon as BeakerSolid,
   BookOpenIcon as BookOpenSolid,
   CameraIcon as CameraSolid,
   ChatBubbleLeftRightIcon as ChatSolid,
@@ -52,6 +54,7 @@ const NAV_ITEMS = [
   { href: '/journal', label: 'Journal', icon: BookOpenIcon, selectedIcon: BookOpenSolid },
   { href: '/selfies', label: 'Selfies', icon: CameraIcon, selectedIcon: CameraSolid },
   { href: '/messages', label: 'Messages', icon: ChatBubbleLeftRightIcon, selectedIcon: ChatSolid },
+  { href: '/research', label: 'Research', icon: BeakerIcon, selectedIcon: BeakerSolid },
 ];
 
 type SessionState = SessionUser | 'loading' | 'signed-out' | 'error';

@@ -21,7 +21,7 @@ import StatusBadge from './StatusBadge';
 const COLLAPSED_TRENDS = 6;
 const DIRECTION_ICONS = { rising: ArrowTrendingUpIcon, falling: ArrowTrendingDownIcon, steady: MinusIcon };
 const SOURCE_LABELS: Record<ReturnPrediction['source'], string> = {
-  'workers-ai': 'Trend math in the EVAde Worker · explained by Workers AI (Llama 3.3 70B)',
+  ai: 'Trend math in the EVAde Worker · explained by Grok (xAI)',
   'model-api': 'EVAde custom model',
   rules: 'Trend math in the EVAde Worker',
 };

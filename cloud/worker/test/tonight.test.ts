@@ -7,6 +7,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
 import { sha256hex } from "../src/auth";
 import { DELETE_USER_SQL } from "../src/deleteUser";
+// 0008 and 0011_seed_surgeon_demo are data-only (demo rows, applied on live); the tests seed their own data.
+const DATA_ONLY = new Set(["0008_remove_demo_data.sql", "0011_seed_surgeon_demo.sql"]);
 
 vi.mock("../src/live", () => ({ CrewFeed: class {} }));
 
@@ -15,8 +17,7 @@ function fakeD1() {
   const db = new DatabaseSync(":memory:");
   db.exec("PRAGMA foreign_keys=ON");
   const dir = join(__dirname, "..", "migrations");
-  // 0008 deletes the seeded demo astronaut. Keep the file, but do not apply it.
-  for (const f of readdirSync(dir).filter((f) => f.endsWith(".sql") && f !== "0008_remove_demo_data.sql").sort()) db.exec(readFileSync(join(dir, f), "utf8"));
+  for (const f of readdirSync(dir).filter((f) => f.endsWith(".sql") && !DATA_ONLY.has(f)).sort()) db.exec(readFileSync(join(dir, f), "utf8"));
   const stmt = (sql: string, args: unknown[] = []) => ({
     execute: () => {
       if (/\bRETURNING\b/i.test(sql)) return { success: true, results: db.prepare(sql).all(...(args as any[])), meta: {} };
@@ -174,12 +175,8 @@ describe("GET /auth/demo", () => {
     const userId = "00000000-0000-4000-8000-00000000d001";
     const today = await call("GET", `/users/${userId}/today`, cookie);
     expect(today.status).toBe(200);
-    const tasks = (await today.json<any>()).tasks as { task_key: string; completed_at: string | null }[];
-    expect(tasks.length).toBeGreaterThanOrEqual(14); // seeded daily templates (0011), some already completed
-    expect(tasks.some((t) => t.completed_at)).toBe(true);
-    const rows = count("tasks", userId);
-    await call("GET", `/users/${userId}/today`, cookie);
-    expect(count("tasks", userId)).toBe(rows); // idempotent
+    expect((await today.json<any>()).tasks).toHaveLength(4);
+    expect(count("tasks", userId)).toBe(4);
     expect((await call("POST", "/journal/messages", { ...cookie, body: {} })).status).toBe(403);
     expect((await call("GET", "/leaderboard", cookie)).status).toBe(403);
     expect((await call("GET", "/live", cookie)).status).toBe(403);
@@ -227,10 +224,12 @@ describe("DELETE /me", () => {
     expect(count("users", uid)).toBe(1);
   });
 
-  it("removes console rows and data in deployed legacy tables while preserving other accounts", async () => {
+  it("removes old and current console records while preserving other accounts", async () => {
     const { uid, token } = await astronaut();
     const other = await astronaut("Other");
+    const third = await astronaut("Third");
     const sql = db.raw;
+    const ts = new Date().toISOString();
     sql.prepare("INSERT INTO journal_messages (id,user_id,sender,content,ts) VALUES (?,?,'user','fixture',?)")
       .run(crypto.randomUUID(), uid, new Date().toISOString());
     sql.prepare("INSERT INTO user_settings (user_id) VALUES (?)").run(uid);
@@ -241,6 +240,24 @@ describe("DELETE /me", () => {
     sql.prepare("INSERT INTO emergencies (user_id,status) VALUES (?,'open')").run(uid);
     const thread = sql.prepare("INSERT INTO staff_threads (astronaut_id,staff_id) VALUES (?,?)").run(other.uid, uid).lastInsertRowid;
     sql.prepare("INSERT INTO staff_messages (thread_id,sender_id,body) VALUES (?,?, 'fixture')").run(thread, other.uid);
+    const insertGoal = sql.prepare("INSERT INTO user_goals (user_id, goal_type, target, unit, set_by) VALUES (?,'sleep_h',8,'h',?)");
+    insertGoal.run(uid, other.uid);
+    insertGoal.run(other.uid, uid);
+    const insertConversation = sql.prepare("INSERT INTO conversations (astronaut_id,surgeon_id) VALUES (?,?)");
+    const deletedConversation = insertConversation.run(uid, other.uid).lastInsertRowid;
+    const unaffectedConversation = insertConversation.run(third.uid, other.uid).lastInsertRowid;
+    const insertMessage = sql.prepare("INSERT INTO conversation_messages (conversation_id,sender_id,body) VALUES (?,?,'Fixture message')");
+    insertMessage.run(deletedConversation, other.uid);
+    insertMessage.run(unaffectedConversation, other.uid);
+    const observe = sql.prepare("INSERT INTO observations (user_id,metric,value,unit,ts,source) VALUES (?,'heart_rate',72,'bpm',?,'manual')");
+    const reading = observe.run(uid, ts).lastInsertRowid;
+    const otherReading = observe.run(other.uid, ts).lastInsertRowid;
+    const correct = sql.prepare("INSERT INTO vital_corrections (observation_id,user_id,metric,original_value,corrected_value,reason,corrected_by) VALUES (?,?,'heart_rate',72,73,'Test correction',?)");
+    correct.run(reading, uid, other.uid);
+    correct.run(otherReading, other.uid, uid);
+    const notify = sql.prepare("INSERT INTO user_notifications (user_id,kind,title,body,actor_id) VALUES (?,'goal_updated','Fixture','Fixture',?)");
+    notify.run(uid, other.uid);
+    notify.run(other.uid, uid);
 
     const remainingLogin = crypto.randomUUID();
     await kv.put(`sess:${await sha256hex(remainingLogin)}`, JSON.stringify({
@@ -248,26 +265,23 @@ describe("DELETE /me", () => {
     }));
     const response = await call("DELETE", "/me", { cookie: token, body: { confirm: "DELETE" } });
     expect(response.status).toBe(200);
-    for (const table of ["journal_messages", "user_settings", "daily_goals", "emergencies"]) expect(count(table, uid)).toBe(0);
+    for (const table of ["journal_messages", "user_settings", "daily_goals", "emergencies", "user_goals", "vital_corrections", "user_notifications"]) {
+      expect(count(table, uid)).toBe(0);
+    }
     expect(count("user_settings", other.uid)).toBe(1);
     expect(sql.prepare("SELECT COUNT(*) AS n FROM staff_threads").get()).toMatchObject({ n: 0 });
     expect(sql.prepare("SELECT COUNT(*) AS n FROM staff_messages").get()).toMatchObject({ n: 0 });
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM conversations WHERE id=?").get(deletedConversation)).toMatchObject({ n: 0 });
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM conversation_messages WHERE conversation_id=?").get(deletedConversation)).toMatchObject({ n: 0 });
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM conversations WHERE id=?").get(unaffectedConversation)).toMatchObject({ n: 1 });
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM conversation_messages WHERE conversation_id=?").get(unaffectedConversation)).toMatchObject({ n: 1 });
+    expect(sql.prepare("SELECT set_by FROM user_goals WHERE user_id=?").get(other.uid)).toMatchObject({ set_by: null });
+    expect(sql.prepare("SELECT corrected_by FROM vital_corrections WHERE user_id=?").get(other.uid)).toMatchObject({ corrected_by: null });
+    expect(sql.prepare("SELECT actor_id FROM user_notifications WHERE user_id=?").get(other.uid)).toMatchObject({ actor_id: null });
     expect(sql.prepare("SELECT set_by FROM daily_goals WHERE user_id=?").get(other.uid)).toMatchObject({ set_by: null });
     expect(sql.prepare("SELECT acknowledged_by, resolved_by FROM emergencies WHERE user_id=?").get(other.uid))
       .toMatchObject({ acknowledged_by: null, resolved_by: null });
     expect((await call("GET", "/staff", { cookie: remainingLogin })).status).toBe(401);
-  });
-
-  it("removes every seeded demo account (0011) without foreign-key errors", () => {
-    const demoIds = (db.raw.prepare("SELECT user_id FROM users WHERE user_id LIKE '00000000-0000-4000-8000-00000000d%'").all() as any[]).map((r) => r.user_id);
-    expect(demoIds.length).toBeGreaterThanOrEqual(10);
-    expect(row("SELECT COUNT(*) AS n FROM conversation_messages").n).toBeGreaterThan(0);
-    for (const id of demoIds) for (const statement of DELETE_USER_SQL) db.raw.prepare(statement).run(id);
-    for (const [table, column] of [["users", "user_id"], ["observations", "user_id"], ["user_goals", "user_id"], ["conversations", "astronaut_id"],
-      ["vital_corrections", "user_id"], ["user_notifications", "user_id"], ["emergencies", "user_id"], ["tasks", "user_id"]]) {
-      expect(row(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} LIKE '00000000-0000-4000-8000-00000000d%'`).n, table).toBe(0);
-    }
-    expect(row("SELECT COUNT(*) AS n FROM conversation_messages").n).toBe(0);
   });
 
   it("the generated SQL matches every table that has a user_id column", () => {

@@ -19,6 +19,7 @@ const TasksPage = lazy(() => import('./pages/TasksPage'));
 const JournalPage = lazy(() => import('./pages/JournalPage'));
 const SelfiesPage = lazy(() => import('./pages/SelfiesPage'));
 const MessagesPage = lazy(() => import('./pages/MessagesPage'));
+const ResearchPage = lazy(() => import('./pages/ResearchPage'));
 const CrewPage = lazy(() => import('./pages/surgeon/CrewPage'));
 const AstronautPage = lazy(() => import('./pages/surgeon/AstronautPage'));
 const SurgeonMessagesPage = lazy(() => import('./pages/surgeon/SurgeonMessagesPage'));
@@ -45,6 +46,7 @@ export default function App() {
                     <Route path="/tasks" element={<TasksPage />} />
                     <Route path="/journal" element={<JournalPage />} />
                     <Route path="/selfies" element={<SelfiesPage />} />
+                    <Route path="/research" element={<ResearchPage />} />
                     <Route path="/messages" element={<MessagesPage />} />
                     <Route path="/messages/:id" element={<MessagesPage />} />
                     <Route path="/chat/*" element={<Navigate to="/messages" replace />} />

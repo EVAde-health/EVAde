@@ -326,7 +326,7 @@ function JournalOverviewCard({ id }: { id: string }) {
               )}
             </Grid>
             <Text type="supporting">
-              AI overview (Workers AI, Llama 3.3 70B) · verify against the entries below, not a diagnosis · <Timestamp value={data!.generated_at} />
+              AI overview (Grok) · verify against the entries below, not a diagnosis · <Timestamp value={data!.generated_at} />
             </Text>
           </>
         )}

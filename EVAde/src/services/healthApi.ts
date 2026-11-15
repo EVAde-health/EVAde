@@ -68,6 +68,20 @@ export interface Risk {
   top_domains: string[];
 }
 
+export interface SpaceWeatherRow {
+  ts: string;
+  kp_index: number | null;
+  proton_flux_10mev: number | null;
+  xray_flux: number | null;
+  xray_class: string | null;
+  storm_level: string | null;
+  eva_status: 'go' | 'caution' | 'no_go' | null;
+  source: string;
+}
+
+export const SPACE_WEATHER_LATEST = '/space-weather/latest';
+export const spaceWeatherHistoryPath = (hours: number) => `/space-weather/history?hours=${hours}`;
+
 export interface DashboardSummary {
   user: SessionUser;
   risk: Risk;
@@ -299,7 +313,7 @@ export interface MetricTrend {
 
 export interface ReturnPrediction {
   generated_at: string;
-  source: 'workers-ai' | 'model-api' | 'rules';
+  source: 'ai' | 'model-api' | 'rules';
   model: string | null;
   provider_fallback: string | null;
   window_days: number;

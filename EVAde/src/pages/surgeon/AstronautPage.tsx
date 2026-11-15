@@ -130,9 +130,11 @@ function Record({ id, section, onSection }: { id: string; section: Section; onSe
   );
 }
 
-// On-demand AI bullet summary of the astronaut's last 24 hours (Workers AI, rules fallback).
+// On-demand AI bullet summary of the astronaut's last 24 hours (Grok over scoped aggregates, rules fallback).
+interface StaffSummary { label: string; bullets: string[]; since: string; until: string }
+
 function SummaryCard({ id, simulated }: { id: string; simulated: boolean }) {
-  const [summary, setSummary] = useState<{ bullets: string[]; model: string | null; generated_at: string }>();
+  const [summary, setSummary] = useState<StaffSummary>();
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
 
@@ -141,7 +143,7 @@ function SummaryCard({ id, simulated }: { id: string; simulated: boolean }) {
     setLoading(true);
     setFailed(false);
     try {
-      setSummary(await api<{ bullets: string[]; model: string | null; generated_at: string }>(`/admin/astronauts/${encodeURIComponent(id)}/summary`));
+      setSummary(await api<StaffSummary>(`/admin/astronauts/${encodeURIComponent(id)}/summary`));
     } catch {
       setFailed(true);
     } finally {
@@ -156,7 +158,7 @@ function SummaryCard({ id, simulated }: { id: string; simulated: boolean }) {
           <StackItem size="fill">
             <VStack gap={0.5}>
               <Heading level={3}>Last 24 hours</Heading>
-              <Text type="supporting">AI summary of readings, alerts, check-ins, journal, nutrition and tasks. Verify against the data; not a diagnosis.</Text>
+              <Text type="supporting">AI summary of vitals, sleep, alerts and journal mood. Verify against the data; not a diagnosis.</Text>
             </VStack>
           </StackItem>
           {simulated && <Badge variant="purple" label="Simulated data" />}
@@ -174,7 +176,7 @@ function SummaryCard({ id, simulated }: { id: string; simulated: boolean }) {
               {summary.bullets.map((bullet, index) => <ListItem key={index} label={bullet} />)}
             </List>
             <Text type="supporting">
-              {summary.model ? 'Workers AI (Llama 3.3 70B)' : 'Rule-based summary (AI unavailable)'} · <Timestamp value={summary.generated_at} />
+              {summary.label} · <Timestamp value={summary.until} />
             </Text>
           </VStack>
         )}

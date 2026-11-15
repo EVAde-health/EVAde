@@ -26,10 +26,11 @@ import ReturnForecast from '../components/ReturnForecast';
 import ScoreRing from '../components/ScoreRing';
 import SectionTitle from '../components/SectionTitle';
 import SleepPanel from '../components/SleepPanel';
+import SpaceWeatherPanel from '../components/SpaceWeatherPanel';
 import StatusBadge from '../components/StatusBadge';
 import VitalTile from '../components/VitalTile';
 import { useHealthData } from '../context/HealthDataContext';
-import { levelInfo, useMission } from '../context/MissionContext';
+import { crewGreetingName, levelInfo, useMission } from '../context/MissionContext';
 import { behaviorAxes, behaviorIndex, classifyWith, healthScore, missionDay, sleepNights, weeklySleepAverage } from '../data/health';
 import { EXPLORER_VITALS, LEVEL_STATUS, formatReading, getSnapshot, type Reading } from '../data/metrics';
 import { STATUS_STYLES, classify, statusFromScore, worstStatus, type HealthStatus } from '../data/status';
@@ -121,7 +122,7 @@ function DashboardContent() {
     <VStack gap={8} padding={6} className="page dashboard">
       <PageHeader
         eyebrow={[user.mission_name, day && (missionLength ? `Mission day ${day} of ${missionLength}` : `Mission day ${day}`)].filter(Boolean).join(' · ') || 'Mission control'}
-        title={`${greeting()}, ${(user.full_name ?? user.display_name).split(' ')[0]}`}
+        title={`${greeting()}, ${crewGreetingName(user)}`}
         description="Here’s how your body and mind are adapting to orbit today."
         actions={
           <>
@@ -259,6 +260,7 @@ function DashboardContent() {
         <SectionTitle title="Long-term risks" caption="Slow-moving threats of spaceflight, tracked across the mission" />
         <Grid columns={{ minWidth: 380, max: 2 }} gap={4}>
           <RadiationPanel />
+          <SpaceWeatherPanel />
           <BonePanel />
           <CardioPanel />
           <NutritionPanel />

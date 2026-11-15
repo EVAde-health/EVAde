@@ -2,13 +2,13 @@
 // predicted days until the astronaut should go home, with the factor that drives it.
 //
 // Numbers are computed here with plain statistics (least-squares lines over daily means), so they are reproducible
-// and auditable. The language model (Workers AI) only ranks which metric is most concerning, chosen from the metrics
+// and auditable. The language model (Grok) only ranks which metric is most concerning, chosen from the metrics
 // below, and explains the result in plain words; it never produces a number.
 //
 // Provider switch: PREDICTION_PROVIDER="model-api" takes the days-to-return figure from the custom model service
 // (POST /v1/predict/risk behind the evade-gateway Worker, see models.ts). Until it is connected, or if it fails,
 // the Worker falls back to the computation below. The response shape is the same either way.
-import { TEXT_MODEL, FALLBACK_TEXT_MODEL, parseModelJson, type AiEnv } from "./ai";
+import { grok, parseModelJson, type AiEnv } from "./ai";
 import { levelFromThresholds, type Level, type MetricDef } from "./health";
 import { callModelApi, modelUserId, modelsConfigured, type ModelEnv } from "./models";
 
@@ -56,7 +56,7 @@ export interface ReturnForecast {
 
 export interface Prediction {
   generated_at: string;
-  source: "workers-ai" | "model-api" | "rules";
+  source: "ai" | "model-api" | "rules";
   model: string | null;
   provider_fallback: string | null;
   window_days: number;
@@ -69,7 +69,7 @@ export interface Prediction {
 }
 
 export interface PredictionEnv extends AiEnv, ModelEnv {
-  PREDICTION_PROVIDER?: string; // "workers-ai" (default) or "model-api"
+  PREDICTION_PROVIDER?: string; // "ai" (default: trend math + Grok) or "model-api"
   LOGISTICS_FLOOR_DAYS?: string; // lead time to arrange a return, required by the model service
 }
 
@@ -266,6 +266,7 @@ const AI_SCHEMA = (metrics: string[]) => ({
     explanation: { type: "string" },
   },
   required: ["most_concerning_metric", "reason", "headline", "explanation"],
+  additionalProperties: false,
 });
 
 const AI_SYSTEM = `You review health trends for a long-duration space mission. The JSON facts were computed from sensor data.
@@ -277,9 +278,9 @@ Return JSON only:
 - explanation: 2-3 short plain sentences on the main trends. Neutral wording, no names, do not address anyone.
 Never invent numbers, never diagnose, never give treatment advice. Say this is a projection for the flight surgeon to review.`;
 
-// Asks Workers AI to rank the most concerning metric and explain; null when unavailable or invalid.
+// Asks Grok to rank the most concerning metric and explain; null when unavailable or invalid.
 async function narrate(env: AiEnv, forecast: ReturnForecast, trends: MetricTrend[]) {
-  if (!env.AI || !trends.length) return null;
+  if (!trends.length) return null;
   const ranked = trends.slice(0, 8);
   const facts = {
     return: forecast,
@@ -288,29 +289,23 @@ async function narrate(env: AiEnv, forecast: ReturnForecast, trends: MetricTrend
       change_per_week: t.slope_per_week, days_to_limit: t.days_to_limit, confidence: t.confidence,
     })),
   };
-  const input = {
+  const r = await grok(env, {
     messages: [{ role: "system", content: AI_SYSTEM }, { role: "user", content: JSON.stringify(facts) }],
-    response_format: { type: "json_schema", json_schema: AI_SCHEMA(ranked.map((t) => t.metric)) },
+    schema: { name: "return_forecast", schema: AI_SCHEMA(ranked.map((t) => t.metric)) },
     max_tokens: 400,
     temperature: 0.2,
-  };
-  for (const model of [TEXT_MODEL, FALLBACK_TEXT_MODEL]) {
-    try {
-      const run = await env.AI.run(model as any, input as any, env.AI_GATEWAY ? { gateway: { id: env.AI_GATEWAY } } : undefined);
-      const out = parseModelJson(run);
-      const pick = ranked.find((t) => t.metric === out?.most_concerning_metric);
-      if (!pick || typeof out.headline !== "string" || typeof out.explanation !== "string") continue;
-      return {
-        model, pick,
-        reason: typeof out.reason === "string" ? out.reason.slice(0, 300) : ruleReason(pick),
-        headline: out.headline.slice(0, 120),
-        explanation: out.explanation.slice(0, 700),
-      };
-    } catch (e) {
-      console.log("prediction narrative failed on", model, String(e));
-    }
-  }
-  return null;
+  }, (t) => {
+    const out = parseModelJson(t);
+    const pick = ranked.find((m) => m.metric === out?.most_concerning_metric);
+    if (!pick || typeof out.headline !== "string" || typeof out.explanation !== "string") return null;
+    return {
+      pick,
+      reason: typeof out.reason === "string" ? out.reason.slice(0, 300) : ruleReason(pick),
+      headline: out.headline.slice(0, 120),
+      explanation: out.explanation.slice(0, 700),
+    };
+  }, "prediction narrative");
+  return r ? { model: r.model, ...r.value } : null;
 }
 
 // Days-to-return from the custom model service, mapped onto the same forecast shape.
@@ -363,7 +358,7 @@ export async function predict(env: PredictionEnv, userId: string, inp: Predictio
   let forecast = combineReturn(trends, inp.riskMdtrDays, inp.scheduledDaysLeft);
   let source: Prediction["source"] = "rules";
   let providerFallback: string | null = null;
-  if ((env.PREDICTION_PROVIDER ?? "workers-ai") === "model-api") {
+  if (env.PREDICTION_PROVIDER === "model-api") {
     if (!modelsConfigured(env)) providerFallback = "Model service is not connected; using the Worker forecast.";
     else {
       try {
@@ -380,7 +375,7 @@ export async function predict(env: PredictionEnv, userId: string, inp: Predictio
   const text = ai ?? ruleText(forecast, top);
   return {
     generated_at: new Date().toISOString(),
-    source: source === "model-api" ? "model-api" : ai ? "workers-ai" : "rules",
+    source: source === "model-api" ? "model-api" : ai ? "ai" : "rules",
     model: ai?.model ?? null,
     provider_fallback: providerFallback,
     window_days: WINDOW_DAYS,

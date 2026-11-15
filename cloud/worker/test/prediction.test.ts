@@ -1,5 +1,7 @@
 // Return-to-Earth forecast: trend math, days to limit, the return decision, and the AI / model-api guards.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+afterEach(() => vi.unstubAllGlobals());
 import type { MetricDef } from "../src/health";
 import {
   analyzeMetric, combineReturn, dailyMeans, displayDays, fitLine, predict, radiationTrend, type PredictionInputs,
@@ -131,19 +133,23 @@ describe("predict()", () => {
     observations: series(14, (d) => 8 - 0.1 * d).map((r) => ({ metric: "sleep_hours", ...r })),
     doses: [], radiationLimitMsv: 600, riskMdtrDays: 120, scheduledDaysLeft: null,
   };
-  const fakeAi = (response: unknown) => ({ run: async () => ({ response }) }) as unknown as Ai;
+  // Grok is reached with fetch; this returns one chat completion whose content is the given JSON.
+  const fakeAi = (response: unknown) => {
+    vi.stubGlobal("fetch", async () => Response.json({ choices: [{ message: { content: JSON.stringify(response) } }] }));
+    return "test-xai-key";
+  };
 
   it("uses the model's pick and words, never its numbers", async () => {
-    const out = await predict({ AI: fakeAi({
+    const out = await predict({ XAI_API_KEY: fakeAi({
       most_concerning_metric: "sleep_hours", reason: "Sleep is falling.", headline: "Return in about 17 days", explanation: "Sleep is down.",
     }) } as any, "u1", inputs);
-    expect(out.source).toBe("workers-ai");
+    expect(out.source).toBe("ai");
     expect(out.most_concerning?.metric).toBe("sleep_hours");
     expect(out.return.days).toBe(17);
   });
 
   it("ignores a metric the model made up and falls back to rules", async () => {
-    const out = await predict({ AI: fakeAi({
+    const out = await predict({ XAI_API_KEY: fakeAi({
       most_concerning_metric: "made_up", reason: "x", headline: "x", explanation: "x",
     }) } as any, "u1", inputs);
     expect(out.source).toBe("rules");

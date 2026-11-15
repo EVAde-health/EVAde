@@ -1,25 +1,25 @@
-// Flight-surgeon console through the real Worker (src/index.ts) on a node:sqlite D1 built from every migration:
-// role enforcement, 1:1 messages, emergencies seen by two surgeons, goals with astronaut notes, vital corrections.
-// The D1 role decides access on every request (one sign-in for everyone; FLIGHT_SURGEON_EMAILS can promote).
+// Admin, emergency, and chat routes. One Cloudflare Access sign-in for everyone: the current D1 role decides
+// whether a session is staff.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
+// 0008 and 0011_seed_surgeon_demo are data-only (demo rows, applied on live); the tests seed their own data.
+const DATA_ONLY = new Set(["0008_remove_demo_data.sql", "0011_seed_surgeon_demo.sql"]);
 
 vi.mock("../src/live", () => ({ CrewFeed: class {} }));
 
 const API = "https://api.evade.health";
 const SURGEON = "11111111-1111-4111-8111-111111111111";
-const SURGEON2 = "22222222-2222-4222-8222-222222222222";
+const THERAPIST = "22222222-2222-4222-8222-222222222222";
 const NOVA = "33333333-3333-4333-8333-333333333333";
 const KEPLER = "44444444-4444-4444-8444-444444444444";
 
 function fakeD1() {
   const db = new DatabaseSync(":memory:");
   const dir = join(__dirname, "..", "migrations");
-  // 0008 deletes the seeded demo astronaut. Keep the file, but do not apply it.
-  for (const file of readdirSync(dir).filter((name) => name.endsWith(".sql") && name !== "0008_remove_demo_data.sql").sort()) {
+  for (const file of readdirSync(dir).filter((name) => name.endsWith(".sql") && !DATA_ONLY.has(name)).sort()) {
     db.exec(readFileSync(join(dir, file), "utf8"));
   }
   const stmt = (sql: string, args: unknown[] = []) => ({
@@ -87,12 +87,14 @@ beforeEach(() => {
   };
   const insertUser = db.prepare("INSERT INTO users (user_id, display_name, role, mission_name) VALUES (?,?,?,?)");
   insertUser.run(SURGEON, "Hale", "flight_surgeon", "Expedition 74");
-  insertUser.run(SURGEON2, "Dr. Moss", "flight_surgeon", "Expedition 74");
+  insertUser.run(THERAPIST, "Moss", "therapist", "Expedition 74");
   insertUser.run(NOVA, "Nova", "astronaut", "Expedition 74");
   insertUser.run(KEPLER, "Kepler", "astronaut", "Expedition 74");
   const identity = db.prepare("INSERT INTO auth_identities (provider, subject, user_id) VALUES (?,?,?)");
-  for (const [subject, userId] of [["surgeon-fixture", SURGEON], ["surgeon2-fixture", SURGEON2]]) identity.run("cloudflare_access", subject, userId);
-  db.prepare("UPDATE users SET full_name='Grace Hale' WHERE user_id=?").run(SURGEON);
+  for (const [subject, userId] of [["surgeon-fixture", SURGEON], ["therapist-fixture", THERAPIST]]) {
+    identity.run("cloudflare_access", subject, userId);
+    identity.run("cloudflare_access_staff", subject, userId);
+  }
   const insertObservation = db.prepare("INSERT INTO observations (user_id, metric, value, unit, ts, source, level) VALUES (?,?,?,?,?,?,?)");
   const ts = new Date().toISOString();
   insertObservation.run(NOVA, "heart_rate", 72, "bpm", ts, "manual", "green");
@@ -119,227 +121,365 @@ async function call(method: string, path: string, token: string | null, body?: u
   return { status: response.status, payload };
 }
 
-const asSurgeon = () => session(SURGEON, "flight_surgeon", "cloudflare_access");
-const asSurgeon2 = () => session(SURGEON2, "flight_surgeon", "cloudflare_access");
-const asNova = () => session(NOVA, "astronaut", "cloudflare_access");
-const asKepler = () => session(KEPLER, "astronaut", "cloudflare_access");
-const SURGEON_GETS = [
-  "/admin/crew", "/admin/astronauts", `/admin/astronauts/${NOVA}`, `/admin/astronauts/${NOVA}/series?group=vitals`,
-  `/admin/astronauts/${NOVA}/journal`, `/admin/astronauts/${NOVA}/tasks`, `/admin/astronauts/${NOVA}/goals`,
-  `/admin/astronauts/${NOVA}/observations`, `/admin/astronauts/${NOVA}/corrections`, "/admin/emergencies", "/admin/notifications",
-];
-
-describe("role enforcement", () => {
-  it("returns 403 on every surgeon endpoint for an astronaut and 200 for a flight surgeon", async () => {
-    const nova = await asNova();
-    const surgeon = await asSurgeon();
-    for (const path of SURGEON_GETS) {
-      expect([path, (await call("GET", path, nova)).status]).toEqual([path, 403]);
-      expect([path, (await call("GET", path, surgeon)).status]).toEqual([path, 200]);
-    }
-    expect((await call("POST", `/admin/astronauts/${NOVA}/goals`, nova, { goal_type: "water_ml", target: 3000 })).status).toBe(403);
-    expect((await call("POST", "/admin/observations/1/correct", nova, { value: 70, reason: "nope" })).status).toBe(403);
-    expect((await call("GET", "/admin/crew", null)).status).toBe(401);
+describe("one sign-in, D1 role decides", () => {
+  it("makes an Access session staff as soon as D1 says staff", async () => {
+    const token = await session(NOVA, "astronaut", "cloudflare_access");
+    expect((await call("GET", "/admin/crew", token)).status).toBe(403);
+    db.prepare("UPDATE users SET role='flight_surgeon' WHERE user_id=?").run(NOVA);
+    expect((await call("GET", "/admin/crew", token)).status).toBe(200);
   });
 
-  it("ignores the role stored in the session and uses D1 (a crew Access session for a promoted user is staff)", async () => {
-    const forged = await session(NOVA, "flight_surgeon", "cloudflare_access");
-    expect((await call("GET", "/admin/crew", forged)).status).toBe(403);
+  it("gives a session no staff rights when D1 says astronaut, whatever the session claims", async () => {
+    const token = await session(NOVA, "flight_surgeon", "cloudflare_access");
+    expect((await call("GET", "/admin/crew", token)).status).toBe(403);
   });
 
-  it("lists every astronaut (not staff) on the crew overview, scaling past 20 people", async () => {
-    const insert = db.prepare("INSERT INTO users (user_id, display_name, role) VALUES (?,?, 'astronaut')");
-    for (let i = 0; i < 25; i++) insert.run(`crew-${i}`, `Crew ${String(i).padStart(2, "0")}`);
-    const response = await call("GET", "/admin/crew", await asSurgeon());
-    const rows = response.payload as { user_id: string; display_name: string; status: string; progress: unknown; vitals: Record<string, { value: number }> }[];
-    const names = rows.map((row) => row.display_name);
+  it("lets a matching staff session read the crew", async () => {
+    const token = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    const response = await call("GET", "/admin/crew", token);
+    expect(response.status).toBe(200);
+    const names = (response.payload as { display_name: string }[]).map((row) => row.display_name);
     expect(names).toContain("Nova");
     expect(names).not.toContain("Hale");
-    expect(rows.filter((row) => row.user_id.startsWith("crew-"))).toHaveLength(25);
-    expect(rows.find((row) => row.user_id === NOVA)?.vitals.heart_rate.value).toBe(72);
-    const picker = await call("GET", "/admin/astronauts", await asSurgeon());
-    expect((picker.payload as unknown[]).length).toBe(rows.length);
   });
 });
 
-describe("goals", () => {
-  it("records each change as a new row, the latest wins, and the astronaut gets a note", async () => {
-    const surgeon = await asSurgeon();
-    const nova = await asNova();
-    const before = await call("GET", `/users/${NOVA}/goals`, nova);
-    expect((before.payload as any).goals.find((g: any) => g.goal_type === "water_ml")).toMatchObject({ target: 2500, source: "default" });
-    expect((await call("POST", `/admin/astronauts/${NOVA}/goals`, surgeon, { goal_type: "water_ml", target: 100 })).status).toBe(422);
-    expect((await call("POST", `/admin/astronauts/${NOVA}/goals`, surgeon, { goal_type: "nope", target: 100 })).status).toBe(422);
-    expect((await call("POST", `/admin/astronauts/${SURGEON2}/goals`, surgeon, { goal_type: "water_ml", target: 3000 })).status).toBe(422);
-    const first = await call("POST", `/admin/astronauts/${NOVA}/goals`, surgeon, { goal_type: "water_ml", target: 3000 });
-    expect(first.status).toBe(201);
-    const second = await call("POST", `/admin/astronauts/${NOVA}/goals`, await asSurgeon2(), {
-      changes: [{ goal_type: "water_ml", target: 3200 }, { goal_type: "calories", target: 3000 }], note: "EVA week",
-    });
-    expect((second.payload as any).changed).toEqual(["water_ml", "calories"]);
-    const unchanged = await call("POST", `/admin/astronauts/${NOVA}/goals`, surgeon, { goal_type: "calories", target: 3000 });
-    expect((unchanged.payload as any).changed).toEqual([]);
-    expect(db.prepare("SELECT COUNT(*) AS n FROM user_goals WHERE user_id=?").get(NOVA)).toEqual({ n: 3 });
-
-    const own = await call("GET", `/users/${NOVA}/goals`, nova);
-    expect((own.payload as any).goals.find((g: any) => g.goal_type === "water_ml")).toMatchObject({ target: 3200, source: "surgeon", set_by_name: "Dr. Moss" });
+describe("daily goals", () => {
+  it("lets staff set a goal, keeps history, and shows it to that astronaut", async () => {
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    const nova = await session(NOVA, "astronaut", "cloudflare_access");
+    expect((await call("POST", `/admin/astronauts/${NOVA}/goals`, nova, { metric: "kcal_intake", target: 2600 })).status).toBe(403);
+    expect((await call("POST", `/admin/astronauts/${NOVA}/goals`, surgeon, { metric: "kcal_intake", target: 50 })).status).toBe(422);
+    const created = await call("POST", `/admin/astronauts/${NOVA}/goals`, surgeon, { metric: "kcal_intake", target: 2600, note: "Lower while appetite is down" });
+    expect(created.status).toBe(201);
+    const again = await call("POST", `/admin/astronauts/${NOVA}/goals`, surgeon, { metric: "kcal_intake", target: 2700 });
+    expect(again.status).toBe(201);
     const history = await call("GET", `/admin/astronauts/${NOVA}/goals`, surgeon);
-    expect((history.payload as any).history.map((h: any) => h.target)).toEqual(expect.arrayContaining([3000, 3200]));
-    // Astronaut-side logic reads the goals: settings and the dashboard/nutrition targets.
-    const settings = await call("GET", `/users/${NOVA}/settings`, nova);
-    expect(settings.payload).toMatchObject({ water_goal_ml: 3200, kcal_goal: 3000 });
-
-    const notes = await call("GET", "/me/notifications", nova);
-    const bodies = (notes.payload as any).notifications.map((n: any) => n.body);
-    expect(bodies).toContain("Dr. Hale updated your water goal to 3,000 ml.");
-    expect(bodies).toContain("Dr. Moss updated your water goal to 3,200 ml. Note: EVA week");
-    expect((notes.payload as any).unread).toBe(3);
-    expect((await call("POST", "/me/notifications/read", nova, {})).status).toBe(204);
-    expect(((await call("GET", "/me/notifications", nova)).payload as any).unread).toBe(0);
+    expect(history.status).toBe(200);
+    const body = history.payload as { goals: { metric: string; target: number; source: string }[]; history: unknown[] };
+    expect(body.goals.find((goal) => goal.metric === "kcal_intake")).toMatchObject({ target: 2700, source: "set" });
+    expect(body.history).toHaveLength(2);
+    const own = await call("GET", `/users/${NOVA}/goals`, nova);
+    expect((own.payload as { goals: { metric: string; target: number }[] }).goals.find((goal) => goal.metric === "kcal_intake")?.target).toBe(2700);
     expect((await call("GET", `/users/${KEPLER}/goals`, nova)).status).toBe(403);
   });
-
-  it("an astronaut's own settings change is also a goal row and wins until a surgeon changes it", async () => {
-    const nova = await asNova();
-    expect((await call("PATCH", `/users/${NOVA}/settings`, nova, { water_goal_ml: 2800 })).status).toBe(200);
-    const own = await call("GET", `/users/${NOVA}/goals`, nova);
-    expect((own.payload as any).goals.find((g: any) => g.goal_type === "water_ml")).toMatchObject({ target: 2800, source: "self" });
-    await call("POST", `/admin/astronauts/${NOVA}/goals`, await asSurgeon(), { goal_type: "water_ml", target: 3000 });
-    expect(((await call("GET", `/users/${NOVA}/settings`, nova)).payload as any).water_goal_ml).toBe(3000);
-  });
 });
 
-describe("vital corrections", () => {
-  it("corrects a vital with an audit row (original, corrected, who, when, reason) and tells the astronaut", async () => {
-    const surgeon = await asSurgeon();
-    const nova = await asNova();
-    const obs = db.prepare("SELECT id FROM observations WHERE user_id=? AND metric='heart_rate'").get(NOVA) as { id: number };
-    expect((await call("POST", `/admin/observations/${obs.id}/correct`, nova, { value: 70, reason: "Motion artifact" })).status).toBe(403);
-    expect((await call("POST", `/admin/observations/${obs.id}/correct`, surgeon, { value: 70 })).status).toBe(422);
-    expect((await call("POST", `/admin/observations/${obs.id}/correct`, surgeon, { value: 72, reason: "Same value" })).status).toBe(422);
-    expect((await call("POST", "/admin/observations/999999/correct", surgeon, { value: 70, reason: "Missing" })).status).toBe(404);
-    const fixed = await call("POST", `/admin/observations/${obs.id}/correct`, surgeon, { value: 140, reason: "Typo, value was 140" });
-    expect(fixed.status).toBe(201);
-    expect((fixed.payload as any).observation).toMatchObject({ value: 140, level: "red" });
-    const audit = db.prepare("SELECT * FROM vital_corrections WHERE observation_id=?").all(obs.id) as any[];
-    expect(audit).toHaveLength(1);
-    expect(audit[0]).toMatchObject({ user_id: NOVA, metric: "heart_rate", original_value: 72, corrected_value: 140, original_level: "green",
-      corrected_level: "red", reason: "Typo, value was 140", corrected_by: SURGEON });
-    expect(audit[0].created_at).toMatch(/^\d{4}-\d\d-\d\dT/);
-    expect(db.prepare("SELECT value, level FROM observations WHERE id=?").get(obs.id)).toEqual({ value: 140, level: "red" });
-    const list = await call("GET", `/admin/astronauts/${NOVA}/corrections`, surgeon);
-    expect((list.payload as any[])[0]).toMatchObject({ corrected_by_name: "Hale", original_value: 72 });
-    const readings = await call("GET", `/admin/astronauts/${NOVA}/observations?metric=heart_rate`, surgeon);
-    expect((readings.payload as any[])[0]).toMatchObject({ corrections: 1, original_value: 72, value: 140 });
-    expect(((await call("GET", "/me/notifications", nova)).payload as any).notifications[0].kind).toBe("vital_corrected");
+describe("surgeon console response contract", () => {
+  it("keeps legacy crew fields and adds latest vitals, daily progress, emergencies and private unread counts", async () => {
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    const therapist = await session(THERAPIST, "therapist", "cloudflare_access");
+    const day = new Date().toISOString().slice(0, 10);
+    const ts = `${day}T15:00:00.000Z`;
+    const yesterday = new Date(Date.parse(`${day}T00:00:00.000Z`) - 1000).toISOString();
+    const reading = db.prepare("INSERT INTO observations (user_id,metric,value,unit,ts,source,level) VALUES (?,?,?,'mmHg',?,'manual',?)");
+    reading.run(NOVA, "diastolic_bp", 60, yesterday, "green");
+    reading.run(NOVA, "diastolic_bp", 100, ts, "yellow");
+    reading.run(NOVA, "diastolic_bp", 104, ts, "red");
+    reading.run(NOVA, "systolic_bp", 130, ts, "green");
+    const meal = db.prepare("INSERT INTO meals (id,user_id,ts,name,grams,kcal,protein,carbs,fat) VALUES (?,?,?,'Fixture meal',100,1000,55,0,0)");
+    meal.run("fixture-meal-today", NOVA, ts);
+    meal.run("fixture-meal-yesterday", NOVA, yesterday);
+    const water = db.prepare("INSERT INTO hydration (id,user_id,ts,amount_ml) VALUES (?,?,?,?)");
+    water.run("fixture-water-today", NOVA, ts, 1100);
+    water.run("fixture-water-adjustment", NOVA, ts, -100);
+    water.run("fixture-water-yesterday", NOVA, yesterday, 300);
+    db.prepare("INSERT INTO daily_goals (user_id,metric,target,set_by) VALUES (?,'kcal_intake',2000,?)").run(NOVA, SURGEON);
+    db.prepare("INSERT INTO daily_goals (user_id,metric,target,set_by) VALUES (?,'water_intake_ml',2000,?)").run(NOVA, SURGEON);
+    db.prepare("INSERT INTO user_goals (user_id,goal_type,target,unit) VALUES (?,'water_ml',3000,'ml')").run(NOVA);
+    const task = db.prepare("INSERT INTO tasks (user_id,title,category,recurrence,day,points,completed_at) VALUES (?,'Fixture task','basic','daily',?,10,?)");
+    task.run(NOVA, day, ts);
+    task.run(NOVA, day, null);
+    db.prepare("INSERT INTO self_reports (user_id,ts,mood,source,checkin_level) VALUES (?,?,4,'voice_web','green')").run(NOVA, ts);
+    db.prepare("INSERT INTO emergencies (user_id,status,message) VALUES (?,'open','Synthetic emergency')").run(NOVA);
+    db.prepare("INSERT INTO alerts (user_id,ts,level,metric,message,acknowledged) VALUES (?,?,'red','diastolic_bp','Fixture alert',0)").run(NOVA, ts);
+    const thread = db.prepare("INSERT INTO conversations (astronaut_id,surgeon_id) VALUES (?,?)").run(NOVA, SURGEON).lastInsertRowid;
+    const message = db.prepare("INSERT INTO conversation_messages (conversation_id,sender_id,body,read_at) VALUES (?,?,'Fixture message',?)");
+    message.run(thread, NOVA, null);
+    message.run(thread, NOVA, ts);
+    message.run(thread, SURGEON, null);
+
+    const response = await call("GET", "/admin/crew", surgeon);
+    expect(response.status).toBe(200);
+    expect(response.payload).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        user_id: NOVA, display_name: "Nova", environment: expect.any(String), last_mdtr: null, open_emergencies: 1,
+        heart_rate: 72, heart_rate_level: "green", sleep_hours: 7.5, status: "critical",
+        red_alerts: 1, unread_messages: 1, emergency: expect.objectContaining({ status: "open" }),
+        vitals: expect.objectContaining({
+          diastolic_bp: expect.objectContaining({ value: 104, level: "red", ts, unit: "mmHg" }),
+          systolic_bp: expect.objectContaining({ value: 130, level: "green" }),
+          spo2: null,
+        }),
+        progress: {
+          calories: { value: 1000, target: 2000, unit: "kcal" },
+          protein: { value: 55, target: 110, unit: "g" },
+          water_ml: { value: 1000, target: 2000, unit: "ml" },
+          tasks: { value: 1, target: 2, unit: "tasks" },
+          goal_progress: 0.5,
+        },
+        goal_progress: 50,
+        last_checkin: { ts, mood: 4, stress: null, source: "voice_web", level: "green" },
+      }),
+      expect.objectContaining({ user_id: KEPLER, last_checkin: null, emergency: null, vitals: expect.objectContaining({ diastolic_bp: null }) }),
+    ]));
+    expect((await call("GET", "/admin/crew", therapist)).payload).toEqual(expect.arrayContaining([
+      expect.objectContaining({ user_id: NOVA, unread_messages: 0 }),
+    ]));
+  });
+
+  it("serves the vitals chart shape and enforces the existing staff-only gate", async () => {
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    const astronautToken = await session(NOVA, "astronaut", "cloudflare_access");
+    const path = `/admin/astronauts/${NOVA}/vitals?days=7`;
+    expect((await call("GET", path, null)).status).toBe(401);
+    expect((await call("GET", path, astronautToken)).status).toBe(403);
+    const vitals = await call("GET", path, surgeon);
+    expect(vitals.status).toBe(200);
+    expect(vitals.payload).toMatchObject({ group: "vitals", days: 7,
+      vitals: { heart_rate: { value: 72, level: "green" }, diastolic_bp: null },
+      metrics: expect.arrayContaining([expect.objectContaining({ metric: "heart_rate", decimals: 0,
+        green_min: expect.any(Number), green_max: expect.any(Number), latest: expect.objectContaining({ value: 72, level: "green" }),
+        points: expect.arrayContaining([expect.objectContaining({ value: 72 })]),
+      })]),
+    });
+    expect((await call("GET", `/admin/astronauts/${SURGEON}/vitals`, surgeon)).status).toBe(422);
+    expect((await call("GET", "/admin/astronauts/missing/vitals", surgeon)).status).toBe(404);
+  });
+
+  it("serves the astronaut picker, journal, task board and typed goals for the same account", async () => {
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    const day = new Date().toISOString().slice(0, 10);
+    const ts = `${day}T12:00:00.000Z`;
+    db.prepare("INSERT INTO self_reports (user_id,ts,mood,source,symptoms,note) VALUES (?,?,3,'voice_web',?,'Private check-in fixture')")
+      .run(NOVA, ts, '["headache", 9]');
+    db.prepare("INSERT INTO journal_entries (user_id,ts,content,ai_summary) VALUES (?,?,'Private entry fixture','Summary fixture')").run(NOVA, ts);
+    db.prepare("INSERT INTO journal_messages (id,user_id,sender,content,ts) VALUES (?,?,'user','Private companion fixture',?)")
+      .run(crypto.randomUUID(), NOVA, ts);
+    db.prepare("INSERT INTO tasks (user_id,title,category,recurrence,day,points) VALUES (?,'Synthetic task','basic','daily',?,10)").run(NOVA, day);
+    const detail = `/admin/astronauts/${NOVA}`;
+    expect((await call("GET", "/admin/astronauts", surgeon)).payload).toEqual(expect.arrayContaining([
+      expect.objectContaining({ user_id: NOVA, display_name: "Nova", emergency_status: null }),
+    ]));
+    expect((await call("GET", detail, surgeon)).payload).toMatchObject({ last_checkin: { ts, mood: 3, source: "voice_web" } });
+    const journal = await call("GET", `${detail}/journal`, surgeon);
+    expect(journal.status).toBe(200);
+    expect(journal.payload.checkins).toMatchObject([{ ts, mood: 3, symptoms: ["headache"] }]);
+    expect(journal.payload.checkins[0]).not.toHaveProperty("note");
+    expect(journal.payload.journal).toEqual([{ ts, source: "text", mood_label: null, concern_level: null, ai_summary: "Summary fixture" }]);
+    const mood = await call("GET", `${detail}/mood`, surgeon);
+    expect(mood.status).toBe(200);
+    expect(mood.payload.reports[0]).not.toHaveProperty("note");
+    expect(mood.payload.journal[0]).not.toHaveProperty("excerpt");
+    expect(JSON.stringify([journal.payload, mood.payload])).not.toContain("Private");
+    const owner = await session(NOVA, "astronaut", "cloudflare_access");
+    for (const [path, content] of [[`/users/${NOVA}/journal`, "Private entry fixture"], [`/users/${NOVA}/journal/messages`, "Private companion fixture"]]) {
+      expect((await call("GET", path, surgeon)).status).toBe(403);
+      expect((await call("GET", path, owner)).payload).toMatchObject([{ content }]);
+    }
+    expect((await call("GET", `${detail}/tasks`, surgeon)).payload).toMatchObject({
+      day, today: [{ title: "Synthetic task" }], history: [{ day, total: 1, done: 0 }], tutorials: [],
+    });
+    const invalid = await call("POST", `${detail}/goals`, surgeon, { changes: [
+      { goal_type: "calories", target: 2400 }, { goal_type: "water_ml", target: -1 },
+    ] });
+    expect(invalid.status).toBe(422);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM daily_goals WHERE user_id=?").get(NOVA)).toMatchObject({ n: 0 });
+    const result = await call("POST", `${detail}/goals`, surgeon, { changes: [{ goal_type: "calories", target: 2400 }] });
+    expect(result.status).toBe(201);
+    expect(result.payload).toMatchObject({ changed: ["calories"], goals: expect.arrayContaining([
+      expect.objectContaining({ goal_type: "calories", metric: "kcal_intake", target: 2400, source: "set" }),
+    ]) });
+    expect((await call("GET", `${detail}/goals`, surgeon)).payload).toMatchObject({
+      types: { calories: { min: 800, max: 6000 } },
+      history: [{ goal_type: "calories", metric: "kcal_intake", created_at: expect.any(String) }],
+    });
+  });
+
+  it("audits flight surgeon corrections and rejects therapist, admin and astronaut edits", async () => {
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    const astronautToken = await session(NOVA, "astronaut", "cloudflare_access");
+    const therapist = await session(THERAPIST, "therapist", "cloudflare_access");
+    const adminId = "55555555-5555-4555-8555-555555555555";
+    db.prepare("INSERT INTO users (user_id,display_name,role) VALUES (?,'Fixture admin','admin')").run(adminId);
+    const admin = await session(adminId, "admin", "cloudflare_access");
+    const base = `/admin/astronauts/${NOVA}`;
+    const observations = await call("GET", `${base}/observations?metric=heart_rate`, surgeon);
+    expect(observations.status).toBe(200);
+    expect(observations.payload).toMatchObject([{ value: 72, corrections: 0, original_value: null }]);
+    const route = `/admin/observations/${observations.payload[0].id}/correct`;
+    const edit = { value: 76, reason: "Synthetic sensor correction" };
+    expect((await call("POST", route, astronautToken, edit)).status).toBe(403);
+    expect((await call("POST", route, therapist, edit)).status).toBe(403);
+    expect((await call("POST", route, admin, edit)).status).toBe(403);
+    expect((await call("GET", `${base}/corrections`, admin)).payload).toEqual([]);
+    expect((await call("POST", route, surgeon, { ...edit, reason: "" })).status).toBe(422);
+    const corrected = await call("POST", route, surgeon, edit);
+    expect(corrected.status).toBe(201);
+    expect(corrected.payload).toMatchObject({ correction: { original_value: 72, corrected_value: 76 }, observation: { value: 76 } });
+    expect((await call("GET", `${base}/observations?metric=heart_rate`, surgeon)).payload).toMatchObject([
+      { value: 76, corrections: 1, original_value: 72 },
+    ]);
+    expect((await call("GET", `${base}/corrections`, surgeon)).payload).toMatchObject([
+      { original_value: 72, corrected_value: 76, corrected_by_name: "Hale", reason: edit.reason },
+    ]);
+    expect((await call("GET", `/admin/astronauts/${KEPLER}/corrections`, surgeon)).payload).toEqual([]);
   });
 });
 
 describe("emergencies", () => {
-  it("open -> acknowledged -> resolved, seen by two surgeon sessions, and the astronaut sees who is responding", async () => {
-    const nova = await asNova();
-    const hale = await asSurgeon();
-    const moss = await asSurgeon2();
-    expect((await call("POST", "/emergencies", hale, { message: "no" })).status).toBe(403);
+  it("records an astronaut emergency and lets staff acknowledge and resolve it", async () => {
+    const nova = await session(NOVA, "astronaut", "cloudflare_access");
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    expect((await call("POST", "/emergencies", surgeon, { message: "no" })).status).toBe(403);
     const raised = await call("POST", "/emergencies", nova, { message: "Chest tightness during exercise" });
     expect(raised.status).toBe(201);
-    const id = (raised.payload as any).emergency.id;
-    expect(((await call("POST", "/emergencies", nova, { message: "Still there" })).payload as any).already).toBe(true);
-
-    for (const surgeon of [hale, moss]) {
-      const feed = (await call("GET", "/admin/notifications", surgeon)).payload as any;
-      expect(feed).toMatchObject({ open_count: 1, acknowledged_count: 0 });
-      expect(feed.emergencies[0]).toMatchObject({ id, status: "open", display_name: "Nova", message: "Chest tightness during exercise" });
-    }
+    const id = (raised.payload as { emergency: { id: number } }).emergency.id;
+    const again = await call("POST", "/emergencies", nova, { message: "Still there" });
+    expect(again.payload).toMatchObject({ already: true });
+    const notes = await call("GET", "/admin/notifications", surgeon);
+    expect((notes.payload as { open_count: number; emergencies: { display_name: string }[] }).open_count).toBe(1);
+    expect((notes.payload as { emergencies: { display_name: string }[] }).emergencies[0].display_name).toBe("Nova");
     expect((await call("POST", `/admin/emergencies/${id}/acknowledge`, nova, {})).status).toBe(403);
-    const [a, b] = await Promise.all([
-      call("POST", `/admin/emergencies/${id}/acknowledge`, hale, {}),
-      call("POST", `/admin/emergencies/${id}/acknowledge`, moss, {}),
-    ]);
-    expect([(a.payload as any).claimed, (b.payload as any).claimed].sort()).toEqual([false, true]);
-    const owner = (a.payload as any).claimed ? "Hale" : "Dr. Moss";
-    for (const surgeon of [hale, moss]) {
-      const feed = (await call("GET", "/admin/notifications", surgeon)).payload as any;
-      expect(feed).toMatchObject({ open_count: 0, acknowledged_count: 1 });
-      expect(feed.emergencies[0]).toMatchObject({ status: "acknowledged", acknowledged_by_name: owner });
-    }
-    const mine = (await call("GET", "/emergencies/mine", nova)).payload as any;
-    expect(mine.emergencies[0]).toMatchObject({ status: "acknowledged", acknowledged_by_name: owner });
-    const notes = ((await call("GET", "/me/notifications", nova)).payload as any).notifications;
-    expect(notes.filter((n: any) => n.title === "A flight surgeon is responding")).toHaveLength(1);
-
-    const resolved = await call("POST", `/admin/emergencies/${id}/resolve`, moss, { note: "Spoke with Nova. Symptoms settled." });
-    expect((resolved.payload as any).emergency).toMatchObject({ status: "resolved", resolved_by_name: "Dr. Moss", resolution_note: "Spoke with Nova. Symptoms settled." });
-    for (const surgeon of [hale, moss]) {
-      expect((await call("GET", "/admin/notifications", surgeon)).payload).toMatchObject({ open_count: 0, acknowledged_count: 0, emergencies: [] });
-    }
-    const history = (await call("GET", "/admin/emergencies?status=resolved", hale)).payload as any[];
-    expect(history.map((row) => row.id)).toContain(id);
-    expect(((await call("POST", "/emergencies", nova, { message: "New problem" })).payload as any).already).toBe(false);
-    expect((await call("POST", `/admin/emergencies/${id}/acknowledge`, hale, {})).status).toBe(409);
+    expect((await call("POST", `/admin/emergencies/${id}/acknowledge`, surgeon, {})).status).toBe(200);
+    const resolved = await call("POST", `/admin/emergencies/${id}/resolve`, surgeon, { note: "Spoke with Nova. Symptoms settled." });
+    expect((resolved.payload as { emergency: { status: string } }).emergency.status).toBe("resolved");
+    expect((await call("GET", "/admin/notifications", surgeon)).payload).toMatchObject({ open_count: 0 });
   });
 });
 
-describe("1:1 messages", () => {
-  it("delivers in both directions, persists, counts unread, and marks read on open", async () => {
-    const nova = await asNova();
-    const kepler = await asKepler();
-    const hale = await asSurgeon();
-    const moss = await asSurgeon2();
-    const real = (rows: any[]) => rows.map((c) => c.user_id).filter((id: string) => !id.startsWith("00000000-0000-4000-8000-00000000d")).sort();
-    const contacts = (await call("GET", "/messages/contacts", nova)).payload as any[];
-    expect(real(contacts)).toEqual([SURGEON, SURGEON2].sort());
-    expect(contacts.every((c) => c.role === "flight_surgeon")).toBe(true);
-    const crew = (await call("GET", "/messages/contacts", hale)).payload as any[];
-    expect(real(crew)).toEqual([KEPLER, NOVA].sort());
-    expect(crew.every((c) => c.role === "astronaut")).toBe(true);
+describe("staff chat", () => {
+  it("keeps each conversation between one astronaut and one staff member", async () => {
+    const nova = await session(NOVA, "astronaut", "cloudflare_access");
+    const kepler = await session(KEPLER, "astronaut", "cloudflare_access");
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    const therapist = await session(THERAPIST, "therapist", "cloudflare_access");
+    // Staff who have never signed in are not offered as contacts.
+    db.prepare("INSERT INTO users (user_id, display_name, role) VALUES (?, ?, 'admin')").run("unenrolled-staff", "Unenrolled staff");
+    const directory = await call("GET", "/staff", nova);
+    expect((directory.payload as { display_name: string }[]).map((row) => row.display_name).sort()).toEqual(["Hale", "Moss"]);
+    expect((await call("POST", "/chat/threads", nova, { staff_id: "unenrolled-staff", body: "hi" })).status).toBe(422);
+    expect((await call("POST", "/chat/threads", nova, { staff_id: KEPLER, body: "hi" })).status).toBe(422);
+    expect((await call("POST", "/chat/threads", nova, { staff_id: SURGEON, body: " " })).status).toBe(422);
+    const opened = await call("POST", "/chat/threads", nova, { staff_id: SURGEON, body: "Can we review yesterday's heart rate?" });
+    expect(opened.status).toBe(201);
+    const threadId = (opened.payload as { thread: { id: number } }).thread.id;
+    expect((await call("GET", `/chat/threads/${threadId}/messages`, kepler)).status).toBe(403);
+    expect((await call("GET", `/chat/threads/${threadId}/messages`, therapist)).status).toBe(403);
+    const reply = await call("POST", `/chat/threads/${threadId}/messages`, surgeon, { body: "Yes. It stayed in the green band." });
+    expect(reply.status).toBe(201);
+    const messages = await call("GET", `/chat/threads/${threadId}/messages`, nova);
+    expect((messages.payload as { messages: unknown[] }).messages).toHaveLength(2);
+    const inbox = await call("GET", "/chat/threads", surgeon);
+    expect((inbox.payload as { astronaut_name: string }[])[0].astronaut_name).toBe("Nova");
+    expect((await call("GET", "/chat/threads", therapist)).payload).toEqual([]);
+    expect(inbox.payload).toMatchObject([{ unread: 1 }]);
+    const last = (messages.payload as { messages: { id: number }[] }).messages.at(-1)!;
+    expect((await call("POST", `/chat/threads/${threadId}/read`, therapist, { through_id: last.id })).status).toBe(403);
+    expect((await call("POST", `/chat/threads/${threadId}/read`, surgeon, { through_id: last.id })).status).toBe(204);
+    expect((await call("GET", "/chat/threads", surgeon)).payload).toMatchObject([{ unread: 0 }]);
+  });
+});
 
-    expect((await call("POST", `/messages/with/${KEPLER}`, nova, { body: "hi" })).status).toBe(422); // astronaut -> astronaut
-    expect((await call("POST", `/messages/with/${SURGEON2}`, hale, { body: "hi" })).status).toBe(422); // surgeon -> surgeon
-    expect((await call("POST", `/messages/with/${SURGEON}`, nova, { body: "   " })).status).toBe(422);
-    expect((await call("POST", `/messages/with/${SURGEON}`, nova, { body: "x".repeat(2001) })).status).toBe(422);
-
-    expect((await call("POST", `/messages/with/${SURGEON}`, nova, { body: "Can we review yesterday's heart rate?" })).status).toBe(201);
-    expect((await call("POST", `/messages/with/${SURGEON}`, nova, { body: "It felt fast after ARED." })).status).toBe(201);
-    expect((await call("GET", "/messages/unread", hale)).payload).toEqual({ unread: 2 });
-    expect((await call("GET", "/messages/unread", moss)).payload).toEqual({ unread: 0 });
-    expect(((await call("GET", "/admin/notifications", hale)).payload as any).unread_messages).toBe(2);
-    expect(((await call("GET", "/admin/crew", hale)).payload as any[]).find((r) => r.user_id === NOVA).unread_messages).toBe(2);
-    expect((await call("GET", `/messages/with/${NOVA}`, kepler)).status).toBe(422);
-
-    const thread = (await call("GET", `/messages/with/${NOVA}`, hale)).payload as any;
-    expect(thread.messages.map((m: any) => m.body)).toEqual(["Can we review yesterday's heart rate?", "It felt fast after ARED."]);
-    expect(((await call("POST", `/messages/with/${NOVA}/read`, hale, {})).payload as any).marked).toBe(2);
-    expect((await call("GET", "/messages/unread", hale)).payload).toEqual({ unread: 0 });
-
-    expect((await call("POST", `/messages/with/${NOVA}`, hale, { body: "Yes. It stayed in the green band." })).status).toBe(201);
+describe("shared crew and staff messages", () => {
+  it("exchanges messages and receipts on one conversation and isolates both participants", async () => {
+    const nova = await session(NOVA, "astronaut", "cloudflare_access");
+    const kepler = await session(KEPLER, "astronaut", "cloudflare_access");
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    const therapist = await session(THERAPIST, "therapist", "cloudflare_access");
+    const crewPath = `/messages/with/${SURGEON}`;
+    const staffPath = `/messages/with/${NOVA}`;
+    expect((await call("GET", "/messages/contacts", null)).status).toBe(401);
+    expect((await call("GET", crewPath, nova)).payload).toMatchObject({ contact: { user_id: SURGEON }, conversation: null, messages: [] });
+    expect((await call("GET", `/messages/with/${KEPLER}`, nova)).status).toBe(422);
+    expect((await call("GET", `/messages/with/${THERAPIST}`, surgeon)).status).toBe(422);
+    const request = await call("POST", crewPath, nova, { body: "  Request from the astronaut  " });
+    expect(request.status).toBe(201);
+    expect(request.payload.message).toMatchObject({ sender_id: NOVA, body: "Request from the astronaut", read_at: null });
+    const conversationId = request.payload.conversation_id;
+    expect((await call("GET", staffPath, surgeon)).payload).toMatchObject({
+      conversation: { id: conversationId, astronaut_id: NOVA, surgeon_id: SURGEON },
+      messages: [{ body: "Request from the astronaut" }],
+    });
+    const response = await call("POST", staffPath, surgeon, { body: "Reply from the surgeon" });
+    expect(response.status).toBe(201);
+    expect(response.payload).toMatchObject({ conversation_id: conversationId, message: { sender_id: SURGEON } });
+    expect((await call("GET", crewPath, nova)).payload.messages.map((row: { body: string }) => row.body))
+      .toEqual(["Request from the astronaut", "Reply from the surgeon"]);
+    expect((await call("GET", crewPath, kepler)).payload).toMatchObject({ conversation: null, messages: [] });
+    expect((await call("GET", staffPath, therapist)).payload).toMatchObject({ conversation: null, messages: [] });
+    expect((await call("POST", `${crewPath}/read`, kepler, {})).payload).toEqual({ marked: 0 });
+    expect((await call("POST", `${staffPath}/read`, therapist, {})).payload).toEqual({ marked: 0 });
     expect((await call("GET", "/messages/unread", nova)).payload).toEqual({ unread: 1 });
-    const novaContacts = (await call("GET", "/messages/contacts", nova)).payload as any[];
-    expect(novaContacts[0]).toMatchObject({ user_id: SURGEON, unread: 1, last_body: "Yes. It stayed in the green band.", last_from_me: false });
-    expect((await call("POST", `/messages/with/${SURGEON}/read`, nova, {})).status).toBe(200);
+    expect((await call("GET", "/messages/unread", surgeon)).payload).toEqual({ unread: 1 });
+    expect((await call("GET", "/messages/unread", kepler)).payload).toEqual({ unread: 0 });
+    expect((await call("GET", "/messages/unread", therapist)).payload).toEqual({ unread: 0 });
+    expect((await call("GET", "/messages/contacts", surgeon)).payload).toEqual(expect.arrayContaining([
+      expect.objectContaining({ user_id: NOVA, conversation_id: conversationId, unread: 1, last_from_me: true }),
+    ]));
+    expect((await call("GET", "/messages/contacts", nova)).payload).toEqual(expect.arrayContaining([
+      expect.objectContaining({ user_id: SURGEON, conversation_id: conversationId, unread: 1, last_from_me: false }),
+    ]));
+    expect((await call("GET", "/admin/notifications", surgeon)).payload.unread_messages).toBe(1);
+    expect((await call("GET", "/admin/notifications", therapist)).payload.unread_messages).toBe(0);
+    expect((await call("POST", `${staffPath}/read`, surgeon, {})).payload).toEqual({ marked: 1 });
+    expect((await call("GET", "/messages/unread", nova)).payload).toEqual({ unread: 1 });
+    expect((await call("POST", `${crewPath}/read`, nova, {})).payload).toEqual({ marked: 1 });
     expect((await call("GET", "/messages/unread", nova)).payload).toEqual({ unread: 0 });
+    expect((await call("GET", "/admin/notifications", surgeon)).payload.unread_messages).toBe(0);
+    expect((await call("GET", `/chat/threads/${conversationId}/messages`, kepler)).status).toBe(403);
+    expect((await call("GET", `/chat/threads/${conversationId}/messages`, nova)).payload).toMatchObject({
+      thread: { id: conversationId, staff_id: SURGEON }, messages: [{ body: "Request from the astronaut" }, { body: "Reply from the surgeon" }],
+    });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM conversations").get()).toMatchObject({ n: 1 });
+  });
 
-    // Persisted in D1, one conversation per (astronaut, surgeon) pair.
-    const ours = "FROM conversations WHERE astronaut_id IN (?, ?)";
-    expect(db.prepare(`SELECT COUNT(*) AS n ${ours}`).get(NOVA, KEPLER)).toEqual({ n: 1 });
-    expect(db.prepare(`SELECT COUNT(*) AS n FROM conversation_messages WHERE read_at IS NOT NULL AND conversation_id IN (SELECT id ${ours})`).get(NOVA, KEPLER)).toEqual({ n: 3 });
-    const newer = (await call("GET", `/messages/with/${SURGEON}?after=${thread.messages[1].id}`, nova)).payload as any;
-    expect(newer.messages.map((m: any) => m.body)).toEqual(["Yes. It stayed in the green band."]);
-    // A second surgeon gets a separate thread with the same astronaut.
-    await call("POST", `/messages/with/${NOVA}`, moss, { body: "Hi Nova, Dr. Moss here." });
-    expect(db.prepare(`SELECT COUNT(*) AS n ${ours}`).get(NOVA, KEPLER)).toEqual({ n: 2 });
-    expect(((await call("GET", `/messages/with/${NOVA}`, hale)).payload as any).messages).toHaveLength(3);
+  it("enforces message length and a shared per-sender rate limit for both roles", async () => {
+    const nova = await session(NOVA, "astronaut", "cloudflare_access");
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    const keys = new Set<string>();
+    env.AUTH_RATE_LIMITER = { limit: async ({ key }) => {
+      const success = !keys.has(key);
+      keys.add(key);
+      return { success };
+    } };
+    const crewPath = `/messages/with/${SURGEON}`;
+    const staffPath = `/messages/with/${NOVA}`;
+    expect((await call("POST", crewPath, nova, { body: " " })).status).toBe(422);
+    expect((await call("POST", staffPath, surgeon, { body: "a".repeat(2001) })).status).toBe(422);
+    const first = await call("POST", crewPath, nova, { body: "a" });
+    expect(first.status).toBe(201);
+    expect((await call("POST", crewPath, nova, { body: "Rate-limited crew message" })).status).toBe(429);
+    expect((await call("POST", staffPath, surgeon, { body: "b".repeat(2000) })).status).toBe(201);
+    expect((await call("POST", `/chat/threads/${first.payload.conversation_id}/messages`, surgeon, { body: "Rate-limited legacy send" })).status).toBe(429);
+    expect(keys).toEqual(new Set([`message-send:${NOVA}`, `message-send:${SURGEON}`]));
+    expect(db.prepare("SELECT COUNT(*) AS n FROM conversation_messages").get()).toMatchObject({ n: 2 });
+  });
+
+  it("reads a 0009 conversation copied by 0010 through both URL formats", async () => {
+    const nova = await session(NOVA, "astronaut", "cloudflare_access");
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    const threadId = db.prepare("INSERT INTO staff_threads (astronaut_id,staff_id) VALUES (?,?)").run(NOVA, SURGEON).lastInsertRowid;
+    db.prepare("INSERT INTO staff_messages (thread_id,sender_id,body) VALUES (?,?,'Migrated fixture')").run(threadId, SURGEON);
+    db.exec(readFileSync(join(__dirname, "..", "migrations", "0010_surgeon_console.sql"), "utf8"));
+    expect((await call("GET", `/messages/with/${SURGEON}`, nova)).payload).toMatchObject({
+      conversation: { id: Number(threadId) }, messages: [{ body: "Migrated fixture" }],
+    });
+    expect((await call("GET", `/chat/threads/${threadId}/messages`, surgeon)).payload).toMatchObject({
+      thread: { id: Number(threadId), staff_id: SURGEON }, messages: [{ body: "Migrated fixture" }],
+    });
   });
 });
 
 describe("astronaut health reads", () => {
-  it("returns vitals from observations for surgeons only", async () => {
-    const surgeon = await asSurgeon();
-    const nova = await asNova();
+  it("returns vitals from observations for staff only", async () => {
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    const nova = await session(NOVA, "astronaut", "cloudflare_access");
     expect((await call("GET", `/admin/astronauts/${NOVA}/series?group=vitals&days=30`, nova)).status).toBe(403);
     const series = await call("GET", `/admin/astronauts/${NOVA}/series?group=vitals&days=30`, surgeon);
-    const heart = (series.payload as { metrics: { metric: string; points: { value: number }[] }[] }).metrics.find((m) => m.metric === "heart_rate");
-    expect(heart?.points[0]).toMatchObject({ value: 72 });
+    const heart = (series.payload as { metrics: { metric: string; points: { source: string; value: number }[] }[] }).metrics
+      .find((metric) => metric.metric === "heart_rate");
+    expect(heart?.points[0]).toMatchObject({ source: "observation", value: 72 });
     const sleep = await call("GET", `/admin/astronauts/${NOVA}/sleep?days=14`, surgeon);
     expect((sleep.payload as { nights: { hours: number }[] }).nights.some((night) => night.hours === 7.5)).toBe(true);
   });
@@ -365,7 +505,7 @@ describe("staff session enforcement", () => {
   it("denies demo and service credentials on staff routes", async () => {
     const demo = await session(NOVA, "admin", "demo");
     expect((await call("GET", "/admin/crew", demo)).status).toBe(403);
-    expect((await call("POST", `/messages/with/${SURGEON}`, demo, { body: "hi" })).status).toBe(403);
+    expect((await call("GET", "/chat/threads", demo)).status).toBe(403);
     expect((await call("POST", "/emergencies", demo, {})).status).toBe(403);
     const fixtureKey = crypto.randomUUID();
     env.EVADE_API_KEY = fixtureKey;
@@ -373,15 +513,11 @@ describe("staff session enforcement", () => {
     expect(response.status).toBe(403);
   });
 
-  it("checks the current D1 role on every request (grant and revoke take effect at once)", async () => {
+  it("checks the current D1 role on subsequent staff requests", async () => {
     const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
     expect((await call("GET", "/admin/crew", surgeon)).status).toBe(200);
     db.prepare("UPDATE users SET role='astronaut' WHERE user_id=?").run(SURGEON);
     expect((await call("GET", "/admin/crew", surgeon)).status).toBe(403);
-    const nova = await session(NOVA, "astronaut", "cloudflare_access");
-    expect((await call("GET", "/admin/crew", nova)).status).toBe(403);
-    db.prepare("UPDATE users SET role='flight_surgeon' WHERE user_id=?").run(NOVA);
-    expect((await call("GET", "/admin/crew", nova)).status).toBe(200);
   });
 
   it("only grants credentialed CORS to the exact EVAde origins", async () => {

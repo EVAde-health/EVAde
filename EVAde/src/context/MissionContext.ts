@@ -55,6 +55,10 @@ export function useMission() {
   return value;
 }
 
+export function crewGreetingName(user: Pick<SessionUser, 'display_name' | 'full_name'>) {
+  return user.display_name?.trim() || user.full_name?.trim().split(/\s+/)[0] || 'crew';
+}
+
 // Converts total XP into level, rank and progress.
 export function levelInfo(xp: number) {
   const level = Math.floor(xp / LEVEL_XP) + 1;

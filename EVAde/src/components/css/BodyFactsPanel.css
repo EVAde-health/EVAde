@@ -1,0 +1,8 @@
+.body-facts__tile {
+  border-radius: var(--radius-container);
+  block-size: 100%;
+}
+
+.body-facts__value {
+  color: var(--color-accent);
+}
