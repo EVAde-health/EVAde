@@ -122,6 +122,7 @@ function sinceDay(days: number) {
 
 interface CrewProfile {
   user_id: string;
+  synthetic?: number;
   display_name: string;
   full_name?: string;
   crew_id?: string;
@@ -146,7 +147,7 @@ async function astronaut(env: OpsDb, userId: string) {
   if (!user) throw new HttpError(404, "Unknown astronaut");
   if (user.role !== "astronaut") throw new HttpError(422, "That account is not an astronaut");
   return {
-    ...displayProfile(user), crew_id: user.crew_id ?? null, mission_name: user.mission_name,
+    ...displayProfile(user), crew_id: user.crew_id ?? null, synthetic: user.synthetic ?? 0, mission_name: user.mission_name,
     mission_start: user.mission_start, mission_length_days: user.mission_length_days ?? null,
     environment: user.environment, points: user.points, streak_days: user.streak_days, last_active: user.last_active,
   };
@@ -160,6 +161,7 @@ export async function crewOverview(db: D1Database, staffId: string | null) {
   const [{ results }, vitalsOf, checkins, emergencies, daily] = await Promise.all([
     db.prepare(
       `SELECT c.*, u.mission_start, u.streak_days,
+              EXISTS (SELECT 1 FROM observations o WHERE o.user_id=c.user_id AND o.simulation_source='simulated') AS synthetic,
               u.full_name, u.crew_id, u.crew_role,
               (SELECT COUNT(*) FROM emergencies e WHERE e.user_id=c.user_id AND e.status!='resolved') AS open_emergencies,
               (SELECT value FROM v_latest_indicators v WHERE v.user_id=c.user_id AND v.metric='sleep_hours') AS sleep_hours,
@@ -173,7 +175,7 @@ export async function crewOverview(db: D1Database, staffId: string | null) {
     ).bind(staffId).all<CrewSummary>(),
     latestVitals(db, null),
     db.prepare(
-      `SELECT u.user_id, s.ts, s.mood, s.stress, s.fatigue, s.source, s.checkin_level
+      `SELECT u.user_id, s.ts, s.mood, s.stress, s.fatigue, COALESCE(s.simulation_source,s.source) AS source, s.checkin_level
        FROM users u JOIN self_reports s ON s.id=(SELECT id FROM self_reports WHERE user_id=u.user_id ORDER BY ts DESC, id DESC LIMIT 1)
        WHERE u.role='astronaut'`
     ).all<Checkin & { user_id: string }>(),
@@ -384,7 +386,7 @@ export function registerOps(route: (method: string, path: string, handler: Handl
       env.DB.prepare(
         `SELECT metric, label, domain, value, unit, level, ts FROM v_latest_indicators WHERE user_id=? ORDER BY domain, metric`
       ).bind(p.id).all(),
-      env.DB.prepare("SELECT ts, mood, stress, fatigue, source, checkin_level FROM self_reports WHERE user_id=? ORDER BY ts DESC, id DESC LIMIT 1")
+      env.DB.prepare("SELECT ts, mood, stress, fatigue, COALESCE(simulation_source,source) AS source, checkin_level FROM self_reports WHERE user_id=? ORDER BY ts DESC, id DESC LIMIT 1")
         .bind(p.id).first<Checkin>(),
     ]);
     return json({ user, risk, ...counts, latest, last_checkin: checkin });
@@ -554,7 +556,7 @@ export function registerOps(route: (method: string, path: string, handler: Handl
         "SELECT day, kcal, protein_g, carbs_g, fat_g, meals, water_ml FROM v_daily_intake WHERE user_id=? AND day>=? ORDER BY day"
       ).bind(p.id, start).all(),
       env.DB.prepare(
-        "SELECT id, ts, name, grams, kcal, protein, carbs, fat FROM meals WHERE user_id=? AND ts>=? ORDER BY ts DESC LIMIT 40"
+        "SELECT id, ts, name, grams, kcal, protein, carbs, fat, source FROM meals WHERE user_id=? AND ts>=? ORDER BY ts DESC LIMIT 40"
       ).bind(p.id, `${start}T00:00:00.000Z`).all(),
       adminGoals(env, p.id),
     ]);
@@ -595,7 +597,7 @@ export function registerOps(route: (method: string, path: string, handler: Handl
     const start = `${sinceDay(daysOf(url, 35))}T00:00:00.000Z`;
     const [reports, journal] = await Promise.all([
       env.DB.prepare(
-        "SELECT id, ts, mood, stress, fatigue, sleep_quality FROM self_reports WHERE user_id=? AND ts>=? ORDER BY ts"
+        "SELECT id, ts, mood, stress, fatigue, sleep_quality, COALESCE(simulation_source,source) AS source FROM self_reports WHERE user_id=? AND ts>=? ORDER BY ts"
       ).bind(p.id, start).all(),
       env.DB.prepare(
         `SELECT id, ts, source, mood_label, concern_level, sentiment, ai_summary
@@ -610,7 +612,7 @@ export function registerOps(route: (method: string, path: string, handler: Handl
     const start = `${sinceDay(daysOf(url, 35))}T00:00:00.000Z`;
     const [reports, journal] = await Promise.all([
       env.DB.prepare(
-        `SELECT id, ts, mood, stress, fatigue, sleep_quality, source, sleep_hours, symptoms, checkin_level
+        `SELECT id, ts, mood, stress, fatigue, sleep_quality, COALESCE(simulation_source,source) AS source, sleep_hours, symptoms, checkin_level
          FROM self_reports WHERE user_id=? AND ts>=? ORDER BY ts DESC LIMIT 200`
       ).bind(p.id, start).all<{ symptoms: string | null }>(),
       env.DB.prepare(
@@ -646,7 +648,7 @@ export function registerOps(route: (method: string, path: string, handler: Handl
   route("GET", "/admin/astronauts/:id/alerts", async (_r, env, p) => {
     await astronaut(env, p.id);
     const { results } = await env.DB.prepare(
-      "SELECT id, ts, level, metric, message, action, escalate, acknowledged, resolved_at FROM alerts WHERE user_id=? ORDER BY ts DESC LIMIT 200"
+      "SELECT id, ts, level, metric, message, action, escalate, acknowledged, resolved_at, COALESCE(simulation_source,source) AS source FROM alerts WHERE user_id=? ORDER BY ts DESC LIMIT 200"
     ).bind(p.id).all();
     return json(results);
   });
@@ -655,7 +657,7 @@ export function registerOps(route: (method: string, path: string, handler: Handl
     const limit = daysOf(new URL(`${url.origin}/?days=${url.searchParams.get("limit") ?? "80"}`), 80);
     const { results } = await env.DB.prepare(
       `SELECT a.id, a.ts, a.level, a.metric, a.message, a.action, a.escalate, a.acknowledged, a.resolved_at,
-              a.user_id, u.display_name
+              a.user_id, u.display_name, COALESCE(a.simulation_source,a.source) AS source
        FROM alerts a JOIN users u ON u.user_id=a.user_id
        ORDER BY a.ts DESC LIMIT ?`
     ).bind(limit).all();

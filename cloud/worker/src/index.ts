@@ -22,6 +22,7 @@ import {
 } from "./models";
 import { deleteUserStatements } from "./deleteUser";
 import { HttpError } from "./http";
+import { refreshSimulation, type SimulationPrediction } from "./simulation";
 import { crewOverview, registerOps } from "./ops";
 import { registerMessaging } from "./messages";
 import { awardDaily, materializeTasks, registerWebAppRoutes, type WebAppEnv } from "./webapp";
@@ -475,8 +476,8 @@ route("GET", "/users/:id/observations", async (_r, env, p, url) => {
   const metric = url.searchParams.get("metric");
   const since = new Date(Date.now() - days * 864e5).toISOString();
   const q = metric
-    ? env.DB.prepare("SELECT metric,value,unit,ts,level,z,source FROM observations WHERE user_id=? AND metric=? AND ts>=? ORDER BY ts").bind(p.id, metric, since)
-    : env.DB.prepare("SELECT metric,value,unit,ts,level,z,source FROM observations WHERE user_id=? AND ts>=? ORDER BY ts").bind(p.id, since);
+    ? env.DB.prepare("SELECT metric,value,unit,ts,level,z,COALESCE(simulation_source,source) AS source FROM observations WHERE user_id=? AND metric=? AND ts>=? ORDER BY ts").bind(p.id, metric, since)
+    : env.DB.prepare("SELECT metric,value,unit,ts,level,z,COALESCE(simulation_source,source) AS source FROM observations WHERE user_id=? AND ts>=? ORDER BY ts").bind(p.id, since);
   return json((await q.all()).results);
 });
 
@@ -963,31 +964,26 @@ route("GET", "/models", async (_r, env) => {
   }
 });
 
-route("POST", "/predict/:kind", async (req, env, p) => {
-  if (!(PREDICT_KINDS as readonly string[]).includes(p.kind)) throw new HttpError(404, "unknown model endpoint");
-  const kind = p.kind as PredictKind;
-  const payload = await body<Record<string, unknown>>(req);
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new HttpError(400, "Body must be a JSON object");
-  const user = await requireUser(env, payload.user_id as string | undefined);
+async function predictFor(env: Env, kind: PredictKind, userId: string, payload: Record<string, unknown>, simulation?: { ts: string; modelUserId: string }) {
   try {
     // space-weather is not per-user; everything else is sent under the model service's own id for this user
     const forward = { ...payload };
     if (kind === "space-weather") delete forward.user_id;
-    else forward.user_id = await modelUserId(env, user.user_id);
+    else forward.user_id = simulation?.modelUserId ?? await modelUserId(env, userId);
     const r = await callModelApi(env, "POST", `/v1/predict/${kind}`, forward);
     const out = r.out ?? { error: { code: "bad_response", message: "non-JSON response from model service" } };
     const placeholder = isMock(out);
     if (r.ok && !placeholder) {
       const sum = summarize(kind, out);
-      const ts = typeof out.server_time === "string" ? out.server_time : now();
+      const ts = simulation?.ts ?? (typeof out.server_time === "string" ? out.server_time : now());
       const stmts = [
-        env.DB.prepare("INSERT INTO model_results (user_id,endpoint,model_id,ts,output,flag,confidence) VALUES (?,?,?,?,?,?,?)")
-          .bind(user.user_id, `/v1/predict/${kind}`, sum.model_id, ts, JSON.stringify(out), sum.flag, sum.confidence),
+        env.DB.prepare("INSERT INTO model_results (user_id,endpoint,model_id,ts,output,flag,confidence,source) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING")
+          .bind(userId, `/v1/predict/${kind}`, sum.model_id, ts, JSON.stringify(out), sum.flag, sum.confidence, simulation ? "simulated" : "model"),
       ];
       const risk = kind === "risk" ? riskRow(out) : null;
       if (risk) {
-        stmts.push(env.DB.prepare("INSERT INTO risk_scores (user_id,ts,r,band,mdtr,domains,top_domains,override,source) VALUES (?,?,?,?,?,?,?,?,'fastapi')")
-          .bind(user.user_id, ts, risk.r, risk.band, risk.mdtr, risk.domains, risk.top_domains, risk.override));
+        stmts.push(env.DB.prepare("INSERT INTO risk_scores (user_id,ts,r,band,mdtr,domains,top_domains,override,source) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,ts) WHERE source='simulated' DO UPDATE SET r=excluded.r, band=excluded.band, mdtr=excluded.mdtr, domains=excluded.domains, top_domains=excluded.top_domains, override=excluded.override")
+          .bind(userId, ts, risk.r, risk.band, risk.mdtr, risk.domains, risk.top_domains, risk.override, simulation ? "simulated" : "fastapi"));
       }
       await env.DB.batch(stmts);
     }
@@ -998,6 +994,56 @@ route("POST", "/predict/:kind", async (req, env, p) => {
   } catch (e) {
     throw modelError(e);
   }
+}
+
+route("POST", "/predict/:kind", async (req, env, p) => {
+  if (!(PREDICT_KINDS as readonly string[]).includes(p.kind)) throw new HttpError(404, "unknown model endpoint");
+  const kind = p.kind as PredictKind;
+  const payload = await body<Record<string, unknown>>(req);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new HttpError(400, "Body must be a JSON object");
+  const user = await requireUser(env, payload.user_id as string | undefined);
+  return predictFor(env, kind, user.user_id, payload);
+});
+
+function simulationPredictor(env: Env, manual: boolean): SimulationPrediction {
+  return async (id, ts, point) => {
+    const risk = computeRisk({
+      latest: point.readings, sleep7d: point.readings.sleep_hours, cumulativeMsv: point.cumulative,
+      speMsv: point.radiation ? point.dailyDose : undefined, doseRateRatio: point.dailyDose / 0.42,
+    });
+    await env.DB.prepare("INSERT INTO risk_scores (user_id,ts,r,band,mdtr,domains,top_domains,override,source) VALUES (?,?,?,?,?,?,?,?,'simulated') ON CONFLICT DO NOTHING")
+      .bind(id, ts, risk.r, risk.band, risk.mdtr, JSON.stringify(risk.domains), JSON.stringify(risk.top_domains), JSON.stringify(risk.overrides)).run();
+    if (!modelsConfigured(env) || (!manual && new Date(ts).getUTCMinutes() !== 0)) return;
+    const simulation = { ts, modelUserId: await modelUserId(env, id) };
+
+    const requests = [
+      ["risk", {
+        domain_inputs: Object.fromEntries(Object.entries(risk.domains)
+          .filter(([key, value]) => ["cardiac", "behavioral", "neuro", "radiation", "bone"].includes(key) && typeof value === "number")
+          .map(([key, value]) => [key, { s: value }])),
+        cumulative_dose_msv: point.cumulative,
+        dose_rate_msv_day: point.dailyDose,
+      }],
+      ["radiation-risk", {
+        t_utc: ts, cumulative_dose_msv: point.cumulative, dose_equivalent_rate_msv_per_day: point.dailyDose,
+        rate_ratio_to_7d_median: point.dailyDose / 0.42, spe_active: point.radiation,
+        spe_dose_msv: point.radiation ? point.dailyDose : 0,
+      }],
+    ] as const;
+    const results = await Promise.allSettled(requests.map(async ([kind, data]) => {
+      const prior = await env.DB.prepare("SELECT 1 FROM model_results WHERE user_id=? AND endpoint=? AND ts=? AND source='simulated'")
+        .bind(id, "/v1/predict/" + kind, ts).first();
+      if (prior) return;
+      const response = await predictFor(env, kind, id, data, simulation);
+      if (!response.ok) throw new Error("Simulation model request failed");
+    }));
+    if (results.some(result => result.status === "rejected")) throw new Error("Simulation model request failed");
+  };
+}
+
+route("POST", "/admin/simulate", async (_req, env, _p, _url, _ctx, who) => {
+  if (who.kind !== "user" || who.role !== "admin") throw new HttpError(403, "Administrator sign-in required");
+  return json(await refreshSimulation(env.DB, Date.now(), simulationPredictor(env, true)));
 });
 
 // "Delete my account": signed-in astronauts only (not the shared demo account, not service keys).
@@ -1163,7 +1209,10 @@ export default {
     }
   },
 
-  async scheduled(_c: ScheduledController, env: Env, ctx: ExecutionContext) {
+  async scheduled(c: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(refreshSimulation(env.DB, c.scheduledTime, simulationPredictor(env, false)).catch(() => {
+      console.error("Simulated data refresh failed");
+    }));
     const row = await pullSpaceWeather(env);
     if (!(row as any).error) publish(env, ctx, { type: "space_weather", data: row });
   },
