@@ -26,7 +26,7 @@ export default function CardioPanel() {
   const status = events.length ? worstStatus(events.slice(0, 3).map(e => e.status)) : undefined;
 
   return (
-    <PanelCard title="Cardiovascular & immune" subtitle="Cardiac alerts · weekly blood panel" icon={HeartIcon} status={status}>
+    <PanelCard logMetric="crp" title="Cardiovascular & immune" subtitle="Cardiac alerts · weekly blood panel" icon={HeartIcon} status={status}>
       <VStack gap={1} className="cardio-panel__strip">
         <HStack hAlign="between">
           <Text type="label">ECG · lead II</Text>

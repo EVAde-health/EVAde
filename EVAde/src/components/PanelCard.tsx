@@ -3,6 +3,7 @@ import { Card } from '@astryxdesign/core/Card';
 import { HStack, StackItem, VStack } from '@astryxdesign/core/Stack';
 import { Heading, Text } from '@astryxdesign/core/Text';
 import { Icon } from '@astryxdesign/core/Icon';
+import LogReadingButton from './LogReadingButton';
 import StatusBadge from './StatusBadge';
 import type { HealthStatus } from '../data/status';
 import './css/PanelCard.css';
@@ -13,12 +14,14 @@ interface PanelCardProps {
   icon?: ComponentType<SVGProps<SVGSVGElement>>;
   status?: HealthStatus;
   actions?: ReactNode;
+  /** Metric the header "Log" button preselects (dashboard panels only: needs HealthDataProvider). */
+  logMetric?: string;
   className?: string;
   children: ReactNode;
 }
 
-// Dashboard widget shell: icon, title, status and content.
-export default function PanelCard({ title, subtitle, icon, status, actions, className = '', children }: PanelCardProps) {
+// Dashboard widget shell: icon, title, status, optional "Log" button and content.
+export default function PanelCard({ title, subtitle, icon, status, actions, logMetric, className = '', children }: PanelCardProps) {
   return (
     <Card padding={5} className={`panel-card reveal-on-scroll ${status ? `panel-card--${status}` : ''} ${className}`}>
       <VStack gap={4}>
@@ -37,6 +40,7 @@ export default function PanelCard({ title, subtitle, icon, status, actions, clas
               {subtitle && <Text type="supporting">{subtitle}</Text>}
             </VStack>
           </StackItem>
+          {logMetric && <LogReadingButton metric={logMetric} label="Log" />}
         </HStack>
         {actions && <HStack className="panel-card__actions">{actions}</HStack>}
         {children}

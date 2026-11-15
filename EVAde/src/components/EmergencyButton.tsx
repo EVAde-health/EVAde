@@ -4,7 +4,7 @@ import { Icon } from '@astryxdesign/core/Icon';
 import { Text } from '@astryxdesign/core/Text';
 import { TextArea } from '@astryxdesign/core/TextArea';
 import { VStack } from '@astryxdesign/core/Stack';
-import { useToast } from '@astryxdesign/core/Toast';
+import { useToast } from '../context/ToastCenterContext';
 import { ExclamationTriangleIcon } from '@heroicons/react/24/solid';
 import { raiseEmergency } from '../services/surgeon';
 import './surgeon/surgeon.css';

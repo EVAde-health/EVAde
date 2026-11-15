@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
+import { Button } from '@astryxdesign/core/Button';
+import { Icon } from '@astryxdesign/core/Icon';
+import { HStack } from '@astryxdesign/core/Stack';
+import { CheckIcon } from '@heroicons/react/20/solid';
 import { usePoll } from '../hooks/usePoll';
 import { markNotificationsRead, type Emergency, type UserNotification } from '../services/surgeon';
 import './surgeon/surgeon.css';
@@ -20,14 +24,28 @@ export default function AstronautNotices({ readOnly }: { readOnly: boolean }) {
   const active = emergencies.data?.emergencies.find(item => item.status !== 'resolved');
   const unread = (notes.data?.notifications ?? []).filter(item => !hidden.includes(item.id) && item.kind !== 'emergency_acknowledged').slice(0, 3);
 
+  const allUnread = (notes.data?.notifications ?? []).filter(item => !hidden.includes(item.id));
+
+  // Hides one note and marks it read in the database.
   function dismiss(id: number) {
     setHidden(previous => [...previous, id]);
     if (!readOnly) markNotificationsRead([id]).then(notes.reload, () => undefined);
   }
 
+  // Hides every unread note and marks them all read in the database.
+  function dismissAll() {
+    setHidden(previous => [...previous, ...allUnread.map(item => item.id)]);
+    if (!readOnly) markNotificationsRead().then(notes.reload, () => undefined);
+  }
+
   if (!active && !unread.length) return null;
   return (
     <div className="notice-stack">
+      {unread.length >= 2 && (
+        <HStack hAlign="end">
+          <Button label={`Mark all ${allUnread.length} as read`} size="sm" variant="ghost" icon={<Icon icon={CheckIcon} />} onClick={dismissAll} />
+        </HStack>
+      )}
       {active && (
         <Banner
           status={active.status === 'open' ? 'error' : 'warning'}

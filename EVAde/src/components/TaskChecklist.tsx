@@ -4,7 +4,7 @@ import { HStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
 import { Token } from '@astryxdesign/core/Token';
 import { Icon } from '@astryxdesign/core/Icon';
-import { useToast } from '@astryxdesign/core/Toast';
+import { useToast } from '../context/ToastCenterContext';
 import { PlayCircleIcon } from '@heroicons/react/24/outline';
 import { useMission } from '../context/MissionContext';
 import type { MissionTask } from '../data/tasks';

@@ -1,7 +1,7 @@
 // Cloudflare Access is the primary sign-in method. Direct OAuth fallbacks use
 // Turnstile, browser-bound state and PKCE. KV stores hashed session tokens.
 
-import { accessAssertion, accessConfigured, accessLogoutUrl, staffAudience, verifyAccessJwt, type AccessEnv } from "./access";
+import { accessAssertion, accessConfigured, accessLogoutUrl, verifyAccessJwt, type AccessEnv } from "./access";
 import { handleLocalAccess } from "./localAccess";
 
 export interface AuthEnv extends AccessEnv {
@@ -345,7 +345,7 @@ ${accessLink}
 export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks: (id: string) => Promise<void>): Promise<Response | null> {
   const path = url.pathname.replace(/\/$/, "");
   const ip = req.headers.get("CF-Connecting-IP");
-  const accessPath = path === "/auth/access" || path === "/auth/access/staff";
+  const accessPath = path === "/auth/access";
   if (accessPath || path === "/auth/demo" || path === "/auth/start" || path.startsWith("/auth/callback/")) {
     const bucket = accessPath ? "access" : path === "/auth/demo" ? "demo" : path === "/auth/start" ? "start" : "callback";
     const { success } = await env.AUTH_RATE_LIMITER.limit({ key: `${bucket}:${ip ?? "unknown"}` });
@@ -457,8 +457,7 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
       return Response.redirect(`${url.origin}/auth/local-access?redirect=${encodeURIComponent(redirect)}`, 302);
     }
     const fail = (msg: string, status = 401) => loginPage(env, url, redirect, msg, status);
-    const staff = path.endsWith("/staff");
-    const audience = staff ? staffAudience(env) : env.ACCESS_AUD;
+    const audience = env.ACCESS_AUD;
     if (!accessConfigured(env) || !audience) return fail("This Cloudflare Access sign-in is unavailable.", 503);
     const assertion = accessAssertion(req);
     if (!assertion) return fail("Please sign in through Cloudflare Access.");
@@ -471,15 +470,14 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     }
     try {
       // Everyone (astronauts and flight surgeons) signs in the same way. The D1 role, optionally promoted by
-      // FLIGHT_SURGEON_EMAILS, decides what the session can reach. /auth/access/staff is kept for old links.
+      // FLIGHT_SURGEON_EMAILS, decides what the session can reach.
       const user = await linkIdentity(env, {
         provider: "cloudflare_access", subject: identity.subject, email: identity.email, display_name: identity.name, email_verified: true,
       }, seedTasks);
-      const ttl = staff ? Math.min(1800, identity.expiresAt - Math.floor(Date.now() / 1000)) : SESSION_TTL;
-      if (ttl <= 0) return fail("Your Cloudflare Access sign-in expired. Try again.");
-      const provider = staff ? "cloudflare_access_staff" : "cloudflare_access";
+      const ttl = SESSION_TTL;
+      const provider = "cloudflare_access";
       await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, provider).run();
-      const token = await createSession(env, user, identity.email, provider, ttl, staff ? audience : undefined);
+      const token = await createSession(env, user, identity.email, provider, ttl);
       return new Response(null, { status: 302, headers: {
         Location: redirect, "Set-Cookie": cookieHeader(url, "session", token, ttl), "Cache-Control": "no-store",
       } });

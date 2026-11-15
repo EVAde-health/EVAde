@@ -14,7 +14,7 @@ import {
 import {
   AuthEnv, clearSessionCookie, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, sessionReference, sha256hex, STAFF_ACCESS_PROVIDER, STAFF_ROLES, trustedOrigin,
 } from "./auth";
-import { analyzeJournal, dailyBriefing, journalOverview, transcribe, TEXT_MODEL } from "./ai";
+import { analyzeJournal, astronautSummary, dailyBriefing, journalOverview, transcribe, TEXT_MODEL } from "./ai";
 import { predict, WINDOW_DAYS, type PredictionEnv } from "./prediction";
 import type { LiveEvent } from "./live";
 import {
@@ -528,14 +528,17 @@ route("POST", "/observations", async (req, env, _p, _u, ctx) => {
   await requireUser(env, b.user_id);
   const items: ObsIn[] = Array.isArray(b.observations) ? b.observations : [b];
   if (items.length > 500) throw new HttpError(413, "Max 500 observations per call");
+  const pointsOf = async () => (await env.DB.prepare("SELECT points FROM users WHERE user_id=?").bind(b.user_id).first<{ points: number }>())?.points ?? 0;
+  const before = await pointsOf();
   const stored = await ingestObservations(env, b.user_id, items);
+  const pointsAwarded = Math.max(0, (await pointsOf()) - before);
   const fresh = stored.filter((o) => Date.now() - Date.parse(o.ts) < 48 * 3600_000);
   if (fresh.length) {
     publish(env, ctx, { type: "observation", user_id: b.user_id, data: fresh });
     const flagged = fresh.filter((o) => o.level !== "green");
     if (flagged.length) publish(env, ctx, { type: "alert", user_id: b.user_id, data: flagged });
   }
-  return json({ stored }, 201);
+  return json({ stored, points_awarded: pointsAwarded }, 201);
 });
 route("GET", "/users/:id/observations", async (_r, env, p, url) => {
   await requireUser(env, p.id);
@@ -756,15 +759,25 @@ route("POST", "/radiation", async (req, env) => {
   const b = await body(req);
   await requireUser(env, b.user_id);
   const ts = b.ts ?? now();
+  // A daily dose without a mission total (typed in the app) continues the running total.
+  let cumulative = typeof b.cumulative_msv === "number" ? b.cumulative_msv : null;
+  if (cumulative === null && typeof b.daily_dose_msv === "number") {
+    const last = await env.DB.prepare("SELECT cumulative_msv FROM radiation_doses WHERE user_id=? AND cumulative_msv IS NOT NULL ORDER BY ts DESC LIMIT 1")
+      .bind(b.user_id).first<{ cumulative_msv: number }>();
+    cumulative = Math.round(((last?.cumulative_msv ?? 0) + b.daily_dose_msv) * 1000) / 1000;
+  }
+  const before = (await env.DB.prepare("SELECT points FROM users WHERE user_id=?").bind(b.user_id).first<{ points: number }>())?.points ?? 0;
   await env.DB.prepare(
     `INSERT INTO radiation_doses (client_id,user_id,ts,dose_rate_usv_h,daily_dose_msv,cumulative_msv,spe_flag,location,source)
      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(client_id) DO NOTHING`
-  ).bind(b.client_id ?? null, b.user_id, ts, b.dose_rate_usv_h ?? null, b.daily_dose_msv ?? null, b.cumulative_msv ?? null,
+  ).bind(b.client_id ?? null, b.user_id, ts, b.dose_rate_usv_h ?? null, b.daily_dose_msv ?? null, cumulative,
     b.spe_flag ? 1 : 0, b.location ?? null, b.source ?? "dosimeter").run();
+  const obsSource = b.source === "synthetic" ? "synthetic" : b.source === "manual" ? "manual" : "device";
   const levels = b.daily_dose_msv !== undefined
-    ? await ingestObservations(env, b.user_id, [{ metric: "daily_radiation_msv", value: b.daily_dose_msv, ts, source: b.source === "synthetic" ? "synthetic" : "device" }])
+    ? await ingestObservations(env, b.user_id, [{ metric: "daily_radiation_msv", value: b.daily_dose_msv, ts, source: obsSource }])
     : [];
-  return json({ ok: true, levels }, 201);
+  const after = (await env.DB.prepare("SELECT points FROM users WHERE user_id=?").bind(b.user_id).first<{ points: number }>())?.points ?? 0;
+  return json({ ok: true, levels, stored: levels, cumulative_msv: cumulative, points_awarded: Math.max(0, after - before) }, 201);
 });
 
 // Space weather
@@ -865,6 +878,54 @@ route("GET", "/users/:id/prediction", async (_r, env, p, url, _c, who) => {
   });
   await env.SESSIONS?.put(cacheKey, JSON.stringify(out), { expirationTtl: 1800 });
   return json(out);
+});
+
+// Staff-only bullet summary of one astronaut's last 24 hours (the "Summarize the last 24 hours" button).
+// Workers AI writes the bullets from the facts below; without it the same facts become rule-based bullets.
+route("GET", "/admin/astronauts/:id/summary", async (_r, env, p) => {
+  const user = await requireUser(env, p.id);
+  if (user.role !== "astronaut") throw new HttpError(404, "Astronaut not found");
+  const since = new Date(Date.now() - 864e5).toISOString();
+  const defs = await metricDefs(env);
+  const [{ results: obs }, { results: alerts }, { results: checkins }, { results: journal }, intake, tasks, risk] = await Promise.all([
+    env.DB.prepare("SELECT metric, value, unit, level, ts FROM observations WHERE user_id=? AND ts>=? ORDER BY ts").bind(p.id, since)
+      .all<{ metric: string; value: number; unit: string; level: string | null; ts: string }>(),
+    env.DB.prepare("SELECT level, metric, message, ts FROM alerts WHERE user_id=? AND ts>=? ORDER BY ts DESC LIMIT 10").bind(p.id, since).all<any>(),
+    env.DB.prepare("SELECT ts, mood, stress, fatigue, sleep_hours, symptoms, checkin_level FROM self_reports WHERE user_id=? AND ts>=? ORDER BY ts")
+      .bind(p.id, since).all<any>(),
+    env.DB.prepare("SELECT ts, mood_label, concern_level, ai_summary FROM journal_entries WHERE user_id=? AND ts>=? ORDER BY ts").bind(p.id, since).all<any>(),
+    env.DB.prepare("SELECT COALESCE(SUM(kcal),0) AS kcal, COALESCE(SUM(protein),0) AS protein_g, COUNT(*) AS meals FROM meals WHERE user_id=? AND ts>=?")
+      .bind(p.id, since).first<{ kcal: number; protein_g: number; meals: number }>(),
+    env.DB.prepare("SELECT COUNT(*) AS total, SUM(completed_at IS NOT NULL) AS done FROM tasks WHERE user_id=? AND (due_at IS NULL OR due_at>=?) AND created_at>=?")
+      .bind(p.id, since, new Date(Date.now() - 2 * 864e5).toISOString()).first<{ total: number; done: number | null }>(),
+    riskFor(env, p.id, false),
+  ]);
+  // Latest reading per metric in the window, worst levels first.
+  const latest = new Map<string, (typeof obs)[number]>();
+  for (const o of obs) latest.set(o.metric, o);
+  const rank = { red: 0, yellow: 1, green: 2 } as Record<string, number>;
+  const readings = [...latest.values()].sort((a, b) => (rank[a.level ?? "green"] ?? 2) - (rank[b.level ?? "green"] ?? 2)).slice(0, 14)
+    .map((o) => ({ label: defs.get(o.metric)?.label ?? o.metric, value: Math.round(o.value * 100) / 100, unit: o.unit, level: o.level ?? "green" }));
+  const water = await env.DB.prepare("SELECT COALESCE(SUM(amount_ml),0) AS ml FROM hydration WHERE user_id=? AND ts>=?").bind(p.id, since)
+    .first<{ ml: number }>().catch(() => null);
+  const facts = {
+    risk: { band: risk.band, action: risk.action }, readings, alerts: alerts.map((a) => ({ level: a.level, message: a.message })),
+    checkins: checkins.map((c) => ({ mood: c.mood, stress: c.stress, fatigue: c.fatigue, sleep_hours: c.sleep_hours, symptoms: c.symptoms, level: c.checkin_level })),
+    journal: journal.map((j) => ({ mood: j.mood_label, concern: j.concern_level, summary: j.ai_summary })),
+    nutrition: { kcal: Math.round(intake?.kcal ?? 0), protein_g: Math.round(intake?.protein_g ?? 0), meals: intake?.meals ?? 0, water_ml: water?.ml ?? null },
+    tasks: { done: tasks?.done ?? 0, total: tasks?.total ?? 0 },
+  };
+  const ai = await astronautSummary(env, facts);
+  if (ai) return json({ bullets: ai.bullets, model: ai.model, generated_at: now() });
+  const flagged = readings.filter((r) => r.level !== "green");
+  const bullets = [
+    `Overall risk band: ${risk.band}. ${risk.action}`,
+    flagged.length ? `Flagged readings: ${flagged.map((r) => `${r.label} ${r.value} ${r.unit} (${r.level})`).join("; ")}.` : readings.length ? "All readings in the last 24 hours were in range." : "No readings in the last 24 hours.",
+    alerts.length ? `${alerts.length} alert${alerts.length > 1 ? "s" : ""}; latest: ${alerts[0].message}` : "No new alerts.",
+    checkins.length ? `Latest check-in: mood ${checkins.at(-1).mood ?? "?"}/5, stress ${checkins.at(-1).stress ?? "?"}/5.` : "No check-in in the last 24 hours.",
+    `Nutrition: ${facts.nutrition.kcal} kcal over ${facts.nutrition.meals} meals. Tasks: ${facts.tasks.done}/${facts.tasks.total} done.`,
+  ];
+  return json({ bullets, model: null, generated_at: now() });
 });
 
 // Staff-only overview of an astronaut's condition from journal summaries and check-ins (/admin/* is staff-only in
@@ -1305,7 +1366,7 @@ async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Reque
   const path = url.pathname.replace(/\/$/, "");
   const key = req.headers.get("X-EVAde-Key");
   if (env.EVADE_API_KEY && key === env.EVADE_API_KEY) {
-    if (path.startsWith("/admin/")) throw new HttpError(403, "Staff sign-in required");
+    if (path.startsWith("/admin/")) throw new HttpError(403, "Flight surgeon / admin access only");
     return { req, principal: { kind: "service" } };
   }
   const session = await getSessionPrincipal(req, env);

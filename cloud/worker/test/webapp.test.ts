@@ -336,11 +336,123 @@ describe("web app routes and staff/demo routes", () => {
     env.DEMO_LOGIN = "true";
     expect((await call("GET", "/auth/demo", { token: null })).status).toBe(302);
 
-    const staffLogin = await worker.fetch(new Request(`${API}/auth/access/staff`), env, ctx);
-    expect(staffLogin.status).toBe(503);
-    expect(await staffLogin.text()).toContain("Cloudflare Access sign-in is unavailable");
     const admin = await call("GET", `/admin/astronauts/${ASTRONAUT}`);
     expect(admin.status).toBe(403);
     expect(admin.data.error).toBe("Flight surgeon / admin access only");
+  });
+});
+
+// ---------- surgeon contact, manual logging, AI summary ----------
+describe("surgeon requests, manual readings and the 24-hour summary", () => {
+  const surgeonSession = async () =>
+    env.SESSIONS.put(`sess:${await sha256("surgeon")}`, JSON.stringify({ user_id: SURGEON, role: "flight_surgeon", email: null, provider: "cloudflare_access" }));
+  const surgeonInbox = () => env.DB.raw.prepare(
+    "SELECT m.body FROM conversation_messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.astronaut_id=? AND c.surgeon_id=?",
+  ).all(ASTRONAUT, SURGEON) as { body: string }[];
+
+  it("delivers a voice request to every flight surgeon once, and opens an emergency when urgent", async () => {
+    const routine = await call("POST", "/surgeon-requests", { body: { client_id: "voice:1", message: "Please ask the surgeon about my sleep meds." } });
+    expect(routine.status).toBe(201);
+    expect(routine.data.delivered_to).toBeGreaterThanOrEqual(1);
+    expect(routine.data.urgent).toBe(false);
+    const again = await call("POST", "/surgeon-requests", { body: { client_id: "voice:1", message: "Please ask the surgeon about my sleep meds." } });
+    expect(again.data.duplicate).toBe(true);
+    expect(surgeonInbox()).toHaveLength(1);
+
+    const urgent = await call("POST", "/surgeon-requests", { body: { client_id: "voice:2", message: "I have chest pain, call the flight surgeon." } });
+    expect(urgent.data.urgent).toBe(true);
+    expect(urgent.data.emergency_id).toBeTruthy();
+    expect(env.DB.raw.prepare("SELECT status FROM emergencies WHERE user_id=?").get(ASTRONAUT)).toMatchObject({ status: "open" });
+    expect(surgeonInbox()).toHaveLength(2);
+  });
+
+  it("only lets an astronaut contact the surgeon for themselves", async () => {
+    await surgeonSession();
+    expect((await call("POST", "/surgeon-requests", { token: "surgeon", body: { client_id: "x" } })).status).toBe(403);
+  });
+
+  it("forwards a typed journal message that asks for the surgeon, and confirms it in the reply", async () => {
+    const res = await call("POST", "/journal/messages", { body: { id: crypto.randomUUID(), content: "Can you tell the flight surgeon my headache is back?" } });
+    expect(res.status).toBe(201);
+    expect(res.data.reply.content).toContain("flight surgeon");
+    expect(surgeonInbox()[0].body).toContain("headache is back");
+    await call("POST", "/journal/messages", { body: { id: crypto.randomUUID(), content: "Quiet day, watched Earth." } });
+    expect(surgeonInbox()).toHaveLength(1);
+    await call("POST", "/journal/messages", { body: { id: crypto.randomUUID(), content: "Please let the flight surgeon know my back aches." } });
+    expect(surgeonInbox()).toHaveLength(2);
+  });
+
+  it("continues the radiation running total for a typed daily dose", async () => {
+    env.DB.raw.prepare("INSERT INTO radiation_doses (user_id, ts, daily_dose_msv, cumulative_msv, source) VALUES (?,?,?,?,?)")
+      .run(ASTRONAUT, new Date(Date.now() - 864e5).toISOString(), 0.5, 40, "dosimeter");
+    const res = await call("POST", "/radiation", { body: { daily_dose_msv: 0.6, source: "manual", client_id: "manual-1" } });
+    expect(res.status).toBe(201);
+    expect(res.data.cumulative_msv).toBe(40.6);
+    expect(res.data.stored[0].metric).toBe("daily_radiation_msv");
+    expect(env.DB.raw.prepare("SELECT source FROM observations WHERE user_id=? AND metric='daily_radiation_msv'").get(ASTRONAUT)).toMatchObject({ source: "manual" });
+  });
+
+  it("returns stored manual readings with the XP awarded", async () => {
+    const res = await call("POST", "/observations", { body: { observations: [{ metric: "heart_rate", value: 64, ts: new Date().toISOString(), source: "manual", client_id: "hr-1" }] } });
+    expect(res.status).toBe(201);
+    expect(res.data.stored[0]).toMatchObject({ metric: "heart_rate", level: expect.any(String) });
+    expect(typeof res.data.points_awarded).toBe("number");
+  });
+
+  it("summarizes the last 24 hours for the flight surgeon only (rules when AI is unavailable)", async () => {
+    await surgeonSession();
+    await call("POST", "/observations", { body: { observations: [{ metric: "heart_rate", value: 140, ts: new Date().toISOString(), source: "manual", client_id: "hr-2" }] } });
+    const summary = await call("GET", `/admin/astronauts/${ASTRONAUT}/summary`, { token: "surgeon" });
+    expect(summary.status).toBe(200);
+    expect(summary.data.bullets.length).toBeGreaterThan(0);
+    expect(summary.data.model).toBeNull();
+    expect((await call("GET", `/admin/astronauts/${ASTRONAUT}/summary`)).status).toBe(403);
+  });
+});
+
+describe("emergency requests reach the crew overview as critical", () => {
+  const surgeonSession = async () =>
+    env.SESSIONS.put(`sess:${await sha256("surgeon")}`, JSON.stringify({ user_id: SURGEON, role: "flight_surgeon", email: null, provider: "cloudflare_access" }));
+  const crewRow = async () => (await call("GET", "/admin/crew", { token: "surgeon" })).data.find((r: any) => r.user_id === ASTRONAUT);
+
+  it("treats a spoken 'they thought I was dying, call 911' as an emergency and shows it on the crew card", async () => {
+    await surgeonSession();
+    const said = 'Astronaut said: "My crewmates thought I was in a coma and dying. Call 911."';
+    const res = await call("POST", "/surgeon-requests", { body: { client_id: "voice:911", message: said } });
+    expect(res.data.urgent).toBe(true);
+    expect(res.data.emergency_id).toBeTruthy();
+    const row = await crewRow();
+    expect(row.status).toBe("critical");
+    expect(row.critical_issue).toMatchObject({ kind: "emergency" });
+    expect(row.critical_issue.message).toContain("Call 911");
+  });
+
+  it("keeps the open emergency but shows the newest urgent issue", async () => {
+    await surgeonSession();
+    await call("POST", "/surgeon-requests", { body: { client_id: "v:a", message: "I have chest pain." } });
+    await call("POST", "/surgeon-requests", { body: { client_id: "v:b", message: "Now I can't feel my left arm." } });
+    expect(env.DB.raw.prepare("SELECT COUNT(*) AS n FROM emergencies WHERE user_id=?").get(ASTRONAUT)).toMatchObject({ n: 1 });
+    expect((await crewRow()).critical_issue.message).toContain("left arm");
+  });
+
+  it("asks the AI to triage speech the word rules miss, and escalates when it says urgent", async () => {
+    await surgeonSession();
+    env.AI = { run: vi.fn(async () => ({ response: { urgent: true } })) };
+    const res = await call("POST", "/surgeon-requests", { body: { client_id: "v:ai", message: "Everything went grey and I woke up on the floor of the node." } });
+    expect(env.AI.run).toHaveBeenCalledTimes(1);
+    expect(res.data.urgent).toBe(true);
+    expect((await crewRow()).status).toBe("critical");
+  });
+
+  it("opens an emergency from a typed journal message that describes one", async () => {
+    await surgeonSession();
+    const res = await call("POST", "/journal/messages", { body: { id: crypto.randomUUID(), content: "I hit my head on the hatch and I'm bleeding badly." } });
+    expect(res.data.reply.content).toContain("urgent");
+    expect((await crewRow()).critical_issue.message).toContain("hit my head");
+  });
+
+  it("does not treat everyday phrases as emergencies", async () => {
+    const res = await call("POST", "/surgeon-requests", { body: { client_id: "v:calm", message: "Tell the surgeon I'm dying to see Earth again and my back is a bit sore." } });
+    expect(res.data.urgent).toBe(false);
   });
 });

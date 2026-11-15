@@ -9,7 +9,7 @@ import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/Segme
 import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { Heading, Text } from '@astryxdesign/core/Text';
 import { TextArea } from '@astryxdesign/core/TextArea';
-import { useToast } from '@astryxdesign/core/Toast';
+import { useToast } from '../../context/ToastCenterContext';
 import { Avatar } from '@astryxdesign/core/Avatar';
 import PageHeader from '../../components/PageHeader';
 import { useSurgeon } from '../../context/SurgeonContext';

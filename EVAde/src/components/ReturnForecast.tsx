@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Button } from '@astryxdesign/core/Button';
 import { Grid } from '@astryxdesign/core/Grid';
@@ -61,6 +61,13 @@ export default function ReturnForecast({ userId }: { userId: string }) {
   const [fresh, setFresh] = useState<ReturnPrediction>();
   const [isExpanded, setIsExpanded] = useState(false);
   const { data: loaded, error, loading, reload } = useResource<ReturnPrediction>(userPath(userId, 'prediction'));
+
+  // A newly logged reading changes the trends, so drop any re-run result and fetch again.
+  useEffect(() => {
+    const onLogged = () => { setFresh(undefined); reload(); };
+    window.addEventListener('evade:reading-logged', onLogged);
+    return () => window.removeEventListener('evade:reading-logged', onLogged);
+  }, [reload]);
   const data = fresh ?? loaded;
   const forecast = data?.return;
   const status = windowStatus(forecast?.days ?? null);

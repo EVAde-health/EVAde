@@ -8,7 +8,7 @@ import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
 import { Token } from '@astryxdesign/core/Token';
 import { Icon } from '@astryxdesign/core/Icon';
-import { useToast } from '@astryxdesign/core/Toast';
+import { useToast } from '../context/ToastCenterContext';
 import { FilmIcon } from '@heroicons/react/24/outline';
 import { CATEGORY_COLORS, type Tutorial } from '../data/tutorials';
 import { useMission } from '../context/MissionContext';

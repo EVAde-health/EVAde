@@ -6,7 +6,7 @@ import { Divider } from '@astryxdesign/core/Divider';
 import { HStack, VStack } from '@astryxdesign/core/Stack';
 import { NavIcon } from '@astryxdesign/core/NavIcon';
 import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
-import { useToast } from '@astryxdesign/core/Toast';
+import { useToast } from '../../context/ToastCenterContext';
 import {
   ArrowLeftStartOnRectangleIcon,
   ChatBubbleLeftRightIcon,

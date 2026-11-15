@@ -18,7 +18,7 @@ import { HStack, StackItem, VStack } from '@astryxdesign/core/Stack';
 import { Heading, Text } from '@astryxdesign/core/Text';
 import { TextArea } from '@astryxdesign/core/TextArea';
 import { Timestamp } from '@astryxdesign/core/Timestamp';
-import { useToast } from '@astryxdesign/core/Toast';
+import { useToast } from '../../context/ToastCenterContext';
 import ChartTooltip from '../../components/ChartTooltip';
 import SectionTitle from '../../components/SectionTitle';
 import StatusBadge from '../../components/StatusBadge';

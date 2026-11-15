@@ -47,10 +47,9 @@
     // Comma-separated emails promoted to flight_surgeon when they sign in with a verified email (Cloudflare Access,
     // Google, GitHub). Promotion only; it never demotes. Otherwise the users.role column in D1 decides.
     "FLIGHT_SURGEON_EMAILS": "",
-    // ACCESS_STAFF_AUD only serves the old /auth/access/staff link; everyone now signs in through ACCESS_AUD.
+    // Everyone (astronauts and flight surgeons) signs in through this one Access application.
     "ACCESS_TEAM_DOMAIN": "evade-health.cloudflareaccess.com",
     "ACCESS_AUD": "ecbeabe1fc1a7bca3ebee00b3aef522ecd96ac431b0f9dd9b0d8ae3d06dc093b",
-    "ACCESS_STAFF_AUD": "ad5b4c4744e160df8c7f926f93e955321d1c7bb8c3e7def993cbdc413070dd5d",
     // "true" shows a no-OAuth test login. Keep "false" in production.
     "DEV_LOGIN": "false",
     // Optional AI Gateway id (create one named "evade" in the dashboard for logs + caching of AI calls)

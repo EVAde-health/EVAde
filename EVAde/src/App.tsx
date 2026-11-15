@@ -2,12 +2,14 @@ import { lazy, Suspense } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Theme } from '@astryxdesign/core/theme';
 import { LinkProvider } from '@astryxdesign/core/Link';
+import { ToastViewport } from '@astryxdesign/core/Toast';
 import { themes, defaultThemeSlug } from './astryx-themes';
 import { ColorModeContext } from './context/ColorModeContext';
 import { useColorMode } from './hooks/useColorMode';
 import AppFrame from './components/AppFrame';
 import PageLoader from './components/PageLoader';
 import RouterLink from './components/RouterLink';
+import ToastCenter from './components/ToastCenter';
 
 const LandingPage = lazy(() => import('./pages/LandingPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
@@ -29,6 +31,8 @@ export default function App() {
   return (
     <ColorModeContext.Provider value={colorMode}>
       <Theme theme={themes[defaultThemeSlug]} mode={colorMode.mode}>
+        <ToastViewport position="bottomEnd" maxVisible={3} inset={{ bottom: 64 }}>
+        <ToastCenter>
         <BrowserRouter>
           <LinkProvider component={RouterLink}>
               <Suspense fallback={<PageLoader />}>
@@ -58,6 +62,8 @@ export default function App() {
               </Suspense>
           </LinkProvider>
         </BrowserRouter>
+        </ToastCenter>
+        </ToastViewport>
       </Theme>
     </ColorModeContext.Provider>
   );

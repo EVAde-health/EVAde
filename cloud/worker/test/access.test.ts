@@ -61,7 +61,6 @@ function fakeKV(): KVNamespace {
 // ---------- signing ----------
 const TEAM = "evade.cloudflareaccess.com";
 const AUD = "aud-login-123";
-const STAFF_AUD = "aud-staff-456";
 let signer: CryptoKeyPair;
 let otherSigner: CryptoKeyPair;
 let publicJwk: JsonWebKey;
@@ -99,7 +98,6 @@ beforeEach(() => {
     AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) },
     ACCESS_TEAM_DOMAIN: TEAM,
     ACCESS_AUD: AUD,
-    ACCESS_STAFF_AUD: STAFF_AUD,
     ALLOWED_ORIGINS: "https://evade.health",
     FRONTEND_URL: "https://evade.health",
   };
@@ -253,13 +251,8 @@ describe("flight surgeon role", () => {
     expect((await me(again)).role).toBe("astronaut");
   });
 
-  it("keeps /auth/access/staff working for old links (staff-app audience, short session)", async () => {
-    const wrongAud = await login(await sign({ sub: "doc" }), "/auth/access/staff");
-    expect(wrongAud.status).toBe(401);
-    const ok = await login(await sign({ sub: "doc", aud: [STAFF_AUD] }), "/auth/access/staff");
-    expect(ok.status).toBe(302);
-    expect(ok.headers.get("Set-Cookie")).toMatch(/Max-Age=(1[0-7]\d\d|1800|\d{1,3});/);
-    expect((await me(ok)).role).toBe("astronaut"); // the path no longer grants anything by itself
+  it("has no separate staff sign-in route", async () => {
+    await expect(login(await sign({ sub: "doc" }), "/auth/access/staff")).rejects.toThrow("not an auth route");
   });
 });
 

@@ -37,7 +37,7 @@ export default function BehaviorPanel() {
   const hasRadar = axes.length >= 3;
 
   return (
-    <PanelCard title="Behavioral health" subtitle="EEG + survey model · today vs your baseline" icon={CpuChipIcon} status={status}>
+    <PanelCard logMetric="behavior_energy" title="Behavioral health" subtitle="EEG + survey model · today vs your baseline" icon={CpuChipIcon} status={status}>
       {score === null || !status ? (
         <NoReadings what="Your behavioral health index" hint="Focus, energy, calm and social scores appear after your first EEG session or evening survey." />
       ) : (

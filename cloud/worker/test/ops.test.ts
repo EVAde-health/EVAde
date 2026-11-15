@@ -9,7 +9,6 @@ import worker, { type Env } from "../src/index";
 
 vi.mock("../src/live", () => ({ CrewFeed: class {} }));
 
-const STAFF_AUD = "aud-staff-456";
 const API = "https://api.evade.health";
 const SURGEON = "11111111-1111-4111-8111-111111111111";
 const SURGEON2 = "22222222-2222-4222-8222-222222222222";
@@ -82,7 +81,6 @@ beforeEach(() => {
     AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) },
     ACCESS_TEAM_DOMAIN: "evade-health.cloudflareaccess.com",
     ACCESS_AUD: "aud-login-123",
-    ACCESS_STAFF_AUD: STAFF_AUD,
     ALLOWED_ORIGINS: "https://evade.health",
     FRONTEND_URL: "https://evade.health",
     DEMO_LOGIN: "true",

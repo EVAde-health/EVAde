@@ -40,6 +40,7 @@ export default function MoodPanel() {
 
   return (
     <PanelCard
+      logMetric="mood"
       title="Mood"
       subtitle="Daily check-in · 1 (rough) to 5 (great)"
       icon={FaceSmileIcon}

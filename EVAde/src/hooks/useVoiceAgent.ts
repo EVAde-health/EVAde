@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { addMicWorklet, MIC_WORKLET_NAME } from '../services/micWorklet';
+import { postSurgeonRequest } from '../services/healthApi';
 import {
   base64FromBuffer,
   fetchLatestCheckin,
@@ -91,10 +92,15 @@ export function useVoiceAgent({ crew = 'browser-demo', onCheckinSaved }: UseVoic
   const [level, setLevel] = useState(0);
   const sessionRef = useRef<Session | null>(null);
   const onCheckinRef = useRef(onCheckinSaved);
+  const turnsRef = useRef<VoiceTurn[]>([]);
 
   useEffect(() => {
     onCheckinRef.current = onCheckinSaved;
   }, [onCheckinSaved]);
+
+  useEffect(() => {
+    turnsRef.current = turns;
+  }, [turns]);
 
   const setStatus = useCallback((next: VoiceStatus, text: string) => {
     setStatusState(next);
@@ -186,6 +192,27 @@ export function useVoiceAgent({ crew = 'browser-demo', onCheckinSaved }: UseVoic
     session.timers.add(timer);
   }, []);
 
+  // Sends the agent's "contact the flight surgeon" to the surgeon console and reports what actually happened.
+  const deliverToSurgeon = useCallback(
+    async (result: Record<string, unknown>) => {
+      const spoken = turnsRef.current.filter(turn => turn.role === 'user' && turn.text.trim()).slice(-2).map(turn => turn.text.trim()).join(' ');
+      const agentMessage = typeof result.message === 'string' ? result.message.trim() : '';
+      const message = [agentMessage, spoken && `Astronaut said: "${spoken}"`].filter(Boolean).join(' ').slice(0, 1000);
+      try {
+        const sent = await postSurgeonRequest({
+          client_id: typeof result.queue_id === 'number' ? `voice:${crew}:${result.queue_id}` : crypto.randomUUID(),
+          message: message || 'The astronaut asked to contact the flight surgeon.',
+          priority: result.priority === 'urgent' ? 'urgent' : 'routine',
+          source: 'voice',
+        });
+        addSystem(`Flight surgeon notified${sent.urgent ? ' (urgent)' : ''}: ${sent.summary}`);
+      } catch {
+        addSystem('Could not reach the flight surgeon from here. Use Messages, or hold the emergency button if this is urgent.');
+      }
+    },
+    [addSystem, crew],
+  );
+
   const handleCheckin = useCallback(
     async (result: Record<string, unknown>) => {
       const saved = result as VoiceCheckin;
@@ -272,8 +299,7 @@ export function useVoiceAgent({ crew = 'browser-demo', onCheckinSaved }: UseVoic
             addSystem(`Check-in saved: ${result.level.toUpperCase()}`);
             void handleCheckin(result);
           } else if (msg.name === 'queue_flight_surgeon_message') {
-            const summary = (result.summary || result.status || 'message queued') as string;
-            addSystem(`Flight surgeon: ${summary}`);
+            void deliverToSurgeon(result);
           }
           break;
         }
@@ -286,7 +312,7 @@ export function useVoiceAgent({ crew = 'browser-demo', onCheckinSaved }: UseVoic
           break;
       }
     },
-    [addSystem, fail, handleCheckin, later, send, setStatus, stopPlayback, upsertTurn],
+    [addSystem, deliverToSurgeon, fail, handleCheckin, later, send, setStatus, stopPlayback, upsertTurn],
   );
 
   const start = useCallback(async () => {

@@ -170,6 +170,59 @@ export async function journalOverview(env: AiEnv, facts: unknown): Promise<Journ
   return null;
 }
 
+const SUMMARY_SYSTEM = `You brief a flight surgeon on one astronaut's last 24 hours, from the JSON facts given.
+Return JSON only: { "bullets": [...] } with 4 to 6 short bullets, most important first.
+Cover red or yellow readings and alerts first, then the check-in and journal mood, then nutrition, sleep and tasks.
+Quote numbers exactly as given with their units. If something has no data, say so in one bullet at most.
+No diagnosis, no treatment advice, no names. Each bullet under 25 words.`;
+
+/** Staff-only bullet summary of an astronaut's last 24 hours; null when the model is unavailable. */
+export async function astronautSummary(env: AiEnv, facts: unknown): Promise<{ bullets: string[]; model: string } | null> {
+  if (!env.AI) return null;
+  const input = {
+    messages: [{ role: "system", content: SUMMARY_SYSTEM }, { role: "user", content: JSON.stringify(facts).slice(0, 12000) }],
+    response_format: { type: "json_schema", json_schema: {
+      type: "object", properties: { bullets: { type: "array", items: { type: "string" } } }, required: ["bullets"],
+    } },
+    max_tokens: 450,
+    temperature: 0.2,
+  };
+  for (const model of [TEXT_MODEL, FALLBACK_TEXT_MODEL]) {
+    try {
+      const out = parseModelJson(await env.AI.run(model as any, input as any, runOpts(env)));
+      const bullets = Array.isArray(out?.bullets) ? out.bullets.map((b: unknown) => String(b).trim()).filter(Boolean).slice(0, 6) : [];
+      if (bullets.length) return { bullets: bullets.map((b: string) => b.slice(0, 240)), model };
+    } catch (e) {
+      console.log("astronaut summary failed on", model, String(e));
+    }
+  }
+  return null;
+}
+
+const TRIAGE_SYSTEM = `You triage a message an astronaut asked to pass to their flight surgeon. Answer urgent=true only if it
+describes a possible medical emergency right now: loss of consciousness, a coma, trouble breathing, chest pain, heavy bleeding,
+a head injury, stroke signs, a seizure, a severe allergic reaction, thoughts of self-harm, or a call for emergency help
+(911, ambulance, "I'm dying"). Routine aches, tiredness, questions and requests are not urgent. Reply with JSON only.`;
+
+/** Second opinion on urgency for free-form speech the word rules miss. False when the AI is unavailable or slow. */
+export async function triageUrgent(env: AiEnv, message: string): Promise<boolean> {
+  if (!env.AI || !message.trim()) return false;
+  const input = {
+    messages: [{ role: "system", content: TRIAGE_SYSTEM }, { role: "user", content: message.slice(0, 2000) }],
+    response_format: { type: "json_schema", json_schema: { type: "object", properties: { urgent: { type: "boolean" } }, required: ["urgent"] } },
+    max_tokens: 30,
+    temperature: 0,
+  };
+  try {
+    const run = env.AI.run(TEXT_MODEL as any, input as any, runOpts(env)).then((r) => parseModelJson(r)?.urgent === true);
+    const timeout = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 6000));
+    return await Promise.race([run, timeout]);
+  } catch (e) {
+    console.log("urgency triage failed", String(e));
+    return false;
+  }
+}
+
 /** Plain-language daily briefing so astronauts don't need medical training to read their dashboard. */
 export async function dailyBriefing(env: AiEnv, facts: unknown): Promise<string | null> {
   if (!env.AI) return null;

@@ -234,6 +234,45 @@ export const fetchDashboard = (userId: string, { signal }: Signal = {}) => api<D
 export const fetchRadiation = (userId: string, days: number, { signal }: Signal = {}) =>
   api<RadiationHistory>(userPath(userId, `radiation?days=${days}`), { signal });
 
+// ---------- manual readings ----------
+
+export interface LoggedReading {
+  metric: string;
+  value: number;
+  unit: string;
+  level: Level;
+  ts: string;
+}
+
+// Logs readings at the current time; the Worker grades them, raises alerts and awards task XP.
+// A daily radiation dose goes through the dosimeter log so the mission total and radiation chart include it.
+export const postReadings = (readings: { metric: string; value: number }[]) => {
+  const ts = new Date().toISOString();
+  const dose = readings.length === 1 && readings[0].metric === 'daily_radiation_msv' ? readings[0].value : null;
+  if (dose !== null) {
+    return api<{ stored: LoggedReading[]; points_awarded: number }>('/radiation', {
+      method: 'POST', body: { client_id: crypto.randomUUID(), ts, daily_dose_msv: dose, source: 'manual' },
+    });
+  }
+  return api<{ stored: LoggedReading[]; points_awarded: number }>('/observations', {
+    method: 'POST',
+    body: { observations: readings.map(r => ({ ...r, ts, source: 'manual', client_id: crypto.randomUUID() })) },
+  });
+};
+
+// ---------- flight surgeon contact ----------
+
+export interface SurgeonRequestResult {
+  delivered_to: number;
+  urgent: boolean;
+  emergency_id: number | null;
+  summary: string;
+}
+
+// Delivers an assistant's "contact the flight surgeon" to the surgeon console; urgent ones open an emergency.
+export const postSurgeonRequest = (request: { client_id: string; message: string; priority?: 'routine' | 'urgent'; source: 'voice' | 'journal' }) =>
+  api<SurgeonRequestResult>('/surgeon-requests', { method: 'POST', body: request });
+
 // ---------- return forecast ----------
 
 export type ReturnDriver = 'risk' | 'trend' | 'radiation_limit' | 'bone_limit' | 'acute' | 'extreme_domain';

@@ -16,7 +16,7 @@ import { Token } from '@astryxdesign/core/Token';
 import { Timestamp } from '@astryxdesign/core/Timestamp';
 import { ToggleButton } from '@astryxdesign/core/ToggleButton';
 import { Icon } from '@astryxdesign/core/Icon';
-import { useToast } from '@astryxdesign/core/Toast';
+import { useToast } from '../context/ToastCenterContext';
 import { SparklesIcon } from '@heroicons/react/24/outline';
 import BrandMark from '../components/BrandMark';
 import PageHeader from '../components/PageHeader';
