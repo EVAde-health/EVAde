@@ -11,7 +11,7 @@
     {
       "binding": "DB",
       "database_name": "evade-db",
-      "database_id": "c97b8036-5c72-46eb-af95-de38ef64e0b8",
+      "database_id": "7f59200b-d17f-44d8-af6d-a8e51e137d2c",
       "migrations_dir": "migrations"
     }
   ],
@@ -23,7 +23,7 @@
   "durable_objects": { "bindings": [{ "name": "LIVE", "class_name": "CrewFeed" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CrewFeed"] }],
   // Sessions + OAuth state (Workers KV)
-  "kv_namespaces": [{ "binding": "SESSIONS", "id": "09f54c946903407a94189a7db78bf20c" }],
+  "kv_namespaces": [{ "binding": "SESSIONS", "id": "784305dfc43442a78ccc2aac162e5811" }],
   // Pull NOAA space weather every 15 minutes into the space_weather table
   "triggers": { "crons": ["*/15 * * * *"] },
   "vars": {
