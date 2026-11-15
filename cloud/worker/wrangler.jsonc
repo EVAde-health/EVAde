@@ -20,7 +20,8 @@
   ],
   // Workers AI (journal analysis, Whisper voice-to-text, daily briefing)
   "ai": { "binding": "AI" },
-  // Optional MEDIA binding stays disabled until R2 is enabled in EVAde.
+  // Private uploads, accessed through the authenticated media endpoints.
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "evade-media" }],
   // Live crew feed over WebSockets
   "durable_objects": { "bindings": [{ "name": "LIVE", "class_name": "CrewFeed" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CrewFeed"] }],

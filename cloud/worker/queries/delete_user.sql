@@ -36,6 +36,7 @@ DELETE FROM tasks           WHERE user_id = ?1;
 DELETE FROM risk_scores     WHERE user_id = ?1;
 DELETE FROM model_results   WHERE user_id = ?1;
 DELETE FROM radiation_doses WHERE user_id = ?1;
+DELETE FROM journal_messages WHERE user_id = ?1;
 DELETE FROM journal_entries WHERE user_id = ?1;
 DELETE FROM instruments     WHERE user_id = ?1;
 DELETE FROM self_reports    WHERE user_id = ?1;
@@ -44,8 +45,10 @@ DELETE FROM observations    WHERE user_id = ?1;
 DELETE FROM auth_identities WHERE user_id = ?1;
 DELETE FROM action_log      WHERE user_id = ?1;   -- no FK on this table, so it must be explicit
 
--- D1 cascades user deletion for these tables when the historical frontend migration is present.
--- src/deleteUser.ts also deletes their rows explicitly after checking which tables exist.
---   agent_jobs, daily_rollups, journal_messages, metric_forecasts, tutorial_progress, user_settings
+DELETE FROM tutorial_progress WHERE user_id = ?1;
+DELETE FROM user_settings     WHERE user_id = ?1;
+DELETE FROM daily_rollups     WHERE user_id = ?1;
+DELETE FROM metric_forecasts  WHERE user_id = ?1;
+DELETE FROM agent_jobs        WHERE user_id = ?1;
 
 DELETE FROM users           WHERE user_id = ?1;

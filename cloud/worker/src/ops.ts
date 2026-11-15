@@ -1,7 +1,7 @@
 // Flight-surgeon console, astronaut emergencies, and astronaut-to-staff chat.
 // Staff means a Cloudflare Access staff session whose D1 role is flight_surgeon, therapist, or admin.
 // Callers are already authenticated. These handlers still check the role before reading another person.
-import { Principal, STAFF_ROLES } from "./auth";
+import { Principal, STAFF_ACCESS_PROVIDER, STAFF_ROLES } from "./auth";
 import { HttpError } from "./http";
 
 export interface OpsDb {
@@ -461,8 +461,8 @@ export function registerOps(route: (method: string, path: string, handler: Handl
   route("GET", "/staff", async (_r, env, _p, _u, _c, who) => {
     if (who.demo || who.kind !== "user") throw new HttpError(403, "Use your own account to see the staff directory");
     const { results } = await env.DB.prepare(
-      "SELECT u.* FROM users u WHERE u.role IN ('flight_surgeon','therapist','admin') AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id AND a.provider='cloudflare_access') ORDER BY u.role, u.display_name"
-    ).all<CrewProfile>();
+      "SELECT u.* FROM users u WHERE u.role IN ('flight_surgeon','therapist','admin') AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id AND a.provider=?) ORDER BY u.role, u.display_name"
+    ).bind(STAFF_ACCESS_PROVIDER).all<CrewProfile>();
     return json(results.map((row) => ({ ...displayProfile(row), role: row.role })));
   });
 
@@ -506,7 +506,9 @@ export function registerOps(route: (method: string, path: string, handler: Handl
       if (who.role !== "astronaut") throw new HttpError(403, "Only an astronaut can message staff this way");
       staffId = text(input?.staff_id, "staff_id", 80, true)!;
       astronautId = who.user_id;
-      const staff = await env.DB.prepare("SELECT u.role FROM users u WHERE u.user_id=? AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id AND a.provider='cloudflare_access')").bind(staffId).first<{ role: string }>();
+      const staff = await env.DB.prepare(
+        "SELECT u.role FROM users u WHERE u.user_id=? AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id AND a.provider=?)"
+      ).bind(staffId, STAFF_ACCESS_PROVIDER).first<{ role: string }>();
       if (!staff || !STAFF_ROLES.has(staff.role)) throw new HttpError(422, "Choose a flight surgeon, therapist, or admin");
     }
     const ts = now();

@@ -14,6 +14,11 @@ export const accessConfigured = (env: AccessEnv) => Boolean(teamHost(env) && env
 export const staffAudience = (env: AccessEnv) =>
   accessConfigured(env) && env.ACCESS_STAFF_AUD && env.ACCESS_STAFF_AUD !== env.ACCESS_AUD ? env.ACCESS_STAFF_AUD : null;
 
+export function accessLogoutUrl(env: AccessEnv) {
+  const host = teamHost(env);
+  return host ? `https://${host}/cdn-cgi/access/logout` : null;
+}
+
 let keyCache: { issuer: string; keys: ReturnType<typeof createRemoteJWKSet> } | undefined;
 export function _resetAccessKeyCache() {
   keyCache = undefined;

@@ -1,7 +1,7 @@
 // Cloudflare Access is the primary sign-in method. Direct OAuth fallbacks use
 // Turnstile, browser-bound state and PKCE. KV stores hashed session tokens.
 
-import { accessAssertion, accessConfigured, staffAudience, verifyAccessJwt, type AccessEnv } from "./access";
+import { accessAssertion, accessConfigured, accessLogoutUrl, staffAudience, verifyAccessJwt, type AccessEnv } from "./access";
 
 export interface AuthEnv extends AccessEnv {
   DB: D1Database;
@@ -25,7 +25,7 @@ export interface Principal {
   user_id?: string;
   role?: string;
   email?: string | null;
-  /** true for the shared "Try demo" session (Cmdr. Vega, fake data): read-mostly, can't delete the account */
+  /** True for a read-only session on the seeded demo astronaut. */
   demo?: boolean;
 }
 
@@ -76,8 +76,16 @@ const oauthProviders = (env: AuthEnv, url: URL): Provider[] => {
 };
 
 export function enabledProviders(env: AuthEnv, url: URL) {
-  const oauth = oauthProviders(env, url);
-  return accessConfigured(env) ? ["cloudflare_access", ...oauth] : oauth;
+  const providers: string[] = [];
+  if (accessConfigured(env)) providers.push("cloudflare_access");
+  if (staffAudience(env)) providers.push(STAFF_ACCESS_PROVIDER);
+  return providers.concat(oauthProviders(env, url));
+}
+
+function demoUser(env: AuthEnv) {
+  return env.DB.prepare(
+    "SELECT u.user_id, u.role FROM auth_identities a JOIN users u USING (user_id) WHERE a.provider=? AND a.subject=? AND u.role='astronaut'"
+  ).bind(DEMO_IDENTITY.provider, DEMO_IDENTITY.subject).first<{ user_id: string; role: string }>();
 }
 
 const allowedOrigins = (env: AuthEnv) => (env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -137,6 +145,7 @@ export async function getSessionPrincipalByReference(reference: string, env: Aut
     user_id: string; role: string; email: string | null; provider?: SessionProvider; audience?: string; expires?: number;
   }>(reference, "json");
   if (!s?.provider || !SESSION_PROVIDERS.has(s.provider) || (s.expires !== undefined && s.expires <= Date.now())) return null;
+  if (s.provider === "demo" && env.DEMO_LOGIN !== "true") return null;
   const user = await env.DB.prepare("SELECT role FROM users WHERE user_id=?").bind(s.user_id).first<{ role: string }>();
   if (!user) return null;
   let role = "astronaut";
@@ -320,6 +329,7 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
 
   if (path === "/auth/providers" && req.method === "GET") {
     const providers = enabledProviders(env, url);
+    if (env.DEMO_LOGIN === "true" && await demoUser(env)) providers.push("demo");
     return Response.json({ providers, default_provider: providers[0] ?? null, turnstile_site_key: hasTurnstile(env) ? env.TURNSTILE_SITE_KEY : null });
   }
 
@@ -437,10 +447,8 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
   if (path === "/auth/demo" && req.method === "GET") {
     if (env.DEMO_LOGIN !== "true") return Response.json({ error: "Demo sign-in is off" }, { status: 404 });
     const redirect = safeRedirect(env, url.searchParams.get("redirect"), url);
-    const user = await env.DB.prepare(
-      "SELECT u.user_id, u.role FROM auth_identities a JOIN users u USING (user_id) WHERE a.provider=? AND a.subject=?"
-    ).bind(DEMO_IDENTITY.provider, DEMO_IDENTITY.subject).first<{ user_id: string; role: string }>();
-    if (!user || user.role !== "astronaut") return Response.json({ error: "Demo account isn't set up" }, { status: 503 });
+    const user = await demoUser(env);
+    if (!user) return Response.json({ error: "Demo account isn't set up" }, { status: 503 });
     const token = await createSession(env, user, null, "demo", DEMO_SESSION_TTL);
     await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', 'demo')").bind(user.user_id).run();
     return new Response(null, {
@@ -460,8 +468,15 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     if (req.method !== "POST") return Response.json({ error: "Use POST to sign out" }, { status: 405, headers: { Allow: "POST" } });
     if (!trustedOrigin(env, url, req.headers.get("Origin"))) return Response.json({ error: "Cross-origin sign-out blocked" }, { status: 403 });
     const token = sessionCookie(req, url);
-    if (token) await env.SESSIONS.delete(`sess:${await sha256(token)}`);
-    return new Response(null, { status: 204, headers: { "Set-Cookie": cookieHeader(url, "session", "", 0) } });
+    let provider: SessionProvider | undefined;
+    if (token) {
+      const reference = `sess:${await sha256(token)}`;
+      provider = (await env.SESSIONS.get<{ provider?: SessionProvider }>(reference, "json"))?.provider;
+      await env.SESSIONS.delete(reference);
+    }
+    const headers = { "Set-Cookie": clearSessionCookie(url) };
+    const logoutUrl = provider === "demo" ? null : accessLogoutUrl(env);
+    return logoutUrl ? Response.json({ logout_url: logoutUrl }, { headers }) : new Response(null, { status: 204, headers });
   }
 
   return null;

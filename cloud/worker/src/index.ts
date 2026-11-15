@@ -23,9 +23,10 @@ import {
 import { deleteUserStatements } from "./deleteUser";
 import { HttpError } from "./http";
 import { crewOverview, registerOps } from "./ops";
+import { awardDaily, materializeTasks, registerWebAppRoutes, type WebAppEnv } from "./webapp";
 export { CrewFeed } from "./live";
 
-export interface Env extends AuthEnv, ModelEnv {
+export interface Env extends AuthEnv, ModelEnv, WebAppEnv {
   DB: D1Database;
   AI?: Ai; // Workers AI
   AI_GATEWAY?: string; // optional AI Gateway id
@@ -97,11 +98,29 @@ interface ObsIn {
   client_id?: string;
 }
 
+/**
+ * Gamification for manual measurements: each metric closes its open task from the last day
+ * (paying that task's points once) and earns a small, daily-capped reading bonus.
+ */
+async function rewardMeasurements(env: Env, userId: string, metrics: Set<string>) {
+  const since = new Date(Date.now() - 86_400_000).toISOString();
+  let points = 0;
+  for (const metric of metrics) {
+    const closed = await env.DB.prepare(
+      `UPDATE tasks SET completed_at=? WHERE id = (SELECT id FROM tasks WHERE user_id=? AND metric=? AND completed_at IS NULL
+         AND (due_at IS NULL OR due_at >= ?) ORDER BY due_at LIMIT 1) RETURNING points`
+    ).bind(now(), userId, metric, since).first<{ points: number }>();
+    if (closed) points += closed.points ?? 0;
+    await awardDaily(env, userId, "reading_logged", metric);
+  }
+  if (points) await env.DB.prepare("UPDATE users SET points = points + ?, last_active=? WHERE user_id=?").bind(points, now(), userId).run();
+}
+
 async function ingestObservations(env: Env, userId: string, items: ObsIn[]) {
   const defs = await metricDefs(env);
   const out: any[] = [];
   const stmts: D1PreparedStatement[] = [];
-  let points = 0;
+  const manualMetrics = new Set<string>();
 
   for (const o of items) {
     const d = defs.get(o.metric);
@@ -148,20 +167,11 @@ async function ingestObservations(env: Env, userId: string, items: ObsIn[]) {
       );
     }
 
-    // Gamification: completing a measurement closes the matching open task for today.
-    if ((o.source ?? "manual") === "manual") {
-      points += 5;
-      stmts.push(
-        env.DB.prepare(
-          `UPDATE tasks SET completed_at=? WHERE id = (SELECT id FROM tasks WHERE user_id=? AND metric=? AND completed_at IS NULL
-           ORDER BY due_at LIMIT 1)`
-        ).bind(ts, userId, o.metric)
-      );
-    }
+    if ((o.source ?? "manual") === "manual") manualMetrics.add(o.metric);
     out.push({ metric: o.metric, value: o.value, unit: o.unit ?? d.unit, level, z, low_quality: lowQuality, ts });
   }
-  if (points) stmts.push(env.DB.prepare("UPDATE users SET points = points + ?, last_active=? WHERE user_id=?").bind(points, now(), userId));
   if (stmts.length) await env.DB.batch(stmts);
+  await rewardMeasurements(env, userId, manualMetrics);
   return out;
 }
 
@@ -180,6 +190,12 @@ const DEFAULT_TASKS: [string, string, string | null, number][] = [
 ];
 
 async function seedTasks(env: Env, userId: string, day = new Date()) {
+  // Web app routine: today's tasks come from task_templates (migration 0006); the fixed list is the fallback.
+  const templates = await env.DB.prepare("SELECT COUNT(*) n FROM task_templates WHERE active=1").first<{ n: number }>().catch(() => null);
+  if (templates?.n) {
+    await materializeTasks(env, userId, day.toISOString().slice(0, 10));
+    return;
+  }
   const due = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), 23, 59)).toISOString();
   await env.DB.batch(
     DEFAULT_TASKS.map(([title, cat, metric, pts]) =>
@@ -630,16 +646,16 @@ route("POST", "/space-weather", async (req, env) => {
 });
 
 // Risk score + maximum days to return
-route("GET", "/users/:id/risk", async (_r, env, p, url, ctx) => {
+route("GET", "/users/:id/risk", async (_r, env, p, url, ctx, who) => {
   await requireUser(env, p.id);
-  const store = url.searchParams.get("store") !== "false";
+  const store = !who.demo && url.searchParams.get("store") !== "false";
   const risk = await riskFor(env, p.id, store);
   if (store) publish(env, ctx, { type: "risk", user_id: p.id, data: { r: risk.r, band: risk.band, mdtr: risk.mdtr, top_domains: risk.top_domains } });
   return json(risk);
 });
 
 // Plain-language daily briefing (Workers AI), cached in KV for 30 minutes
-route("GET", "/users/:id/briefing", async (_r, env, p, url) => {
+route("GET", "/users/:id/briefing", async (_r, env, p, url, _c, who) => {
   const user = await requireUser(env, p.id);
   const cacheKey = `brief:${p.id}`;
   if (url.searchParams.get("refresh") !== "1") {
@@ -659,7 +675,7 @@ route("GET", "/users/:id/briefing", async (_r, env, p, url) => {
       action: l.level !== "green" ? defs.get(l.metric)?.what_to_do : undefined })),
     overrides: risk.overrides, space_weather: sw,
   };
-  const text = await dailyBriefing(env, facts);
+  const text = who.demo ? null : await dailyBriefing(env, facts);
   const flagged = facts.readings.filter((r) => r.level !== "green");
   const fallback = [`Overall status: ${risk.band}. ${risk.action}`,
     ...flagged.map((r) => `${r.label} is ${r.value} ${r.unit} (${r.level}). ${r.action ?? ""}`.trim()),
@@ -744,7 +760,7 @@ route("POST", "/meals", async (req, env) => {
   const inserted = await env.DB.prepare(
     "INSERT INTO meals (id,user_id,ts,name,grams,kcal,protein,carbs,fat) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING RETURNING *"
   ).bind(id, owner.user_id, ts, b.name.trim(), grams, kcal, protein, carbs, fat).first<MealRow>();
-  if (inserted) return json(mealResponse(inserted), 201);
+  if (inserted) return json({ ...mealResponse(inserted), points_awarded: await awardDaily(env, owner.user_id, "meal_logged", id) }, 201);
   const existing = await env.DB.prepare("SELECT * FROM meals WHERE id=? AND user_id=?").bind(id, owner.user_id).first<MealRow>();
   if (!existing) throw new HttpError(409, "Meal could not be saved with that ID");
   return json(mealResponse(existing));
@@ -780,7 +796,10 @@ route("POST", "/hydration", async (req, env) => {
        (SELECT COALESCE(SUM(amount_ml),0) FROM hydration WHERE user_id=? AND ts>=? AND ts<?) + ? >= 0
      ON CONFLICT(id) DO NOTHING RETURNING *`
   ).bind(id, owner.user_id, ts, b.amount_ml, b.amount_ml, owner.user_id, since, until, b.amount_ml).first<HydrationRow>();
-  if (inserted) return json(inserted, 201);
+  if (inserted) {
+    const points = inserted.amount_ml > 0 ? await awardDaily(env, owner.user_id, "water_logged", id) : 0;
+    return json({ ...inserted, points_awarded: points }, 201);
+  }
   const existing = await env.DB.prepare("SELECT * FROM hydration WHERE id=? AND user_id=?").bind(id, owner.user_id).first<HydrationRow>();
   if (!existing) throw new HttpError(409, "Water adjustment could not be recorded");
   return json(existing);
@@ -798,11 +817,14 @@ route("GET", "/users/:id/hydration", async (_r, env, p, url) => {
 // Tasks / gamification
 route("GET", "/users/:id/tasks", async (_r, env, p) =>
   json((await env.DB.prepare("SELECT * FROM tasks WHERE user_id=? ORDER BY completed_at IS NOT NULL, due_at").bind(p.id).all()).results));
-route("POST", "/tasks", async (req, env) => {
+route("POST", "/tasks", async (req, env, _p, _u, _c, who) => {
   const b = await body(req);
   await requireUser(env, b.user_id);
+  if (typeof b.title !== "string" || !b.title.trim() || b.title.length > 200) throw new HttpError(422, "title is required (max 200 characters)");
+  // Astronauts may add their own to-dos, but only staff/service choose the reward (stops self-awarded XP).
+  const points = isStaff(who) ? Math.max(0, Math.min(Number(b.points ?? 10) || 0, 500)) : 10;
   const r = await env.DB.prepare("INSERT INTO tasks (user_id,title,category,metric,recurrence,due_at,points) VALUES (?,?,?,?,?,?,?) RETURNING *")
-    .bind(b.user_id, b.title, b.category ?? "basic", b.metric ?? null, b.recurrence ?? null, b.due_at ?? null, b.points ?? 10).first();
+    .bind(b.user_id, b.title.trim(), b.category === "advanced" ? "advanced" : "basic", b.metric ?? null, b.recurrence ?? null, b.due_at ?? null, points).first();
   return json(r, 201);
 });
 async function setTaskCompleted(env: Env, taskId: string, complete: boolean, ctx: ExecutionContext) {
@@ -849,7 +871,11 @@ route("GET", "/users/:id/alerts", async (_r, env, p) =>
 route("GET", "/alerts/escalated", async (_r, env) =>
   json((await env.DB.prepare(
     "SELECT a.*, u.display_name FROM alerts a JOIN users u USING(user_id) WHERE a.escalate=1 AND a.acknowledged=0 ORDER BY a.ts DESC").all()).results));
-route("POST", "/alerts/:aid/ack", async (_r, env, p) => {
+route("POST", "/alerts/:aid/ack", async (_r, env, p, _u, _c, who) => {
+  const alert = await env.DB.prepare("SELECT escalate FROM alerts WHERE id=?").bind(p.aid).first<{ escalate: number }>();
+  if (!alert) throw new HttpError(404, "alert not found");
+  // Escalated alerts wait for the flight surgeon; the astronaut can't clear them from the staff queue.
+  if (alert.escalate && !isStaff(who)) throw new HttpError(403, "Escalated alerts are acknowledged by the flight surgeon");
   await env.DB.prepare("UPDATE alerts SET acknowledged=1, resolved_at=? WHERE id=?").bind(now(), p.aid).run();
   return json({ ok: true });
 });
@@ -876,7 +902,16 @@ route("GET", "/media/:mid", async (_r, env, p) => {
   if (!m) throw new HttpError(404, "file not found");
   const obj = await env.MEDIA.get(m.r2_key);
   if (!obj) throw new HttpError(404, "file missing from storage");
-  return new Response(obj.body, { headers: { "Content-Type": m.content_type, "Cache-Control": "private, max-age=300", ETag: obj.httpEtag } });
+  return new Response(obj.body, {
+    headers: {
+      "Content-Type": m.content_type,
+      "Cache-Control": "private, max-age=300",
+      ETag: obj.httpEtag,
+      // User uploads never run as a page on the API origin.
+      "Content-Security-Policy": "default-src 'none'; sandbox",
+      "Content-Disposition": "inline",
+    },
+  });
 });
 
 // Live crew feed (Durable Object WebSocket). Browser: new WebSocket("wss://api.evade.health/live") with the login cookie.
@@ -966,7 +1001,6 @@ route("POST", "/predict/:kind", async (req, env, p) => {
 // Order: R2 objects, the model service's copy, then every D1 row in one batch, then this session.
 route("DELETE", "/me", async (req, env, _p, _u, _c, who) => {
   if (who.kind !== "user" || !who.user_id) throw new HttpError(403, "Sign in to delete your own account");
-  if (who.demo) throw new HttpError(403, "The demo account can't be deleted");
   const b = await body<{ confirm?: string }>(req).catch(() => ({} as { confirm?: string }));
   if (b.confirm !== "DELETE") throw new HttpError(400, 'Send {"confirm":"DELETE"} to delete your account and all its data');
   const uid = who.user_id;
@@ -1004,6 +1038,11 @@ route("POST", "/sync", async (req, env) => {
   return json({ ok: true, ...res, synced_at: now() });
 });
 
+registerWebAppRoutes<Env>({
+  route, json, body, requireUser, isStaff,
+  fail: (status, message) => new HttpError(status, message),
+  journal: (env, ctx, id, userId, content) => processJournal(env, ctx, id, userId, content),
+});
 registerOps(route, { json, body, now });
 
 // ---------- Access control ----------
@@ -1044,8 +1083,11 @@ async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Reque
     if ((origin || sessionCookie(req, url)) && !trustedOrigin(env, url, origin))
       throw new HttpError(403, "Cross-origin request blocked");
   }
-  if (session.demo && req.method !== "GET" && /^\/(?:meals|hydration)(?:\/|$)/.test(path)) {
-    throw new HttpError(403, "Use a personal account to change shared demo nutrition records");
+  if (session.demo) {
+    if (req.method !== "GET") throw new HttpError(403, "Use a personal account to save changes");
+    if (path === "/leaderboard" || path === "/live") {
+      throw new HttpError(403, "Use a personal account to view crew activity");
+    }
   }
   const staff = STAFF_ROLES.has(session.role ?? "");
   if (STAFF_ONLY.some(([m, re]) => (m === "*" || m === req.method) && re.test(path)) && !staff)

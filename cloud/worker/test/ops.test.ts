@@ -83,15 +83,18 @@ beforeEach(() => {
     ACCESS_STAFF_AUD: STAFF_AUD,
     ALLOWED_ORIGINS: "https://evade.health",
     FRONTEND_URL: "https://evade.health",
+    DEMO_LOGIN: "true",
   };
   const insertUser = db.prepare("INSERT INTO users (user_id, display_name, role, mission_name) VALUES (?,?,?,?)");
   insertUser.run(SURGEON, "Hale", "flight_surgeon", "Expedition 74");
   insertUser.run(THERAPIST, "Moss", "therapist", "Expedition 74");
   insertUser.run(NOVA, "Nova", "astronaut", "Expedition 74");
   insertUser.run(KEPLER, "Kepler", "astronaut", "Expedition 74");
-  const identity = db.prepare("INSERT INTO auth_identities (provider, subject, user_id) VALUES ('cloudflare_access',?,?)");
-  identity.run("surgeon-fixture", SURGEON);
-  identity.run("therapist-fixture", THERAPIST);
+  const identity = db.prepare("INSERT INTO auth_identities (provider, subject, user_id) VALUES (?,?,?)");
+  for (const [subject, userId] of [["surgeon-fixture", SURGEON], ["therapist-fixture", THERAPIST]]) {
+    identity.run("cloudflare_access", subject, userId);
+    identity.run("cloudflare_access_staff", subject, userId);
+  }
   const insertObservation = db.prepare("INSERT INTO observations (user_id, metric, value, unit, ts, source, level) VALUES (?,?,?,?,?,?,?)");
   const ts = new Date().toISOString();
   insertObservation.run(NOVA, "heart_rate", 72, "bpm", ts, "manual", "green");
@@ -195,8 +198,11 @@ describe("staff chat", () => {
     const kepler = await session(KEPLER, "astronaut", "cloudflare_access");
     const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
     const therapist = await session(THERAPIST, "therapist", "cloudflare_access_staff", STAFF_AUD);
+    db.prepare("INSERT INTO users (user_id, display_name, role) VALUES (?, ?, 'admin')").run("unenrolled-staff", "Unenrolled staff");
+    db.prepare("INSERT INTO auth_identities (provider, subject, user_id) VALUES ('cloudflare_access', ?, ?)").run("unenrolled-fixture", "unenrolled-staff");
     const directory = await call("GET", "/staff", nova);
     expect((directory.payload as { display_name: string }[]).map((row) => row.display_name).sort()).toEqual(["Hale", "Moss"]);
+    expect((await call("POST", "/chat/threads", nova, { staff_id: "unenrolled-staff", body: "hi" })).status).toBe(422);
     expect((await call("POST", "/chat/threads", nova, { staff_id: KEPLER, body: "hi" })).status).toBe(422);
     expect((await call("POST", "/chat/threads", nova, { staff_id: SURGEON, body: " " })).status).toBe(422);
     const opened = await call("POST", "/chat/threads", nova, { staff_id: SURGEON, body: "Can we review yesterday's heart rate?" });

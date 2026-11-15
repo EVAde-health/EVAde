@@ -27,7 +27,7 @@ Python evade_space ──► /observations, /radiation, /space-weather (demo dat
 | D1 `evade-db` | Live database bound in `worker/wrangler.jsonc`. Check applied migrations before deployment. |
 | Worker `evade-api` | built and tested locally, Cloudflare Access login included; serves at **https://api.evade.health** after deploy (workers.dev URL as fallback) |
 | KV `evade-sessions` | Live session namespace bound in `worker/wrangler.jsonc`. |
-| R2 `evade-media` | needs R2 switched on once in the dashboard, then `npx wrangler r2 bucket create evade-media` |
+| R2 `evade-media` | Private bucket bound as `MEDIA` for authenticated uploads. |
 | Workers AI, Durable Object `CrewFeed` | created automatically on deploy |
 | Python `evade_space` | done, 5 tests pass, standard library only |
 
@@ -44,6 +44,9 @@ npx.cmd wrangler deploy
 ```
 
 Verify `https://api.evade.health`, then deploy the website from merged `main`. Use synthetic data for the demo.
+`DEMO_LOGIN=true` advertises a read-only demo only when the seeded astronaut exists. Check the migration
+ledger for `0006_frontend_gaps.sql` and apply `0009_staff_console.sql` from this branch. The demo account
+setup is kept by this branch's migration chain.
 
 Set `EVADE_API_KEY` in `worker/.dev.vars` for local development. Git ignores this file. Keep the service key in server-side configuration. For local Python commands, set `EVADE_API_KEY` in the Python process environment to the same value.
 

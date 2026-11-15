@@ -131,9 +131,11 @@ const tokenFrom = (res: Response) => /evade_session=([^;]*)/.exec(res.headers.ge
 // ---------- tests ----------
 describe("providers", () => {
   it("lists cloudflare_access first when configured", () => {
-    expect(enabledProviders(env, API_URL)).toEqual(["cloudflare_access"]);
-    expect(enabledProviders({ ...env, GOOGLE_CLIENT_ID: "g", GOOGLE_CLIENT_SECRET: "s", TURNSTILE_SITE_KEY: "test-site", TURNSTILE_SECRET: "test-secret" }, API_URL)).toEqual(["cloudflare_access", "google"]);
+    expect(enabledProviders(env, API_URL)).toEqual(["cloudflare_access", "cloudflare_access_staff"]);
+    expect(enabledProviders({ ...env, GOOGLE_CLIENT_ID: "g", GOOGLE_CLIENT_SECRET: "s", TURNSTILE_SITE_KEY: "test-site", TURNSTILE_SECRET: "test-secret" }, API_URL)).toEqual(["cloudflare_access", "cloudflare_access_staff", "google"]);
     expect(enabledProviders({ ...env, ACCESS_AUD: "" }, API_URL)).toEqual([]);
+    expect(enabledProviders({ ...env, ACCESS_STAFF_AUD: "" }, API_URL)).toEqual(["cloudflare_access"]);
+    expect(enabledProviders({ ...env, ACCESS_STAFF_AUD: env.ACCESS_AUD }, API_URL)).toEqual(["cloudflare_access"]);
   });
 
   it("login page links to /auth/access and keeps the redirect", async () => {
@@ -295,7 +297,9 @@ describe("logout", () => {
     const headers = { Cookie: `__Host-evade_session=${tokenFrom(session)}` };
     expect((await call("GET", "/auth/logout", headers)).status).toBe(405);
     expect((await call("POST", "/auth/logout", { ...headers, Origin: "https://untrusted.example" })).status).toBe(403);
-    expect((await call("POST", "/auth/logout", { ...headers, Origin: "https://evade.health" })).status).toBe(204);
+    const logout = await call("POST", "/auth/logout", { ...headers, Origin: "https://evade.health" });
+    expect(logout.status).toBe(200);
+    expect(await logout.json()).toEqual({ logout_url: `https://${env.ACCESS_TEAM_DOMAIN}/cdn-cgi/access/logout` });
     expect((await call("GET", "/auth/me", headers)).status).toBe(401);
   });
 });
