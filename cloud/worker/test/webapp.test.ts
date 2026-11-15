@@ -605,8 +605,8 @@ describe("synthetic simulation", () => {
         return Response.json({ data: { radiation: { level: "yellow" } } });
       },
     };
-    const run = () => worker.scheduled(
-      { scheduledTime, cron: "*/15 * * * *", noRetry: () => {} },
+    const run = (scheduled = scheduledTime) => worker.scheduled(
+      { scheduledTime: scheduled, cron: "*/15 * * * *", noRetry: () => {} },
       env,
       { ...ctx, waitUntil: (promise: Promise<unknown>) => pending.push(promise) },
     );
@@ -614,16 +614,86 @@ describe("synthetic simulation", () => {
     await Promise.all(pending.splice(0));
     await run();
     await Promise.all(pending.splice(0));
-    expect(requested.map(([path]) => path).sort()).toEqual(["/v1/predict/radiation-risk", "/v1/predict/risk", "/v1/users"]);
-    expect(requested.slice(1).map(([, input]) => input.user_id)).toEqual(["model-simulation-fixture", "model-simulation-fixture"]);
+    await run(scheduledTime + 15 * 60_000);
+    await Promise.all(pending.splice(0));
+    expect(requested.map(([path]) => path).sort()).toEqual([
+      "/v1/predict/ecg-deep", "/v1/predict/radiation-risk", "/v1/predict/risk", "/v1/predict/sleep-deep", "/v1/users",
+    ]);
+    expect(requested.slice(1).every(([, input]) => input.user_id === "model-simulation-fixture")).toBe(true);
+    expect(requested.find(([path]) => path.endsWith("/ecg-deep"))?.[1]).toMatchObject({ fs_hz: 100, source: "simulated" });
+    expect(requested.find(([path]) => path.endsWith("/sleep-deep"))?.[1]).toMatchObject({ fs_hz: 100, source: "simulated" });
     const raw: DatabaseSync = env.DB.raw;
-    expect(raw.prepare("SELECT endpoint FROM model_results WHERE user_id=? AND source='simulated'").all(id)).toHaveLength(2);
+    expect(raw.prepare("SELECT endpoint FROM model_results WHERE user_id=? AND source='simulated'").all(id)).toHaveLength(4);
     expect(raw.prepare("SELECT r,mdtr FROM risk_scores WHERE user_id=? AND source='simulated'").get(id))
       .toMatchObject({ r: 0.4, mdtr: "60" });
     const doses = raw.prepare("SELECT cumulative_msv FROM radiation_doses WHERE user_id=? AND source='simulated' ORDER BY ts").all(id);
     expect(doses.length).toBeGreaterThan(1);
     expect(doses.every((row, i) => i === 0 || Number(row.cumulative_msv) >= Number(doses[i - 1].cumulative_msv))).toBe(true);
     expect(raw.prepare("SELECT 1 FROM alerts WHERE user_id=? AND level='red' AND simulation_source='simulated'").get(id)).toBeDefined();
+  });
+
+  it("generates both deep predictions on manual refresh and omits upstream placeholders", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.parse("2026-11-15T15:15:00Z"));
+    try {
+      const raw: DatabaseSync = env.DB.raw;
+      raw.prepare("UPDATE users SET role='admin' WHERE user_id=?").run(SURGEON);
+      Object.assign(env, { ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com", ACCESS_AUD: "crew", ACCESS_STAFF_AUD: "staff", MODEL_GATEWAY_KEY: crypto.randomUUID() });
+      await env.SESSIONS.put("sess:" + await sha256("deep-admin"), JSON.stringify({
+        user_id: SURGEON, role: "admin", provider: "cloudflare_access_staff", audience: "staff",
+      }));
+      const requested: string[] = [];
+      env.MODELS = { fetch: async (request: Request) => {
+        const path = new URL(request.url).pathname;
+        requested.push(path);
+        if (path === "/v1/users") return Response.json({ data: { user_id: "manual-fixture" } });
+        if (path.endsWith("/sleep-deep")) return Response.json({ data: { source: "mock" } });
+        return Response.json({ data: { source: "model", model_id: "EVA-13" } });
+      } };
+      const res = await call("POST", "/admin/simulate", { token: "deep-admin" });
+      expect(res.status).toBe(200);
+      expect(requested).toEqual(expect.arrayContaining(["/v1/predict/ecg-deep", "/v1/predict/sleep-deep"]));
+      expect(raw.prepare("SELECT source FROM model_results WHERE endpoint='/v1/predict/ecg-deep'").get()).toEqual({ source: "simulated" });
+      expect(raw.prepare("SELECT source FROM model_results WHERE endpoint='/v1/predict/sleep-deep'").get()).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("staff deep model results", () => {
+  it("returns the latest row per model with a sanitized sleep breakdown and preserves the staff gate", async () => {
+    Object.assign(env, { ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com", ACCESS_AUD: "crew", ACCESS_STAFF_AUD: "staff" });
+    await env.SESSIONS.put("sess:" + await sha256("deep-staff"), JSON.stringify({
+      user_id: SURGEON, role: "flight_surgeon", provider: "cloudflare_access_staff", audience: "staff",
+    }));
+    const raw: DatabaseSync = env.DB.raw;
+    const insert = raw.prepare("INSERT INTO model_results (user_id,endpoint,model_id,ts,output,source) VALUES (?,?,?,?,?,?)");
+    const ecg = "/v1/predict/ecg-deep";
+    const sleep = "/v1/predict/sleep-deep";
+    const older = "2026-11-15T13:00:00Z";
+    const recent = "2026-11-15T14:00:00Z";
+    insert.run(ASTRONAUT, ecg, "old ECG", older, "{}", "model");
+    insert.run(OTHER, ecg, "other user's ECG", "2026-11-15T15:00:00Z", "{}", "model");
+    insert.run(ASTRONAUT, ecg, "EVA-13", recent, JSON.stringify({ data: {
+      source: "model", threshold_source: "default", top_classes: [{ class: "MI", probability: 0.91 }], probabilities: { MI: 0.91 },
+    } }), "simulated");
+    const stages = { W: 0, N1: 0.5, N2: 2, N3: 1.5, REM: 1 };
+    insert.run(ASTRONAUT, sleep, "EVA-14", older, JSON.stringify({ user_id: "internal-id", data: {
+      source: "model", summary: { minutes_per_stage: stages },
+      epochs: [{ stage: "N2", probabilities: { N2: 0.8 } }, { stage: "REM", probabilities: { REM: 0.6 } }],
+    } }), "simulated");
+    const path = "/admin/astronauts/" + ASTRONAUT + "/deep-model-results";
+    expect((await call("GET", path)).status).toBe(403);
+    const res = await call("GET", path, { token: "deep-staff" });
+    expect(res.status).toBe(200);
+    expect(res.data).toMatchObject({
+      "ecg-deep": { status: "result", model_id: "EVA-13", ts: recent, flag: "No calibrated flag", confidence: "0.910" },
+      "sleep-deep": { status: "result", model_id: "EVA-14", ts: older, source: "simulated", confidence: "0.700", minutes_per_stage: stages },
+    });
+    expect(JSON.stringify(res.data)).not.toContain("internal-id");
+    insert.run(ASTRONAUT, sleep, null, recent, '{"data":{"source":"mock"}}', "model");
+    expect((await call("GET", path, { token: "deep-staff" })).data["sleep-deep"]).toEqual({ status: "placeholder" });
   });
 });
 
