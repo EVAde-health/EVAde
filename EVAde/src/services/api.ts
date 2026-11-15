@@ -5,7 +5,7 @@ if ((!local && apiUrl.protocol !== 'https:') || apiUrl.username || apiUrl.passwo
 }
 
 export const API_ORIGIN = apiUrl.origin;
-const siteOrigin = 'https://evade.health';
+const siteOrigin = local ? window.location.origin : 'https://evade.health';
 export const ACCESS_LOGIN_URL = `${API_ORIGIN}/auth/access?redirect=${encodeURIComponent(`${siteOrigin}/dashboard`)}`;
 export const ACCESS_STAFF_LOGIN_URL = `${API_ORIGIN}/auth/access/staff?redirect=${encodeURIComponent(`${siteOrigin}/admin`)}`;
 export const DEMO_LOGIN_URL = `${API_ORIGIN}/auth/demo?redirect=${encodeURIComponent(`${siteOrigin}/dashboard`)}`;

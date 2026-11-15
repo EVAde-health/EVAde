@@ -11,7 +11,6 @@ import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import { api } from '../services/api';
 import type { Emergency } from '../services/clinic';
 import { useResource } from '../services/useResource';
-import './css/Clinic.css';
 
 export function EmergencyBanner() {
   const { data, reload } = useResource<{ emergencies: Emergency[] }>('/emergencies/mine');
@@ -59,7 +58,6 @@ export default function EmergencyButton() {
         label="Emergency"
         variant="destructive"
         icon={<Icon icon={ExclamationTriangleIcon} />}
-        className="emergency-launch"
         onClick={() => setOpen(true)}
       />
       <Dialog isOpen={open} onOpenChange={setOpen} purpose="form" width={480}>

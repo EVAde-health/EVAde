@@ -76,3 +76,7 @@ export default defineConfig([
 ])
 
 ```
+
+## Browser-local data
+
+Journal entries and selfies are stored in this browser under the signed-in account. Data saved before sign-in was added stays in its original storage, without an assigned account. Demo changes stay in memory for the current page session.

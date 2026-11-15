@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Badge } from '@astryxdesign/core/Badge';
+import StatusBadge from '../../components/StatusBadge';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
@@ -38,7 +38,7 @@ function EmergencyCard({ item, onChange }: { item: Emergency; onChange: () => vo
             <Text type="label">{item.display_name}</Text>
             <Timestamp value={item.created_at} />
           </VStack>
-          <Badge variant={item.status === 'open' ? 'error' : item.status === 'acknowledged' ? 'warning' : 'success'} label={item.status} />
+          <StatusBadge status={item.status === 'open' ? 'critical' : item.status === 'acknowledged' ? 'caution' : 'nominal'} label={item.status} />
         </HStack>
         <Text>{item.message || 'Emergency control pressed, with no note.'}</Text>
         {item.status !== 'resolved' && (

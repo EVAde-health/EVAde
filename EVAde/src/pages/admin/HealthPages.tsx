@@ -10,7 +10,6 @@ import { ProgressBar } from '@astryxdesign/core/ProgressBar';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
 import { Text } from '@astryxdesign/core/Text';
 import { Timestamp } from '@astryxdesign/core/Timestamp';
-import { Badge } from '@astryxdesign/core/Badge';
 import ChartTooltip from '../../components/ChartTooltip';
 import PageHeader from '../../components/PageHeader';
 import { AXIS_TICK, BAR_CURSOR, CHART_MARGIN, GRID_STROKE, SERIES, Y_AXIS_WIDTH } from '../../components/chartConfig';
@@ -221,7 +220,7 @@ export function MoodAdminPage() {
                   description={entry.excerpt}
                   endContent={
                     <HStack gap={2} vAlign="center">
-                      {entry.concern_level && entry.concern_level !== 'none' && <Badge variant={entry.concern_level === 'high' ? 'error' : 'warning'} label={entry.concern_level} />}
+                      {entry.concern_level && entry.concern_level !== 'none' && <StatusBadge status={entry.concern_level === 'high' ? 'critical' : 'caution'} label={entry.concern_level} />}
                       <Timestamp value={entry.ts} />
                     </HStack>
                   }

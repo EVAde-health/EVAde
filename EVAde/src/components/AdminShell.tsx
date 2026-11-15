@@ -29,7 +29,6 @@ import { useResource } from '../services/useResource';
 import NotificationBell, { type Notifications } from './NotificationBell';
 import PageLoader from './PageLoader';
 import ThemeToggle from './ThemeToggle';
-import './css/AppFrame.css';
 
 const NAV = [
   { href: '/admin', label: 'Crew', icon: UserGroupIcon, selectedIcon: UserGroupSolid },
@@ -44,7 +43,7 @@ function selected(href: string, pathname: string) {
 }
 
 export default function AdminShell({ user, onSignOut }: { user: SessionUser; onSignOut: () => void }) {
-  const { pathname } = useLocation();
+  const pathname = useLocation().pathname.toLowerCase();
   const [signingOut, setSigningOut] = useState(false);
   const showToast = useToast();
   const notes = useResource<Notifications>('/admin/notifications');
@@ -124,7 +123,7 @@ export default function AdminShell({ user, onSignOut }: { user: SessionUser; onS
       >
         <Suspense fallback={<PageLoader />}>
           <VStack className="app-frame__page" key={pathname}>
-            <Outlet />
+            <Outlet context={user} />
           </VStack>
         </Suspense>
       </AppShell>

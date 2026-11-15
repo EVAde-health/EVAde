@@ -8,7 +8,7 @@ import { useToast } from '@astryxdesign/core/Toast';
 import { api } from '../services/api';
 import type { ChatMessageRow } from '../services/clinic';
 import { useResource } from '../services/useResource';
-import './css/Clinic.css';
+import { ScrollableArea } from '@astryxdesign/core/ScrollableArea';
 
 export default function MessagePane({ threadId, selfId, empty }: { threadId: number | null; selfId: string; empty: string }) {
   if (!threadId) return <Text type="supporting">{empty}</Text>;
@@ -54,7 +54,8 @@ function ActiveMessagePane({ threadId, selfId, empty }: { threadId: number; self
     <VStack gap={3}>
       {loading && !data && <Text role="status">Loading messages…</Text>}
       {error && <Text role="alert">{error}</Text>}
-      <VStack gap={3} className="clinic-chat-log">
+      <ScrollableArea label="Message history" height="min(50vh, 32rem)" padding={3}>
+        <VStack gap={3}>
         {data?.messages.length ? data.messages.map(message => (
           <ChatMessage key={message.id} sender={message.sender_id === selfId ? 'user' : 'assistant'} name={message.sender_name}>
             <ChatMessageBubble name={message.sender_name}>
@@ -63,7 +64,8 @@ function ActiveMessagePane({ threadId, selfId, empty }: { threadId: number; self
             </ChatMessageBubble>
           </ChatMessage>
         )) : <Text type="supporting">{empty}</Text>}
-      </VStack>
+        </VStack>
+      </ScrollableArea>
       <TextArea label="Message" isLabelHidden value={draft} onChange={setDraft} placeholder="Write a message" />
       <Button label="Send" variant="primary" onClick={send} isLoading={sending} isDisabled={!draft.trim()} />
     </VStack>

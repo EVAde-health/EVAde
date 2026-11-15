@@ -113,6 +113,6 @@ export function roleLabel(role: string) {
 
 export function bandStatus(band: string | null | undefined) {
   if (band === 'high' || band === 'critical' || band === 'red') return 'critical' as const;
-  if (band === 'moderate' || band === 'yellow') return 'caution' as const;
+  if (band === 'guarded' || band === 'elevated' || band === 'moderate' || band === 'yellow') return 'caution' as const;
   return 'nominal' as const;
 }

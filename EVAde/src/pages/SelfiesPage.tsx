@@ -49,7 +49,8 @@ export default function SelfiesPage() {
   const [isFlashing, setIsFlashing] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const galleryRef = useRef<GalleryItem[]>([]);
-  const { completed, toggleTask } = useMission();
+  const { completed, toggleTask, user } = useMission();
+  const accountId = user.demo ? null : user.user_id;
   const showToast = useToast();
   const lightboxMedia = useMemo(
     () => gallery.map(g => ({ src: g.url, alt: `Selfie from ${new Date(g.createdAt).toLocaleString()}`, caption: g.note || new Date(g.createdAt).toLocaleString() })),
@@ -58,13 +59,13 @@ export default function SelfiesPage() {
 
   useEffect(() => {
     let isActive = true;
-    listSelfies()
+    listSelfies(accountId)
       .then(selfies => isActive && setGallery(toGallery(selfies)))
       .catch(() => isActive && setGallery([]));
     return () => {
       isActive = false;
     };
-  }, []);
+  }, [accountId]);
 
   useEffect(() => {
     galleryRef.current = gallery;
@@ -96,7 +97,7 @@ export default function SelfiesPage() {
   // Persists the pending shot and awards the daily XP once.
   async function keepSelfie() {
     if (!pending) return;
-    const saved = await saveSelfie(pending.blob, note.trim());
+    const saved = await saveSelfie(accountId, pending.blob, note.trim());
     setGallery(current => [{ ...saved, url: URL.createObjectURL(saved.blob) }, ...current]);
     setPending(null);
     setNote('');
@@ -107,7 +108,7 @@ export default function SelfiesPage() {
 
   // Deletes a selfie from storage and the gallery.
   async function removeSelfie(id: string) {
-    await deleteSelfie(id);
+    await deleteSelfie(accountId, id);
     const removed = gallery.find(g => g.id === id);
     if (removed) URL.revokeObjectURL(removed.url);
     setGallery(current => current.filter(g => g.id !== id));

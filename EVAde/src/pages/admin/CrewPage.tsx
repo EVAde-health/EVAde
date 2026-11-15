@@ -1,9 +1,8 @@
 import { Avatar } from '@astryxdesign/core/Avatar';
 import { Badge } from '@astryxdesign/core/Badge';
-import { ClickableCard } from '@astryxdesign/core/ClickableCard';
-import { Grid } from '@astryxdesign/core/Grid';
+import { List, ListItem } from '@astryxdesign/core/List';
 import { HStack, VStack } from '@astryxdesign/core/Stack';
-import { Heading, Text } from '@astryxdesign/core/Text';
+import { Text } from '@astryxdesign/core/Text';
 import { Timestamp } from '@astryxdesign/core/Timestamp';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import PageHeader from '../../components/PageHeader';
@@ -24,35 +23,41 @@ export default function CrewPage() {
       {error && <Text role="alert">{error}</Text>}
       {data && !data.length && <EmptyState title="No astronauts yet" description="Accounts appear here after a crew member signs in through Cloudflare Access." />}
       {data && !!data.length && (
-        <Grid columns={{ minWidth: 280, max: 3 }} gap={4}>
+        <List hasDividers>
           {data.map(member => {
             const status = member.open_emergencies > 0 || member.red_indicators > 0 ? 'critical' : member.open_alerts > 0 ? 'caution' : bandStatus(member.last_band);
+            const label = member.open_emergencies > 0 ? 'Open emergency' : member.red_indicators > 0
+              ? 'Red indicator' : member.open_alerts > 0 ? 'Open alert' : member.last_band;
             return (
-              <ClickableCard key={member.user_id} label={`Open ${member.display_name}`} href={`/admin/astronauts/${member.user_id}`} padding={5}>
-                <VStack gap={3}>
-                  <HStack gap={3} vAlign="center">
-                    <Avatar name={member.full_name || member.display_name} size="md" />
-                    <VStack gap={0.5}>
-                      <Heading level={3}>{member.display_name}</Heading>
-                      <Text type="supporting">{member.full_name || member.crew_role || 'Astronaut'}</Text>
-                    </VStack>
-                  </HStack>
+              <ListItem
+                key={member.user_id}
+                href={`/admin/astronauts/${member.user_id}`}
+                startContent={<Avatar name={member.full_name || member.display_name} size="md" />}
+                label={member.display_name}
+                description={
+                  <VStack gap={0.5}>
+                    <Text type="supporting">{member.full_name || member.crew_role || 'Astronaut'}</Text>
+                    <HStack gap={2} wrap="wrap">
+                      <Text type="supporting" hasTabularNumbers>HR {member.heart_rate ?? '—'}</Text>
+                      <Text type="supporting" hasTabularNumbers>Sleep {member.sleep_hours ?? '—'} h</Text>
+                      <Text type="supporting" hasTabularNumbers>Mood {member.mood ?? '—'}</Text>
+                      {member.last_active && <Timestamp value={member.last_active} />}
+                    </HStack>
+                  </VStack>
+                }
+                endContent={
                   <HStack gap={2} wrap="wrap">
-                    <StatusBadge status={status} label={member.last_band || (status === 'nominal' ? 'Nominal' : undefined)} />
+                    {label
+                      ? <StatusBadge status={status} label={label} />
+                      : <Text type="supporting">Awaiting readings</Text>}
                     {member.open_emergencies > 0 && <Badge variant="error" label={`${member.open_emergencies} emergency`} />}
                     {member.open_alerts > 0 && <Badge variant="warning" label={`${member.open_alerts} alerts`} />}
                   </HStack>
-                  <HStack hAlign="between">
-                    <Text type="supporting" hasTabularNumbers>HR {member.heart_rate ?? '—'}</Text>
-                    <Text type="supporting" hasTabularNumbers>Sleep {member.sleep_hours ?? '—'} h</Text>
-                    <Text type="supporting" hasTabularNumbers>Mood {member.mood ?? '—'}</Text>
-                  </HStack>
-                  {member.last_active && <Timestamp value={member.last_active} />}
-                </VStack>
-              </ClickableCard>
+                }
+              />
             );
           })}
-        </Grid>
+        </List>
       )}
     </VStack>
   );

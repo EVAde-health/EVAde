@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useState } from 'react';
-import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { matchRoutes, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { Button } from '@astryxdesign/core/Button';
 import { Text } from '@astryxdesign/core/Text';
 import { useToast } from '@astryxdesign/core/Toast';
@@ -27,6 +27,7 @@ import {
   Squares2X2Icon as Squares2X2Solid,
 } from '@heroicons/react/24/solid';
 import { BASIC_TASKS, PROTOCOL_TASKS } from '../data/tasks';
+import { AccountStorageContext } from '../context/AccountStorageContext';
 import { useMission } from '../context/MissionContext';
 import { api, ApiError, SIGN_IN_REQUIRED, STAFF_ROLES, type SessionUser } from '../services/api';
 import AdminShell from './AdminShell';
@@ -52,11 +53,16 @@ const NAV_ITEMS = [
 export default function AppFrame() {
   const [session, setSession] = useState<SessionUser | 'loading' | 'signed-out' | 'error'>('loading');
   const [attempt, setAttempt] = useState(0);
-  const { pathname } = useLocation();
+  const location = useLocation();
   useEffect(() => {
     const expire = () => setSession('signed-out');
+    const refresh = () => setAttempt(previous => previous + 1);
     window.addEventListener(SIGN_IN_REQUIRED, expire);
-    return () => window.removeEventListener(SIGN_IN_REQUIRED, expire);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.removeEventListener(SIGN_IN_REQUIRED, expire);
+      window.removeEventListener("focus", refresh);
+    };
   }, []);
   useEffect(() => {
     const controller = new AbortController();
@@ -81,13 +87,15 @@ export default function AppFrame() {
     return <AdminShell user={session} onSignOut={() => setSession('signed-out')} />;
   }
 
-  if (/^\/admin(?:\/|$)/.test(pathname)) return <Navigate to="/dashboard" replace />;
-  if (session.demo && /^\/chat(?:\/|$)/.test(pathname)) return <Navigate to="/dashboard" replace />;
+  if (matchRoutes([{ path: "/admin/*" }], location)) return <Navigate to="/dashboard" replace />;
+  if (session.demo && matchRoutes([{ path: "/chat/*" }], location)) return <Navigate to="/dashboard" replace />;
 
   return (
-    <MissionProvider key={session.user_id} user={session}>
-      <SignedInFrame onSignOut={() => setSession('signed-out')} />
-    </MissionProvider>
+    <AccountStorageContext.Provider value={session.demo ? null : session.user_id}>
+      <MissionProvider key={`${session.demo ? "demo" : "user"}:${session.user_id}`} user={session}>
+        <SignedInFrame onSignOut={() => setSession('signed-out')} />
+      </MissionProvider>
+    </AccountStorageContext.Provider>
   );
 }
 

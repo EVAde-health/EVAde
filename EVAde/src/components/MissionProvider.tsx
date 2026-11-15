@@ -31,17 +31,19 @@ function rollOver(state: LocalProgress): LocalProgress {
 }
 
 export default function MissionProvider({ user, children }: { user: SessionUser; children: ReactNode }) {
-  const [stored, setStored] = usePersistentState<LocalProgress>(`evade:mission:${user.user_id}`, () => initialState(user));
+  const [stored, setStored] = usePersistentState<LocalProgress>('evade:mission', () => initialState(user));
   const state = rollOver(stored);
   const [meals, setMeals] = useState<MealEntry[]>([]);
-  const [waterMl, setWaterMl] = useState(0);
+  const demo = user.demo;
+  const [waterMl, setWaterMl] = useState(demo ? 750 : 0);
   const [goals, setGoals] = useState<DailyGoals>(FALLBACK_GOALS);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!demo);
   const [nutritionUnavailable, setNutritionUnavailable] = useState(false);
   const { since, until } = today();
   const id = user.user_id;
 
   useEffect(() => {
+    if (demo) return;
     const controller = new AbortController();
     const query = new URLSearchParams({ since, until });
     const options = { signal: controller.signal };
@@ -67,7 +69,7 @@ export default function MissionProvider({ user, children }: { user: SessionUser;
       setLoading(false);
     });
     return () => controller.abort();
-  }, [id, since, until]);
+  }, [demo, id, since, until]);
 
   // The Journal and Missions share the existing synchronous completion contract.
   function toggleTask(taskId: string, xp: number) {
@@ -85,22 +87,25 @@ export default function MissionProvider({ user, children }: { user: SessionUser;
 
   async function addWater(ml: number, xp: number) {
     const timestamp = new Date();
-    const saved = await api<{ amount_ml: number }>('/hydration', {
-      method: 'POST', body: { id: crypto.randomUUID(), amount_ml: ml, ts: timestamp.toISOString(), ...today(timestamp) },
-    });
-    setWaterMl(previous => Math.max(0, previous + saved.amount_ml));
+    const amount = demo ? ml : (await api<{ amount_ml: number }>('/hydration', {
+      method: 'POST', body: { id: crypto.randomUUID(), user_id: id, amount_ml: ml, ts: timestamp.toISOString(), ...today(timestamp) },
+    })).amount_ml;
+    setWaterMl(previous => Math.max(0, previous + amount));
     setStored(previous => ({ ...rollOver(previous), xp: Math.max(0, previous.xp + (ml > 0 ? xp : -xp)) }));
-    return Math.max(0, waterMl + saved.amount_ml);
+    return Math.max(0, waterMl + amount);
   }
 
   async function addMeal(meal: Parameters<MissionContextValue['addMeal']>[0], xp: number) {
-    const saved = toMeal(await api<ApiMeal>('/meals', { method: 'POST', body: { id: crypto.randomUUID(), ...meal } }));
+    const mealId = crypto.randomUUID();
+    const saved = demo
+      ? { ...meal, id: mealId, loggedAt: Date.now() }
+      : toMeal(await api<ApiMeal>('/meals', { method: 'POST', body: { id: mealId, user_id: id, ...meal } }));
     setMeals(previous => [saved, ...previous.filter(item => item.id !== saved.id)]);
     setStored(previous => ({ ...rollOver(previous), xp: previous.xp + xp }));
   }
 
   async function removeMeal(mealId: string) {
-    await api(`/meals/${encodeURIComponent(mealId)}`, { method: 'DELETE' });
+    if (!demo) await api(`/meals/${encodeURIComponent(mealId)}`, { method: 'DELETE' });
     setMeals(previous => previous.filter(meal => meal.id !== mealId));
   }
 

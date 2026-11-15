@@ -9,7 +9,7 @@ import { BellAlertIcon } from '@heroicons/react/24/outline';
 import { api } from '../services/api';
 import type { Emergency } from '../services/clinic';
 import { useToast } from '@astryxdesign/core/Toast';
-import './css/Clinic.css';
+import StatusBadge from './StatusBadge';
 
 export interface Notifications {
   emergencies: Emergency[];
@@ -33,7 +33,7 @@ export default function NotificationBell({ data, reload }: { data?: Notification
   return (
     <Popover
       content={
-        <VStack gap={3} padding={3} className="clinic-note">
+        <VStack gap={3} padding={3}>
           <HStack hAlign="between" vAlign="center">
             <Text type="label">Console alerts</Text>
             <Button label="Queue" size="sm" variant="ghost" href="/admin/emergencies" />
@@ -42,7 +42,7 @@ export default function NotificationBell({ data, reload }: { data?: Notification
             <VStack key={item.id} gap={1}>
               <HStack hAlign="between" vAlign="center">
                 <Text weight="semibold">{item.display_name}</Text>
-                <Badge variant={item.status === 'open' ? 'error' : 'warning'} label={item.status === 'open' ? 'Open' : 'Acknowledged'} />
+                <StatusBadge status={item.status === 'open' ? 'critical' : 'caution'} label={item.status === 'open' ? 'Open' : 'Acknowledged'} />
               </HStack>
               <Text type="supporting">{item.message || 'Emergency control pressed.'}</Text>
               <Timestamp value={item.created_at} />
