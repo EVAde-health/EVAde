@@ -22,7 +22,7 @@ import BrandMark from '../components/BrandMark';
 import PageHeader from '../components/PageHeader';
 import VoiceJournal from '../components/VoiceJournal';
 import type { VoiceTurn } from '../hooks/useVoiceAgent';
-import { useMission } from '../context/MissionContext';
+import { crewGreetingName, useMission } from '../context/MissionContext';
 import { MOOD_EMOJI, MOOD_LABELS } from '../data/health';
 import { createMessage, getAssistantReply, loadJournal, saveVoiceSession, type JournalMessage } from '../services/journalAssistant';
 import type { VoiceSessionCheckin } from '../services/healthApi';
@@ -251,16 +251,17 @@ export default function JournalPage() {
   }
 
   const composer = (
-    <ChatComposer
-      ref={mobile ? mobileComposerRef : undefined}
-      className="journal__composer"
-      value={draft}
-      onChange={value => setDraft(value.slice(0, 2000))}
-      onSubmit={sendMessage}
-      onStop={stopReply}
-      isStopShown={isReplying}
-      placeholder="Write about your day…"
-    />
+    <VStack ref={mobile ? mobileComposerRef : undefined} gap={1} className="journal__composer">
+      {user.demo && <Text type="supporting">Demo: messages aren't saved.</Text>}
+      <ChatComposer
+        value={draft}
+        onChange={value => setDraft(value.slice(0, 2000))}
+        onSubmit={sendMessage}
+        onStop={stopReply}
+        isStopShown={isReplying}
+        placeholder="Write about your day…"
+      />
+    </VStack>
   );
 
   return (
@@ -303,7 +304,7 @@ export default function JournalPage() {
           emptyState={
             <EmptyState
               icon={<BrandMark size="lg" />}
-              title={`Hi ${(user.full_name ?? user.display_name).split(' ')[0]}, what’s on your mind?`}
+              title={`Hi ${crewGreetingName(user)}, what’s on your mind?`}
               description={loading ? 'Loading your journal…' : 'Pick a prompt or start writing.'}
               actions={
                 <HStack gap={2} wrap="wrap" hAlign="center">
