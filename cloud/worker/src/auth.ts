@@ -7,6 +7,8 @@ export interface AuthEnv extends AccessEnv {
   DB: D1Database;
   SESSIONS: KVNamespace;
   AUTH_RATE_LIMITER: RateLimit;
+  /** "true" enables GET /auth/demo (seeded fake astronaut only). */
+  DEMO_LOGIN?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   GITHUB_CLIENT_ID?: string;
@@ -23,6 +25,8 @@ export interface Principal {
   user_id?: string;
   role?: string;
   email?: string | null;
+  /** true for the shared "Try demo" session (Cmdr. Vega, fake data): read-mostly, can't delete the account */
+  demo?: boolean;
 }
 
 export const STAFF_ROLES = new Set(["flight_surgeon", "therapist", "admin"]);
@@ -43,8 +47,11 @@ const PROVIDERS = {
   },
 } as const;
 type Provider = keyof typeof PROVIDERS | "dev";
-type SessionProvider = Provider | "cloudflare_access" | "cloudflare_access_staff";
-const SESSION_PROVIDERS = new Set<SessionProvider>(["google", "github", "dev", "cloudflare_access", "cloudflare_access_staff"]);
+type SessionProvider = Provider | "cloudflare_access" | "cloudflare_access_staff" | "demo";
+const SESSION_PROVIDERS = new Set<SessionProvider>(["google", "github", "dev", "cloudflare_access", "cloudflare_access_staff", "demo"]);
+/** The seeded demo astronaut (migration 0007): the only account "Try demo" can ever sign into. */
+const DEMO_IDENTITY = { provider: "demo", subject: "vega" } as const;
+const DEMO_SESSION_TTL = 2 * 3600;
 
 // ---------- small crypto helpers ----------
 const b64url = (buf: ArrayBuffer | Uint8Array) =>
@@ -108,6 +115,9 @@ function readCookie(req: Request, name: string) {
 }
 
 export const sessionCookie = (req: Request, url = new URL(req.url)) => readCookie(req, cookieName(url, "session"));
+export const clearSessionCookie = (url: URL) => cookieHeader(url, "session", "", 0);
+/** KV key hash for a session token (exported so account deletion can end the current session). */
+export const sha256hex = async (s: string) => sha256(s);
 
 // ---------- sessions ----------
 export async function getSessionPrincipal(req: Request, env: AuthEnv): Promise<Principal | null> {
@@ -127,7 +137,7 @@ export async function getSessionPrincipal(req: Request, env: AuthEnv): Promise<P
     if (user?.role !== s.role) return null;
     role = user.role;
   }
-  return { kind: "user", user_id: s.user_id, role, email: s.email };
+  return { kind: "user", user_id: s.user_id, role, email: s.email, demo: s.provider === "demo" };
 }
 
 async function createSession(
@@ -288,8 +298,8 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
   const path = url.pathname.replace(/\/$/, "");
   const ip = req.headers.get("CF-Connecting-IP");
   const accessPath = path === "/auth/access" || path === "/auth/access/staff";
-  if (accessPath || path === "/auth/start" || path.startsWith("/auth/callback/")) {
-    const bucket = accessPath ? "access" : path === "/auth/start" ? "start" : "callback";
+  if (accessPath || path === "/auth/demo" || path === "/auth/start" || path.startsWith("/auth/callback/")) {
+    const bucket = accessPath ? "access" : path === "/auth/demo" ? "demo" : path === "/auth/start" ? "start" : "callback";
     const { success } = await env.AUTH_RATE_LIMITER.limit({ key: `${bucket}:${ip ?? "unknown"}` });
     if (!success) return Response.json({ error: "Too many sign-in requests. Try again in a minute." }, {
       status: 429, headers: { "Retry-After": "60" },
@@ -409,6 +419,22 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
       console.warn("Cloudflare Access session could not be created");
       return fail("Sign-in failed. Try again.", 500);
     }
+  }
+
+  // "Try demo" for judges: signs into the seeded fake astronaut only. Never takes a user id from the request.
+  // Off unless DEMO_LOGIN = "true". The session is short (2 h) and can't delete the account.
+  if (path === "/auth/demo" && req.method === "GET") {
+    if (env.DEMO_LOGIN !== "true") return Response.json({ error: "Demo sign-in is off" }, { status: 404 });
+    const redirect = safeRedirect(env, url.searchParams.get("redirect"), url);
+    const user = await env.DB.prepare(
+      "SELECT u.user_id, u.role FROM auth_identities a JOIN users u USING (user_id) WHERE a.provider=? AND a.subject=?"
+    ).bind(DEMO_IDENTITY.provider, DEMO_IDENTITY.subject).first<{ user_id: string; role: string }>();
+    if (!user || user.role !== "astronaut") return Response.json({ error: "Demo account isn't set up" }, { status: 503 });
+    const token = await createSession(env, user, null, "demo", DEMO_SESSION_TTL);
+    await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', 'demo')").bind(user.user_id).run();
+    return new Response(null, {
+      status: 302, headers: { Location: redirect, "Set-Cookie": cookieHeader(url, "session", token, DEMO_SESSION_TTL), "Cache-Control": "no-store" },
+    });
   }
 
   if (path === "/auth/me" && req.method === "GET") {
