@@ -20,10 +20,13 @@ import { useToast } from '@astryxdesign/core/Toast';
 import { SparklesIcon } from '@heroicons/react/24/outline';
 import BrandMark from '../components/BrandMark';
 import PageHeader from '../components/PageHeader';
+import VoiceJournal from '../components/VoiceJournal';
+import type { VoiceTurn } from '../hooks/useVoiceAgent';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { useMission } from '../context/MissionContext';
 import { CREW, MOOD_LABELS } from '../data/mission';
 import { createMessage, getAssistantReply, type JournalMessage } from '../services/journalAssistant';
+import type { VoiceCheckin } from '../services/voiceAgent';
 import './css/JournalPage.css';
 
 const PROMPTS = [
@@ -35,6 +38,8 @@ const PROMPTS = [
 
 const MOOD_EMOJI = ['😣', '😕', '😐', '🙂', '😄'];
 const MOOD_TASK = { id: 'p-mood', xp: 25 };
+// Crew ID the voice agent files check-ins under (GET /api/checkins/latest?crew_id=…).
+const VOICE_CREW = `crew-${CREW.callSign.toLowerCase()}`;
 
 // Animated three-dot "typing" indicator.
 function TypingDots() {
@@ -93,6 +98,39 @@ export default function JournalPage() {
     }
   }
 
+  // Turns a check-in saved by the voice agent into journal entries and logs its mood.
+  function handleVoiceCheckin(checkin: VoiceCheckin) {
+    const facts: string[] = [];
+    if (checkin.sleep_hours != null) facts.push(`Sleep ${checkin.sleep_hours} h`);
+    if (checkin.mood != null) facts.push(`Mood ${checkin.mood}/5`);
+    if (checkin.systolic != null && checkin.diastolic != null) facts.push(`BP ${checkin.systolic}/${checkin.diastolic}`);
+    if (checkin.temperature_c != null) facts.push(`Temp ${checkin.temperature_c} °C`);
+    if (checkin.blood_sugar_mg_dl != null) facts.push(`Sugar ${checkin.blood_sugar_mg_dl} mg/dL`);
+    if (checkin.symptoms?.length) facts.push(`Symptoms: ${checkin.symptoms.join(', ')}`);
+    const level = checkin.level ? String(checkin.level).toUpperCase() : 'SAVED';
+    const entries = [createMessage('system', [`🎙️ Voice check-in: ${level}`, ...facts].join(' · '))];
+    if (checkin.notes?.trim()) entries.push(createMessage('user', checkin.notes.trim()));
+    const advice = [
+      ...(checkin.reasons ?? []).map(reason => `• ${reason}`),
+      ...(checkin.actions ?? []).map(action => `→ ${action}`),
+      ...(checkin.reminder ? [checkin.reminder] : []),
+    ];
+    if (advice.length) entries.push(createMessage('assistant', advice.join('\n')));
+    setMessages(current => [...current, ...entries]);
+    const voiceMood = Number(checkin.mood);
+    if (Number.isInteger(voiceMood) && voiceMood >= 1 && voiceMood <= 5) logMood(voiceMood);
+  }
+
+  // Copies finished voice transcript turns into the journal conversation.
+  function addVoiceTurns(turns: VoiceTurn[]) {
+    const entries = turns.map(turn => ({
+      ...createMessage(turn.role === 'agent' ? 'assistant' : 'user', turn.text.trim()),
+      sentAt: turn.at,
+    }));
+    setMessages(current => [...current, ...entries]);
+    showToast({ body: `🎙️ Added ${entries.length} voice ${entries.length === 1 ? 'entry' : 'entries'} to your journal` });
+  }
+
   return (
     <VStack gap={4} padding={6} className="page journal">
       <PageHeader
@@ -122,6 +160,8 @@ export default function JournalPage() {
           </HStack>
         </HStack>
       </Card>
+
+      <VoiceJournal crew={VOICE_CREW} onCheckinSaved={handleVoiceCheckin} onAddToJournal={addVoiceTurns} />
 
       <StackItem size="fill" className="journal__chat">
         <ChatLayout

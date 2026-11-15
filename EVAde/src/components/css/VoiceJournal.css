@@ -1,0 +1,35 @@
+.voice-journal {
+  flex-shrink: 0;
+  background:
+    linear-gradient(90deg, color-mix(in oklab, var(--color-data-categorical-blue, var(--color-accent)) 14%, transparent), transparent 70%),
+    color-mix(in oklab, var(--color-background-surface) 60%, transparent);
+  backdrop-filter: blur(var(--spacing-4)) saturate(1.4);
+  -webkit-backdrop-filter: blur(var(--spacing-4)) saturate(1.4);
+}
+
+.voice-journal__talk--live {
+  animation: voice-journal-pulse 1.6s ease-in-out infinite;
+}
+
+.voice-journal__transcript {
+  max-block-size: 14rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.voice-journal__partial {
+  opacity: 0.65;
+  font-style: italic;
+}
+
+@keyframes voice-journal-pulse {
+  50% {
+    box-shadow: 0 0 var(--spacing-4) color-mix(in oklab, var(--color-accent) 55%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-journal__talk--live {
+    animation: none;
+  }
+}
