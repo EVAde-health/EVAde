@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import {
   Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
@@ -22,10 +22,11 @@ import { useToast } from '@astryxdesign/core/Toast';
 import ChartTooltip from '../../components/ChartTooltip';
 import SectionTitle from '../../components/SectionTitle';
 import StatusBadge from '../../components/StatusBadge';
+import { useSurgeon } from '../../context/SurgeonContext';
 import { AXIS_TICK, BAR_CURSOR, CHART_MARGIN, GRID_STROKE, SERIES, Y_AXIS_WIDTH } from '../../components/chartConfig';
 import { useResource } from '../../services/useResource';
 import {
-  correctObservation, formatValue, levelStatus, setGoals,
+  correctObservation, formatValue, hasTimestamp, levelStatus, responseRows, setGoals,
   type AstronautDetail, type Correction, type GoalHistoryRow, type GoalType, type GoalTypeInfo, type JournalData,
   type NutritionData, type Observation, type ResolvedGoal, type SeriesMetric, type SleepData, type TasksData,
 } from '../../services/surgeon';
@@ -52,8 +53,8 @@ export function VitalsSection({ id, latest }: { id: string; latest: AstronautDet
   const [days, setDays] = useState('30');
   const series = useResource<{ metrics: SeriesMetric[] }>(group === 'sleep' ? null : `/admin/astronauts/${id}/series?group=${group}&days=${days}`);
   const sleep = useResource<SleepData>(group === 'sleep' ? `/admin/astronauts/${id}/sleep?days=${Math.min(Number(days), 30)}` : null);
-  const charted = series.data?.metrics.filter(metric => metric.points.length) ?? [];
-  const reds = latest.filter(item => item.level === 'red');
+  const charted = responseRows(series.data?.metrics).filter(metric => Array.isArray(metric.points) && metric.points.length);
+  const reds = responseRows(latest).filter(item => item.level === 'red');
 
   return (
     <VStack gap={5}>
@@ -97,7 +98,7 @@ function MetricChart({ metric, index }: { metric: SeriesMetric; index: number })
             <VStack gap={0.5}>
               <Text type="label">{metric.label}</Text>
               <Text type="large" hasTabularNumbers>{latest ? `${formatValue(latest.value, metric.decimals)} ${metric.unit}` : 'No reading'}</Text>
-              {latest && <Timestamp value={latest.ts} format="relative" type="supporting" />}
+              {hasTimestamp(latest?.ts) && <Timestamp value={latest.ts} format="relative" type="supporting" />}
             </VStack>
             {latest?.level && <StatusBadge status={levelStatus(latest.level)} />}
           </HStack>
@@ -123,19 +124,20 @@ function MetricChart({ metric, index }: { metric: SeriesMetric; index: number })
 function SleepChart({ data, error }: { data?: SleepData; error: string | null }) {
   if (error) return <Text role="alert">{error}</Text>;
   if (!data) return <Loading height={300} />;
-  if (!data.nights.length) return <EmptyState isCompact title="No sleep recorded" description="Sleep sessions appear after the astronaut logs them." />;
+  const nights = responseRows(data.nights);
+  if (!nights.length) return <EmptyState isCompact title="No sleep recorded" description="Sleep sessions appear after the astronaut logs them." />;
   return (
     <Card padding={4}>
       <VStack gap={3}>
-        <Text type="label">Sleep stages (target {data.target} h)</Text>
+        <Text type="label">Sleep stages{Number.isFinite(data.target) ? ` (target ${data.target} h)` : ''}</Text>
         <ResponsiveContainer width="100%" height={280}>
-          <BarChart data={data.nights} margin={CHART_MARGIN}>
+          <BarChart data={nights} margin={CHART_MARGIN}>
             <CartesianGrid vertical={false} stroke={GRID_STROKE} />
             <XAxis dataKey="day" tick={AXIS_TICK} tickFormatter={shortDay} axisLine={false} tickLine={false} />
             <YAxis tick={AXIS_TICK} width={Y_AXIS_WIDTH} axisLine={false} tickLine={false} />
             <Tooltip content={<ChartTooltip unit="h" />} cursor={BAR_CURSOR} />
             <Legend />
-            <ReferenceLine y={data.target} stroke={SERIES.baseline} strokeDasharray="4 4" />
+            {Number.isFinite(data.target) && <ReferenceLine y={data.target} stroke={SERIES.baseline} strokeDasharray="4 4" />}
             <Bar dataKey="deep" name="Deep" stackId="s" fill={SERIES.quaternary} />
             <Bar dataKey="rem" name="REM" stackId="s" fill={SERIES.primary} />
             <Bar dataKey="light" name="Light" stackId="s" fill={SERIES.tertiary} />
@@ -149,19 +151,22 @@ function SleepChart({ data, error }: { data?: SleepData; error: string | null })
 
 // Recent raw readings with the correction action, plus the audit trail.
 function Readings({ id }: { id: string }) {
+  const canCorrect = useSurgeon().user.role === 'flight_surgeon';
   const [metric, setMetric] = useState('heart_rate');
   const readings = useResource<Observation[]>(`/admin/astronauts/${id}/observations?metric=${metric}&days=7`);
   const audit = useResource<Correction[]>(`/admin/astronauts/${id}/corrections`);
   const [editing, setEditing] = useState<Observation | null>(null);
   const reload = () => { readings.reload(); audit.reload(); };
-  const label = readings.data?.[0]?.label;
+  const readingRows = responseRows(readings.data);
+  const corrections = responseRows(audit.data);
+  const label = readingRows[0]?.label;
 
   return (
     <Grid columns={{ minWidth: 340, max: 2 }} gap={4}>
       <Card padding={4}>
         <VStack gap={3}>
           <HStack hAlign="between" vAlign="center" gap={3} wrap="wrap">
-            <SectionTitle title="Recent readings" caption="Last 7 days. Correct a vital only when the recorded value is wrong." />
+            <SectionTitle title="Recent readings" caption={canCorrect ? 'Last 7 days. Correct a vital only when the recorded value is wrong.' : 'Last 7 days.'} />
             <div style={{ minInlineSize: '12rem' }}>
               <Selector label="Vital" isLabelHidden size="sm" value={metric} onChange={value => value && setMetric(value)}
                 options={CORRECTABLE.map(value => ({ value, label: value.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) }))} />
@@ -169,10 +174,10 @@ function Readings({ id }: { id: string }) {
           </HStack>
           {readings.error && <Text role="alert">{readings.error}</Text>}
           {readings.loading && !readings.data && <Loading height={160} />}
-          {readings.data && !readings.data.length && <Text type="supporting">No {label ?? 'readings'} in the last 7 days.</Text>}
+          {readings.data && !readingRows.length && <Text type="supporting">No {label ?? 'readings'} in the last 7 days.</Text>}
           <div style={{ maxBlockSize: '24rem', overflowY: 'auto' }}>
             <List hasDividers density="compact">
-              {readings.data?.slice(0, 60).map(row => (
+              {readingRows.slice(0, 60).map(row => (
                 <ListItem
                   key={row.id}
                   label={
@@ -182,9 +187,10 @@ function Readings({ id }: { id: string }) {
                       {row.corrections > 0 && <Badge variant="info" label="Corrected" />}
                     </HStack>
                   }
-                  description={<Timestamp value={row.ts} format="auto" type="supporting" />}
-                  startContent={<StatusBadge status={levelStatus(row.level)} label={row.level ?? 'n/a'} />}
-                  endContent={<Button label="Correct" size="sm" variant="ghost" onClick={() => setEditing(row)} />}
+                  description={hasTimestamp(row.ts) ? <Timestamp value={row.ts} format="auto" type="supporting" /> : 'Time unavailable'}
+                  startContent={row.level ? <StatusBadge status={levelStatus(row.level)} label={row.level} /> : undefined}
+                  endContent={canCorrect && audit.data && !audit.error && Number.isInteger(row.id) && Number.isFinite(row.value)
+                    ? <Button label="Correct" size="sm" variant="ghost" onClick={() => setEditing(row)} /> : undefined}
                 />
               ))}
             </List>
@@ -194,9 +200,10 @@ function Readings({ id }: { id: string }) {
       <Card padding={4}>
         <VStack gap={3}>
           <SectionTitle title="Correction audit trail" caption="Original value, corrected value, who, when and why." />
-          {audit.data && !audit.data.length && <Text type="supporting">No corrections yet.</Text>}
+          {audit.error && <Text role="alert">Correction history is unavailable.</Text>}
+          {audit.data && !corrections.length && <Text type="supporting">No corrections yet.</Text>}
           <List hasDividers density="compact">
-            {audit.data?.map(row => (
+            {corrections.map(row => (
               <ListItem
                 key={row.id}
                 label={`${row.label}: ${formatValue(row.original_value)} → ${formatValue(row.corrected_value)} ${row.unit}`}
@@ -204,7 +211,8 @@ function Readings({ id }: { id: string }) {
                   <VStack gap={0.5}>
                     <Text type="supporting">“{row.reason}”</Text>
                     <Text type="supporting">
-                      {row.corrected_by_name ?? 'Unknown'} · <Timestamp value={row.created_at} format="auto" type="supporting" /> · reading from <Timestamp value={row.observed_at} format="date" type="supporting" />
+                      {row.corrected_by_name ?? 'Unknown'}{hasTimestamp(row.created_at) && <> · <Timestamp value={row.created_at} format="auto" type="supporting" /></>}
+                      {hasTimestamp(row.observed_at) && <> · reading from <Timestamp value={row.observed_at} format="date" type="supporting" /></>}
                     </Text>
                   </VStack>
                 }
@@ -213,7 +221,7 @@ function Readings({ id }: { id: string }) {
           </List>
         </VStack>
       </Card>
-      {editing && <CorrectionDialog row={editing} onClose={() => setEditing(null)} onSaved={reload} />}
+      {canCorrect && editing && <CorrectionDialog row={editing} onClose={() => setEditing(null)} onSaved={reload} />}
     </Grid>
   );
 }
@@ -262,9 +270,11 @@ function CorrectionDialog({ row, onClose, onSaved }: { row: Observation; onClose
 // ---------------------------------------------------------------- journal & check-ins
 export function JournalSection({ id }: { id: string }) {
   const { data, error, loading } = useResource<JournalData>(`/admin/astronauts/${id}/journal?days=35`);
-  const trend = useMemo(() => [...(data?.checkins ?? [])].reverse().map(row => ({
+  const checkins = responseRows(data?.checkins);
+  const journal = responseRows(data?.journal);
+  const trend = checkins.filter(row => hasTimestamp(row.ts)).reverse().map(row => ({
     day: row.ts.slice(0, 10), mood: row.mood, stress: row.stress, sleep: row.sleep_hours,
-  })), [data]);
+  }));
   if (error) return <Text role="alert">{error}</Text>;
   if (loading && !data) return <Loading height={320} />;
   if (!data) return null;
@@ -291,21 +301,20 @@ export function JournalSection({ id }: { id: string }) {
       <Grid columns={{ minWidth: 340, max: 2 }} gap={4}>
         <Card padding={4}>
           <VStack gap={3}>
-            <SectionTitle title="Check-ins" caption={`${data.checkins.length} in the last 35 days (app and voice).`} />
-            {!data.checkins.length && <Text type="supporting">No check-ins yet.</Text>}
+            <SectionTitle title="Check-ins" caption={`${checkins.length} in the last 35 days (app and voice).`} />
+            {!checkins.length && <Text type="supporting">No check-ins available.</Text>}
             <div style={{ maxBlockSize: '32rem', overflowY: 'auto' }}>
               <List hasDividers density="compact">
-                {data.checkins.map(row => (
+                {checkins.map(row => (
                   <ListItem
                     key={row.id}
                     align="start"
-                    startContent={<StatusBadge status={levelStatus(row.checkin_level)} label={row.source === 'app' ? 'App' : 'Voice'} />}
+                    startContent={row.checkin_level ? <StatusBadge status={levelStatus(row.checkin_level)} label={row.source === 'app' ? 'App' : row.source ? 'Voice' : 'Source unavailable'} /> : undefined}
                     label={[row.mood != null && `Mood ${row.mood}/5`, row.stress != null && `stress ${row.stress}/5`, row.sleep_hours != null && `${row.sleep_hours} h sleep`].filter(Boolean).join(' · ')}
                     description={
                       <VStack gap={1}>
-                        {row.note && <Text type="supporting">“{row.note}”</Text>}
-                        {!!row.symptoms.length && <HStack gap={1} wrap="wrap">{row.symptoms.map(s => <Badge key={s} variant="warning" label={s} />)}</HStack>}
-                        <Timestamp value={row.ts} format="auto" type="supporting" />
+                        {Array.isArray(row.symptoms) && !!row.symptoms.length && <HStack gap={1} wrap="wrap">{row.symptoms.filter(s => typeof s === 'string').map(s => <Badge key={s} variant="warning" label={s} />)}</HStack>}
+                        {hasTimestamp(row.ts) && <Timestamp value={row.ts} format="auto" type="supporting" />}
                       </VStack>
                     }
                   />
@@ -316,21 +325,20 @@ export function JournalSection({ id }: { id: string }) {
         </Card>
         <Card padding={4}>
           <VStack gap={3}>
-            <SectionTitle title="Journal" caption="Full entries with the assistant’s summary." />
-            {!data.journal.length && <Text type="supporting">No journal entries yet.</Text>}
+            <SectionTitle title="Journal summaries" caption="Mood, concerns and assistant summaries." />
+            {!journal.length && <Text type="supporting">No journal summaries available.</Text>}
             <div style={{ maxBlockSize: '32rem', overflowY: 'auto' }}>
               <VStack gap={3}>
-                {data.journal.map(entry => (
-                  <VStack key={entry.id} gap={1}>
+                {journal.map((entry, index) => (
+                  <VStack key={`${entry.ts}:${entry.source}:${index}`} gap={1}>
                     <HStack gap={2} wrap="wrap" vAlign="center">
-                      <Timestamp value={entry.ts} format="auto" type="label" />
+                      {hasTimestamp(entry.ts) && <Timestamp value={entry.ts} format="auto" type="label" />}
                       {entry.mood_label && <Badge variant="purple" label={entry.mood_label} />}
                       {entry.concern_level && entry.concern_level !== 'none' && (
                         <Badge variant={entry.concern_level === 'high' ? 'error' : entry.concern_level === 'moderate' ? 'warning' : 'neutral'} label={`concern: ${entry.concern_level}`} />
                       )}
-                      <Badge variant="neutral" label={entry.source} />
+                      {entry.source && <Badge variant="neutral" label={entry.source} />}
                     </HStack>
-                    <Text>{entry.content}</Text>
                     {entry.ai_summary && <Text type="supporting">Summary: {entry.ai_summary}</Text>}
                   </VStack>
                 ))}
@@ -349,22 +357,24 @@ export function TasksSection({ id }: { id: string }) {
   if (error) return <Text role="alert">{error}</Text>;
   if (loading && !data) return <Loading height={320} />;
   if (!data) return null;
-  const done = data.today.filter(task => task.completed_at).length;
+  const today = responseRows(data.today);
+  const tutorials = responseRows(data.tutorials);
+  const done = today.filter(task => task.completed_at).length;
   return (
     <VStack gap={4}>
       <Grid columns={{ minWidth: 180, max: 4 }} gap={3}>
-        <Card padding={4}><VStack gap={1}><Text type="supporting">Total XP</Text><Text type="large" hasTabularNumbers>{data.points.toLocaleString()}</Text></VStack></Card>
-        <Card padding={4}><VStack gap={1}><Text type="supporting">Streak</Text><Text type="large" hasTabularNumbers>{data.streak_days} days</Text></VStack></Card>
-        <Card padding={4}><VStack gap={1}><Text type="supporting">Today</Text><Text type="large" hasTabularNumbers>{done} / {data.today.length} tasks</Text></VStack></Card>
-        <Card padding={4}><VStack gap={1}><Text type="supporting">Tutorials</Text><Text type="large" hasTabularNumbers>{data.tutorials.length} watched</Text></VStack></Card>
+        <Card padding={4}><VStack gap={1}><Text type="supporting">Total XP</Text><Text type="large" hasTabularNumbers>{formatValue(data.points, 0)}</Text></VStack></Card>
+        <Card padding={4}><VStack gap={1}><Text type="supporting">Streak</Text><Text type="large" hasTabularNumbers>{data.streak_days == null ? '—' : `${data.streak_days} days`}</Text></VStack></Card>
+        <Card padding={4}><VStack gap={1}><Text type="supporting">Today</Text><Text type="large" hasTabularNumbers>{done} / {today.length} tasks</Text></VStack></Card>
+        <Card padding={4}><VStack gap={1}><Text type="supporting">Tutorials</Text><Text type="large" hasTabularNumbers>{tutorials.length} watched</Text></VStack></Card>
       </Grid>
       <Grid columns={{ minWidth: 340, max: 2 }} gap={4}>
         <Card padding={4}>
           <VStack gap={3}>
-            <SectionTitle title={`Today’s task board (${data.day})`} caption="What the astronaut sees on their Missions page." />
-            <ProgressBar label="Completed today" value={done} max={data.today.length || 1} hasValueLabel variant="success" />
+            <SectionTitle title={data.day ? `Today’s task board (${data.day})` : 'Today’s task board'} caption="What the astronaut sees on their Missions page." />
+            <ProgressBar label="Completed today" value={done} max={today.length || 1} hasValueLabel variant="success" />
             <List hasDividers density="compact">
-              {data.today.map(task => (
+              {today.map(task => (
                 <ListItem
                   key={task.id}
                   label={<Text hasStrikethrough={!!task.completed_at}>{task.title}</Text>}
@@ -381,7 +391,7 @@ export function TasksSection({ id }: { id: string }) {
             <VStack gap={2}>
               <Text type="label">Last 14 days</Text>
               <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={data.history} margin={CHART_MARGIN}>
+                <BarChart data={responseRows(data.history)} margin={CHART_MARGIN}>
                   <CartesianGrid vertical={false} stroke={GRID_STROKE} />
                   <XAxis dataKey="day" tick={AXIS_TICK} tickFormatter={shortDay} axisLine={false} tickLine={false} />
                   <YAxis tick={AXIS_TICK} width={Y_AXIS_WIDTH} axisLine={false} tickLine={false} allowDecimals={false} />
@@ -395,10 +405,10 @@ export function TasksSection({ id }: { id: string }) {
           <Card padding={4}>
             <VStack gap={2}>
               <SectionTitle title="Tutorials watched" />
-              {!data.tutorials.length && <Text type="supporting">None yet.</Text>}
+              {!tutorials.length && <Text type="supporting">None available.</Text>}
               <List density="compact">
-                {data.tutorials.map(t => (
-                  <ListItem key={t.tutorial_id} label={t.title} description={<Timestamp value={t.completed_at} format="date" type="supporting" />}
+                {tutorials.map(t => (
+                  <ListItem key={t.tutorial_id} label={t.title} description={hasTimestamp(t.completed_at) ? <Timestamp value={t.completed_at} format="date" type="supporting" /> : undefined}
                     endContent={<Text type="supporting">+{t.points_awarded} XP</Text>} />
                 ))}
               </List>
@@ -412,24 +422,27 @@ export function TasksSection({ id }: { id: string }) {
 
 // ---------------------------------------------------------------- goals
 export function GoalsSection({ id, name }: { id: string; name: string }) {
-  const goals = useResource<{ goals: ResolvedGoal[]; history: GoalHistoryRow[]; types: Record<GoalType, GoalTypeInfo> }>(`/admin/astronauts/${id}/goals`);
+  const goals = useResource<{ goals: ResolvedGoal[]; history: GoalHistoryRow[]; types?: Partial<Record<GoalType, GoalTypeInfo>> }>(`/admin/astronauts/${id}/goals`);
   const nutrition = useResource<NutritionData>(`/admin/astronauts/${id}/nutrition?days=14`);
   const [draft, setDraft] = useState<Partial<Record<GoalType, number | null>>>({});
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const showToast = useToast();
 
-  const current = goals.data?.goals ?? [];
-  const changes = current
-    .filter(goal => draft[goal.goal_type] != null && draft[goal.goal_type] !== goal.target)
-    .map(goal => ({ goal_type: goal.goal_type, target: draft[goal.goal_type] as number }));
+  const types = goals.data?.types ?? {};
+  const current = responseRows(goals.data?.goals).filter(goal => Number.isFinite(goal.target));
+  const history = responseRows(goals.data?.history);
+  const changes = current.flatMap(goal => {
+    const target = draft[goal.goal_type];
+    return types[goal.goal_type] && typeof target === 'number' && target !== goal.target ? [{ goal_type: goal.goal_type, target }] : [];
+  });
 
   async function save() {
     if (!changes.length) return;
     setSaving(true);
     try {
       const result = await setGoals(id, changes, note);
-      showToast({ body: result.changed.length ? `${name} will see a note about the new goal${result.changed.length > 1 ? 's' : ''}.` : 'Nothing changed.' });
+      showToast({ body: result.changed?.length === 0 ? 'Nothing changed.' : `Goals saved for ${name}.` });
       setDraft({});
       setNote('');
       goals.reload();
@@ -443,16 +456,17 @@ export function GoalsSection({ id, name }: { id: string; name: string }) {
 
   if (goals.error) return <Text role="alert">{goals.error}</Text>;
   if (!goals.data) return <Loading height={320} />;
-  const types = goals.data.types;
 
   return (
     <VStack gap={4}>
       <Card padding={4}>
         <VStack gap={4}>
-          <SectionTitle title="Daily goals" caption="Each change is saved as a new row (latest wins) and the astronaut gets a note in their app." />
+          <SectionTitle title="Daily goals" caption="The most recent saved target for each goal is in force." />
+          {!current.length && <Text type="supporting">No daily goals available.</Text>}
           <Grid columns={{ minWidth: 220, max: 4 }} gap={3}>
             {current.map(goal => {
               const info = types[goal.goal_type];
+              if (!info) return <Text key={goal.goal_type ?? goal.label} type="supporting">{goal.label ?? 'Goal'} · {formatValue(goal.target)} {goal.unit}</Text>;
               return (
                 <VStack key={goal.goal_type} gap={1.5}>
                   <NumberInput
@@ -465,9 +479,9 @@ export function GoalsSection({ id, name }: { id: string; name: string }) {
                     hasNumberSteppers
                   />
                   <Text type="supporting">
-                    {goal.source === 'surgeon' ? `Set by ${goal.set_by_name ?? 'a flight surgeon'}` : goal.source === 'self' ? 'Set by the astronaut'
+                    {goal.source === 'surgeon' || goal.source === 'set' ? `Set by ${goal.set_by_name ?? 'a flight surgeon'}` : goal.source === 'self' ? 'Set by the astronaut'
                       : goal.source === 'settings' ? 'From their settings' : 'Default'}
-                    {goal.set_at ? ` · ${new Date(goal.set_at).toLocaleDateString()}` : ''}
+                    {hasTimestamp(goal.set_at) ? ` · ${new Date(goal.set_at).toLocaleDateString()}` : ''}
                   </Text>
                 </VStack>
               );
@@ -488,15 +502,15 @@ export function GoalsSection({ id, name }: { id: string; name: string }) {
             <Text type="label">Intake vs goal, last 14 days</Text>
             {nutrition.data ? (
               <ResponsiveContainer width="100%" height={240}>
-                <BarChart data={nutrition.data.days} margin={CHART_MARGIN}>
+                <BarChart data={responseRows(nutrition.data.days)} margin={CHART_MARGIN}>
                   <CartesianGrid vertical={false} stroke={GRID_STROKE} />
                   <XAxis dataKey="day" tick={AXIS_TICK} tickFormatter={shortDay} axisLine={false} tickLine={false} />
                   <YAxis yAxisId="kcal" tick={AXIS_TICK} width={Y_AXIS_WIDTH} axisLine={false} tickLine={false} />
                   <YAxis yAxisId="ml" orientation="right" tick={AXIS_TICK} width={Y_AXIS_WIDTH} axisLine={false} tickLine={false} />
                   <Tooltip content={<ChartTooltip />} cursor={BAR_CURSOR} />
                   <Legend />
-                  {nutrition.data.goals.kcal && <ReferenceLine yAxisId="kcal" y={nutrition.data.goals.kcal} stroke={SERIES.primary} strokeDasharray="4 4" />}
-                  {nutrition.data.goals.water_ml && <ReferenceLine yAxisId="ml" y={nutrition.data.goals.water_ml} stroke={SERIES.tertiary} strokeDasharray="4 4" />}
+                  {nutrition.data.goals?.kcal && <ReferenceLine yAxisId="kcal" y={nutrition.data.goals.kcal} stroke={SERIES.primary} strokeDasharray="4 4" />}
+                  {nutrition.data.goals?.water_ml && <ReferenceLine yAxisId="ml" y={nutrition.data.goals.water_ml} stroke={SERIES.tertiary} strokeDasharray="4 4" />}
                   <Bar yAxisId="kcal" dataKey="kcal" name="kcal" fill={SERIES.primary} radius={[4, 4, 0, 0]} />
                   <Bar yAxisId="ml" dataKey="water_ml" name="water ml" fill={SERIES.tertiary} radius={[4, 4, 0, 0]} />
                 </BarChart>
@@ -507,17 +521,17 @@ export function GoalsSection({ id, name }: { id: string; name: string }) {
         <Card padding={4}>
           <VStack gap={2}>
             <SectionTitle title="Goal history" caption="Newest first. The first row per goal is in force." />
-            {!goals.data.history.length && <Text type="supporting">No changes yet; defaults or the astronaut’s settings apply.</Text>}
+            {!history.length && <Text type="supporting">No goal changes available.</Text>}
             <div style={{ maxBlockSize: '20rem', overflowY: 'auto' }}>
               <List hasDividers density="compact">
-                {goals.data.history.map(row => (
+                {history.map(row => (
                   <ListItem
                     key={row.id}
-                    label={`${types[row.goal_type]?.label ?? row.goal_type}: ${formatValue(row.target)} ${row.unit}`}
+                    label={`${types[row.goal_type]?.label ?? row.goal_type ?? 'Goal'}: ${formatValue(row.target)} ${row.unit ?? ''}`}
                     description={
                       <VStack gap={0.5}>
                         {row.note && <Text type="supporting">“{row.note}”</Text>}
-                        <Text type="supporting">{row.set_by === id ? 'Astronaut' : row.set_by_name ?? 'Unknown'} · {new Date(row.created_at).toLocaleString()}</Text>
+                        <Text type="supporting">{row.set_by === id ? 'Astronaut' : row.set_by_name ?? 'Unknown'}{hasTimestamp(row.created_at) ? ` · ${new Date(row.created_at).toLocaleString()}` : ''}</Text>
                       </VStack>
                     }
                   />

@@ -126,7 +126,7 @@ function SignedInFrame() {
   const showToast = useToast();
   const remaining = tasks.length - completed.length;
   // Unread 1:1 messages from flight surgeons, polled every few seconds for the nav badge.
-  const unread = usePoll<{ unread: number }>('/messages/unread', 5000);
+  const unread = usePoll<{ unread: number }>(user.demo ? null : '/messages/unread', 5000);
   const reloadUnread = unread.reload;
   useEffect(() => {
     window.addEventListener('evade:messages-read', reloadUnread);

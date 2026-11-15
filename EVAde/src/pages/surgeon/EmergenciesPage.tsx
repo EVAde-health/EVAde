@@ -14,12 +14,12 @@ import { Avatar } from '@astryxdesign/core/Avatar';
 import PageHeader from '../../components/PageHeader';
 import { useSurgeon } from '../../context/SurgeonContext';
 import { usePoll } from '../../hooks/usePoll';
-import { acknowledgeEmergency, personName, resolveEmergency, type Emergency } from '../../services/surgeon';
+import { acknowledgeEmergency, hasTimestamp, personName, resolveEmergency, responseRows, type Emergency } from '../../services/surgeon';
 
 type Filter = 'active' | 'resolved' | 'all';
 
 function minutesBetween(a: string | null, b: string | null) {
-  if (!a || !b) return null;
+  if (!hasTimestamp(a) || !hasTimestamp(b)) return null;
   return Math.max(0, Math.round((Date.parse(b) - Date.parse(a)) / 60000));
 }
 
@@ -29,12 +29,13 @@ export default function EmergenciesPage() {
   const { data, error, loading, reload } = usePoll<Emergency[]>('/admin/emergencies', 5000);
   const [resolving, setResolving] = useState<Emergency | null>(null);
   const showToast = useToast();
-  const rows = (data ?? []).filter(row => filter === 'all' || (filter === 'active' ? row.status !== 'resolved' : row.status === 'resolved'));
+  const rows = responseRows(data).filter(row => Number.isInteger(row.id) && (filter === 'all' || (filter === 'active' ? row.status !== 'resolved' : row.status === 'resolved')));
 
   async function acknowledge(row: Emergency) {
     try {
       const result = await acknowledgeEmergency(row.id);
-      showToast({ body: result.claimed ? 'You are responding.' : `${result.emergency.acknowledged_by_name ?? 'Another surgeon'} is already on it.` });
+      showToast({ body: result.claimed ? 'You are responding.' : result.emergency?.acknowledged_by_name
+        ? `${result.emergency.acknowledged_by_name} is already on it.` : 'Emergency updated. Check the queue for the current status.' });
       reload();
       refreshNotifications();
     } catch (reason) {
@@ -71,15 +72,16 @@ export default function EmergenciesPage() {
                     label={
                       <HStack gap={2} vAlign="center" wrap="wrap">
                         <Text weight="semibold">{personName({ display_name: row.display_name ?? 'Astronaut', full_name: row.full_name })}</Text>
-                        <Badge variant={row.status === 'open' ? 'error' : row.status === 'acknowledged' ? 'warning' : 'success'}
-                          label={row.status === 'open' ? 'Open' : row.status === 'acknowledged' ? 'Acknowledged' : 'Resolved'} />
+                        {row.status === 'open' ? <Badge variant="error" label="Open" /> : row.status === 'acknowledged'
+                          ? <Badge variant="warning" label="Acknowledged" /> : row.status === 'resolved'
+                            ? <Badge variant="success" label="Resolved" /> : <Text type="supporting">Status unavailable</Text>}
                       </HStack>
                     }
                     description={
                       <VStack gap={0.5}>
                         <Text>{row.message || 'Emergency button pressed (no note).'}</Text>
                         <Text type="supporting">
-                          Raised {new Date(row.created_at).toLocaleString()}
+                          {hasTimestamp(row.created_at) ? `Raised ${new Date(row.created_at).toLocaleString()}` : 'Time unavailable'}
                           {row.acknowledged_by_name ? ` · ${row.acknowledged_by_name} acknowledged${ackMin != null ? ` after ${ackMin} min` : ''}` : ''}
                           {row.resolved_by_name ? ` · resolved by ${row.resolved_by_name}${totalMin != null ? ` (${totalMin} min total)` : ''}` : ''}
                         </Text>
@@ -88,9 +90,9 @@ export default function EmergenciesPage() {
                     }
                     endContent={
                       <HStack gap={2} wrap="wrap">
-                        <Button label="Record" size="sm" variant="ghost" href={`/admin/astronauts/${row.user_id}/vitals`} />
+                        {row.user_id && <Button label="Record" size="sm" variant="ghost" href={`/admin/astronauts/${encodeURIComponent(row.user_id)}/vitals`} />}
                         {row.status === 'open' && <Button label="Acknowledge" size="sm" variant="primary" onClick={() => acknowledge(row)} />}
-                        {row.status !== 'resolved' && <Button label="Resolve" size="sm" variant="secondary" onClick={() => setResolving(row)} />}
+                        {(row.status === 'open' || row.status === 'acknowledged') && <Button label="Resolve" size="sm" variant="secondary" onClick={() => setResolving(row)} />}
                       </HStack>
                     }
                   />

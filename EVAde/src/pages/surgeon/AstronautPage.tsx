@@ -14,7 +14,7 @@ import AstronautPicker from '../../components/surgeon/AstronautPicker';
 import StatusBadge from '../../components/StatusBadge';
 import { useSurgeon } from '../../context/SurgeonContext';
 import { bandStatus } from '../../services/clinic';
-import { ago, missionDayOf, personName, type AstronautDetail } from '../../services/surgeon';
+import { ago, formatValue, missionDayOf, personName, responseRows, type AstronautDetail } from '../../services/surgeon';
 import { usePoll } from '../../hooks/usePoll';
 import { GoalsSection, JournalSection, TasksSection, VitalsSection } from './AstronautSections';
 
@@ -60,10 +60,11 @@ export default function AstronautPage() {
 function Record({ id, section, onSection }: { id: string; section: Section; onSection: (next: Section) => void }) {
   const { notifications } = useSurgeon();
   const { data, error } = usePoll<AstronautDetail>(`/admin/astronauts/${id}`, 20000);
-  const emergency = notifications?.emergencies.find(item => item.user_id === id);
+  const emergency = responseRows(notifications?.emergencies).find(item => item.user_id === id);
   if (error) return <Text role="alert">{error}</Text>;
   const user = data?.user;
   const missionDay = missionDayOf(user?.mission_start);
+  const latest = responseRows(data?.latest);
 
   return (
     <VStack gap={5}>
@@ -72,7 +73,7 @@ function Record({ id, section, onSection }: { id: string; section: Section; onSe
           <Avatar name={user ? personName(user) : '…'} />
           <StackItem size="fill">
             <VStack gap={1}>
-              <Heading level={2}>{user ? personName(user) : 'Loading…'}</Heading>
+              <Heading level={2}>{user ? personName(user) : data ? 'Profile unavailable' : 'Loading…'}</Heading>
               <Text type="supporting">
                 {[user?.crew_role, user?.display_name, user?.mission_name,
                   missionDay ? `day ${missionDay}${user?.mission_length_days ? ` of ${user.mission_length_days}` : ''}` : null].filter(Boolean).join(' · ')}
@@ -89,10 +90,10 @@ function Record({ id, section, onSection }: { id: string; section: Section; onSe
         {data && (
           <Grid columns={{ minWidth: 150, max: 5 }} gap={3}>
             <Stat label="Last check-in" value={ago(data.last_checkin?.ts)} hint={data.last_checkin?.mood != null ? `mood ${data.last_checkin.mood}/5` : undefined} />
-            <Stat label="XP" value={(user?.points ?? 0).toLocaleString()} hint={`${user?.streak_days ?? 0}-day streak`} />
+            <Stat label="XP" value={formatValue(user?.points, 0)} hint={user?.streak_days != null ? `${user.streak_days}-day streak` : undefined} />
             <Stat label="Last active" value={ago(user?.last_active)} />
-            <Stat label="Escalations" value={String(data.escalated_alerts)} />
-            <Stat label="Red signals" value={String(data.latest.filter(item => item.level === 'red').length)} />
+            <Stat label="Escalations" value={formatValue(data.escalated_alerts, 0)} />
+            <Stat label="Red signals" value={Array.isArray(data.latest) ? String(latest.filter(item => item.level === 'red').length) : '—'} />
           </Grid>
         )}
       </Card>
@@ -100,7 +101,7 @@ function Record({ id, section, onSection }: { id: string; section: Section; onSe
         {SECTIONS.map(item => <Tab key={item.value} value={item.value} label={item.label} />)}
       </TabList>
       <VStack key={section} gap={5} className="rise-in">
-        {section === 'vitals' && <VitalsSection id={id} latest={data?.latest ?? []} />}
+        {section === 'vitals' && <VitalsSection id={id} latest={latest} />}
         {section === 'journal' && <JournalSection id={id} />}
         {section === 'tasks' && <TasksSection id={id} />}
         {section === 'goals' && <GoalsSection id={id} name={user ? personName(user) : 'this astronaut'} />}
