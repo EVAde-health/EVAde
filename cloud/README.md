@@ -33,16 +33,7 @@ Python evade_space ──► /observations, /radiation, /space-weather (demo dat
 
 ## Deploy the backend
 
-From `cloud/worker` on merged `main`, sign in to the EVAde account with Wrangler and check the live D1 binding in `wrangler.jsonc`. Publish with `npx wrangler deploy` from `cloud/worker`. Do not run `wrangler d1 migrations apply`. `migrations/0008_remove_demo_data.sql` stays in the tree and must stay unapplied: it deletes the seeded demo astronaut that `GET /auth/demo` signs into. `0009_staff_console.sql` is the staff console schema; apply that file on its own only when those tables are ready, never as part of a full apply that also runs 0008. Set up the separate Access application before testing staff login. [Staff setup](../docs/STAFF_SETUP.md)
-
-```powershell
-npm ci
-npx.cmd wrangler d1 migrations list evade-db --remote
-npx.cmd wrangler deploy
-```
-
-Verify `https://api.evade.health`, then deploy the website from merged `main`. Use synthetic data for the demo.
-`DEMO_LOGIN=true` advertises a read-only demo only when the seeded astronaut from `0007_seed_demo_astronaut.sql` still exists. Check the migration ledger for `0006_frontend_gaps.sql`. The demo account setup is kept by leaving `0008_remove_demo_data.sql` unapplied.
+Follow the [root deployment runbook](../DEPLOY.md) from merged `main`. `DEMO_LOGIN=true` advertises a read-only demo when the seeded astronaut from `0007_seed_demo_astronaut.sql` exists.
 
 Set `EVADE_API_KEY` in `worker/.dev.vars` for local development. Git ignores this file. Keep the service key in server-side configuration. For local Python commands, set `EVADE_API_KEY` in the Python process environment to the same value.
 
@@ -83,7 +74,7 @@ Optional direct OAuth fallbacks:
 1. **Google**: console.cloud.google.com → APIs & Services → Credentials → Create OAuth client ID → Web application. Authorized redirect URI: `https://api.evade.health/auth/callback/google`. Set up the OAuth consent screen as External/Testing and add the team as test users.
 2. **GitHub**: github.com/settings/developers → New OAuth App. Homepage `https://evade.health`, callback `https://api.evade.health/auth/callback/github`.
 3. **Turnstile**: Cloudflare dashboard → Turnstile → Add widget for `evade.health` and `api.evade.health`. Put the site key in `TURNSTILE_SITE_KEY` in `wrangler.jsonc`.
-4. Secrets: `npx wrangler secret put` for `XAI_API_KEY` (xAI Grok, every AI feature), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `TURNSTILE_SECRET`, then `npx wrangler deploy`.
+4. From `cloud/worker`, use `npx wrangler secret put` prompts for `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `TURNSTILE_SECRET`. Follow [DEPLOY.md](../DEPLOY.md) for deployment.
 
 Local testing: set `DEV_LOGIN=true`, `FRONTEND_URL=http://localhost:5173`, and `ALLOWED_ORIGINS=http://localhost:5173` in `worker/.dev.vars`. Open the local Worker's `/login` page for the loopback-only test sign-in. Keep `DEV_LOGIN` off in production.
 
@@ -98,7 +89,7 @@ Local testing: set `DEV_LOGIN=true`, `FRONTEND_URL=http://localhost:5173`, and `
 | Cron Triggers | NOAA space weather every 15 minutes, EVA go/no-go |
 | Custom Domains + DNS | `api.evade.health` on Daniel's domain |
 | Workers Observability | logs and traces for the API |
-| xAI Grok (`XAI_API_KEY` secret) | journal summary, mood and concern level for the psychologist; the health-data parser (`journalParse.ts`: stated sleep, mood, stress, vitals and symptoms become `self_reports` / `observations` rows, source `model`, device `journal_parser`; voice-agent check-in values are `manual`, device `voice_agent`); the EVA companion's replies on `POST /journal/messages` (`evaCompanion.ts`, the text version of the voice agent); the private check-in's next question (`POST /journal/chat`, `companion.ts`); the staff 24-hour summary (`GET /admin/astronauts/:id/summary`); plain-language daily briefing (`XAI_TEXT_MODEL`, default `grok-4.20-0309-non-reasoning`, fallback `XAI_FALLBACK_TEXT_MODEL`, default `grok-4.3`, strict JSON schemas); speech-to-text for voice journals (`XAI_STT_MODEL`, default `grok-voice-transcribe-2.0`, REST `POST /v1/stt`). Without the key, entries still save: no analysis, rule-based companion and summary text, a rules briefing, and `/journal/voice` returns 503 |
+| Workers AI | journal analysis, companion replies, staff summaries, daily briefing, and voice journal transcription |
 | R2 | photos, ultrasound images, voice journal audio, PDFs (private, access-checked per astronaut) |
 | Durable Objects | live crew feed over WebSockets (hibernating), staff see the whole crew in real time |
 

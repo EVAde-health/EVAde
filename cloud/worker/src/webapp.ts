@@ -4,11 +4,9 @@
 // filled in (or rejected) from the session, and cookie writes must come from an allowed origin.
 // Points are always read from D1 (task_templates, tutorials), never from the request.
 
-import type { AiEnv } from "./ai";
 import type { Principal } from "./auth";
-import { companionReply, SUPPORT_LINE, type ChatTurn } from "./evaCompanion";
 
-export interface WebAppEnv extends AiEnv {
+export interface WebAppEnv {
   DB: D1Database;
   MEDIA?: R2Bucket;
   USDA_API_KEY?: string; // optional server-side FoodData Central key; Open Food Facts + the pantry work without it
@@ -23,8 +21,9 @@ export interface WebAppDeps<E extends WebAppEnv> {
   fail: (status: number, message: string) => Error;
   requireUser: (env: E, userId: string | undefined) => Promise<any>;
   isStaff: (who: Principal) => boolean;
-  /** Journal analysis + health-data parser for one entry. parseText adds conversation context for the parser only. */
-  journal: (env: E, ctx: ExecutionContext, id: number, userId: string, content: string, opts?: { parseText?: string }) => Promise<unknown>;
+  journal: (env: E, ctx: ExecutionContext, id: number, userId: string, content: string) => Promise<{
+    summary: string | null; mood_label: string | null; needs_human_review: boolean; model: string | null;
+  }>;
 }
 
 const DAY_MS = 864e5;
@@ -193,20 +192,12 @@ export async function awardDaily(env: WebAppEnv, userId: string, action: keyof t
   return points;
 }
 
-/** The reply after a saved voice session: an acknowledgement, never a summary or score. */
-export function voiceSavedReply(needsSupport: boolean) {
-  return needsSupport ? `Your voice check-in is saved to your journal.\n\n${SUPPORT_LINE}` : "Your voice check-in is saved to your journal.";
-}
-
-/**
- * What the parser reads for one chat message: the companion's previous message (so a short answer such as "about 7"
- * keeps its question) plus the new message. Only the new message counts as the astronaut's words, so values from
- * earlier messages are never parsed twice.
- */
-export function parseTextFor(history: ChatTurn[], content: string) {
-  let prev: ChatTurn | undefined;
-  for (let i = history.length - 2; i >= 0; i--) if (history[i].sender === "assistant") { prev = history[i]; break; } else break;
-  return prev ? `EVAde: ${prev.content.replace(/\s*\n\s*/g, " ").slice(0, 1000)}\nMe: ${content}` : content;
+/** Supportive reply shown in the journal chat. Concern scores are never shown to the astronaut. */
+export function journalReply(a: { summary: string | null; mood_label: string | null; needs_human_review: boolean } | null) {
+  const parts = [a?.summary ? a.summary : "Saved to your journal."];
+  if (a?.mood_label) parts.push(`Mood: ${a.mood_label}`);
+  if (a?.needs_human_review) parts.push("You don't have to carry this alone. Your crew support team is available to talk with you today.");
+  return parts.join("\n\n");
 }
 
 export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
@@ -323,9 +314,7 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
     return json(results.reverse());
   });
 
-  // Astronaut message -> journal entry -> the EVA companion's conversational reply (evaCompanion.ts). The journal
-  // analysis (summary, sentiment, concern, staff alerts) and the health-data parser run after the response, on this
-  // message only, with ids derived from the message id, so a re-post or re-run never writes anything twice.
+  // Astronaut message -> journal entry -> AI analysis (safety keywords always alert a human) -> stored reply.
   route("POST", "/journal/messages", async (req, env, _p, _u, ctx, who) => {
     const b = await body(req);
     const userId = userOf(who, b?.user_id);
@@ -354,19 +343,13 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
         AND title LIKE 'Journal%' AND (due_at IS NULL OR due_at >= ?) ORDER BY due_at LIMIT 1) RETURNING points`)
       .bind(ts, userId, since).first<{ points: number | null }>();
     if (journalTask?.points) await env.DB.prepare("UPDATE users SET points=points+? WHERE user_id=?").bind(journalTask.points, userId).run();
-    // The conversation so far: the last day of the main thread (typed and voice turns), oldest first, ending with this message.
-    const { results: recent } = await env.DB.prepare(
-      "SELECT sender, content FROM journal_messages WHERE user_id=? AND thread_id IS NULL AND sender IN ('user','assistant') AND ts>=? ORDER BY ts DESC, rowid DESC LIMIT 30"
-    ).bind(userId, since).all<ChatTurn>();
-    const history = recent.reverse();
+    let analysis = null;
     if (entry?.id) {
-      ctx.waitUntil(d.journal(env, ctx, entry.id, userId, content, { parseText: parseTextFor(history, content) })
-        .then(() => {}, (e) => console.error("journal analysis", e instanceof Error ? e.name : "Error")));
+      try { analysis = await d.journal(env, ctx, entry.id, userId, content); } catch (e) { console.error("journal analysis", e instanceof Error ? e.name : "Error"); }
     }
-    const answer = await companionReply(env, history);
-    const reply = { id: crypto.randomUUID(), sender: "assistant", content: answer.content, ts: new Date(Date.parse(ts) + 1).toISOString() };
+    const reply = { id: crypto.randomUUID(), sender: "assistant", content: journalReply(analysis), ts: new Date(Date.parse(ts) + 1).toISOString() };
     await env.DB.prepare("INSERT INTO journal_messages (id,user_id,sender,content,ts,entry_id,model) VALUES (?,?,?,?,?,?,?)")
-      .bind(reply.id, userId, reply.sender, reply.content, reply.ts, entry?.id ?? null, answer.model ?? "rules").run();
+      .bind(reply.id, userId, reply.sender, reply.content, reply.ts, entry?.id ?? null, analysis?.model ?? "rules").run();
     return json({ message: { id, sender: "user", content, ts }, reply }, 201);
   });
 

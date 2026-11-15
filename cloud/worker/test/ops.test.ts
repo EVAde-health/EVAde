@@ -5,8 +5,6 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
-// 0008 and 0011_seed_surgeon_demo are data-only (demo rows, applied on live); the tests seed their own data.
-const DATA_ONLY = new Set(["0008_remove_demo_data.sql", "0011_seed_surgeon_demo.sql"]);
 
 vi.mock("../src/live", () => ({ CrewFeed: class {} }));
 
@@ -20,7 +18,7 @@ const KEPLER = "44444444-4444-4444-8444-444444444444";
 function fakeD1() {
   const db = new DatabaseSync(":memory:");
   const dir = join(__dirname, "..", "migrations");
-  for (const file of readdirSync(dir).filter((name) => name.endsWith(".sql") && !DATA_ONLY.has(name)).sort()) {
+  for (const file of readdirSync(dir).filter((name) => name.endsWith(".sql")).sort()) {
     db.exec(readFileSync(join(dir, file), "utf8"));
   }
   const stmt = (sql: string, args: unknown[] = []) => ({

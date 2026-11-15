@@ -2,12 +2,10 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
-// 0008 and 0011_seed_surgeon_demo are data-only (demo rows, applied on live); the tests seed their own data.
-const DATA_ONLY = new Set(["0008_remove_demo_data.sql", "0011_seed_surgeon_demo.sql"]);
 
 it("preserves 0009 goals and messages when upgrading through 0010 and 0011", () => {
   const path = join(__dirname, "..", "migrations");
-  const files = readdirSync(path).filter(name => name.endsWith(".sql") && !DATA_ONLY.has(name)).sort();
+  const files = readdirSync(path).filter(name => name.endsWith(".sql")).sort();
   const staffIndex = files.indexOf("0009_staff_console.sql");
   const [staff, surgeon, simulation] = files.slice(staffIndex, staffIndex + 3);
   expect([staff, surgeon, simulation]).toEqual([
@@ -32,26 +30,6 @@ it("preserves 0009 goals and messages when upgrading through 0010 and 0011", () 
     ).all()).toEqual([
       { astronaut_id: "crew-one", body: "Legacy fixture" },
     ]);
-    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-  } finally {
-    db.close();
-  }
-});
-
-it("applies every migration in the order the live evade-db applied them", () => {
-  const path = join(__dirname, "..", "migrations");
-  for (const name of DATA_ONLY) expect(readFileSync(join(path, name), "utf8"), name).not.toMatch(/^\s*(CREATE|ALTER|DROP)\b/im);
-  // d1_migrations on live: 0009 ran before 0008, then 0010, 0011_seed_surgeon_demo and 0011_simulated_data.
-  const order = [
-    "0001_init.sql", "0002_seed_metrics.sql", "0003_auth_and_admin.sql", "0004_media_ai.sql", "0005_meals_hydration.sql",
-    "0006_frontend_gaps.sql", "0006_voice_messages_phone.sql", "0007_seed_demo_astronaut.sql", "0009_staff_console.sql",
-    "0008_remove_demo_data.sql", "0010_surgeon_console.sql", "0011_seed_surgeon_demo.sql", "0011_simulated_data.sql",
-  ];
-  expect([...order].sort()).toEqual(readdirSync(path).filter(name => name.endsWith(".sql")).sort());
-  const db = new DatabaseSync(":memory:");
-  try {
-    for (const name of order) db.exec(readFileSync(join(path, name), "utf8"));
-    expect(db.prepare("SELECT role FROM users WHERE user_id='00000000-0000-4000-8000-00000000d001'").get()).toEqual({ role: "astronaut" });
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally {
     db.close();

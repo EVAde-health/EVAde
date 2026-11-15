@@ -7,8 +7,6 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import worker, { type Env } from "../src/index";
 import { _resetAccessKeyCache, verifyAccessJwt } from "../src/access";
 import { enabledProviders, handleAuth, type AuthEnv } from "../src/auth";
-// 0008 and 0011_seed_surgeon_demo are data-only (demo rows, applied on live); the tests seed their own data.
-const DATA_ONLY = new Set(["0008_remove_demo_data.sql", "0011_seed_surgeon_demo.sql"]);
 
 vi.mock("../src/live", () => ({ CrewFeed: class {} }));
 
@@ -16,7 +14,7 @@ vi.mock("../src/live", () => ({ CrewFeed: class {} }));
 function fakeD1(): D1Database {
   const db = new DatabaseSync(":memory:");
   const dir = join(__dirname, "..", "migrations");
-  for (const f of readdirSync(dir).filter((f) => f.endsWith(".sql") && !DATA_ONLY.has(f)).sort()) db.exec(readFileSync(join(dir, f), "utf8"));
+  for (const f of readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) db.exec(readFileSync(join(dir, f), "utf8"));
   const stmt = (sql: string, args: unknown[] = []) => ({
     execute: () => {
       if (/\bRETURNING\b/i.test(sql)) return { success: true, results: db.prepare(sql).all(...(args as any[])), meta: {} };

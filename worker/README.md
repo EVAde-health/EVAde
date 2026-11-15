@@ -45,7 +45,7 @@ Vars (in `wrangler.jsonc`): `PUBLIC_BASE_URL=https://evade.health`, `TWILIO_ACCO
 2. Once the change is on `main`, redeploy from the repository root in PowerShell.
 
    ```powershell
-   $env:WORKER_REF = (git rev-parse HEAD); node deploy/deploy.mjs
+   node deploy/deploy.mjs
    ```
 
 The web/app voice socket and read APIs will require `EVADE_BROWSER_TOKEN` again.
@@ -63,11 +63,7 @@ Secrets (`npx wrangler secret put <NAME>`, never in git):
 
 ## Deploy
 
-Deploy only from the repository root on merged `main` in PowerShell.
-
-```powershell
-$env:WORKER_REF = (git rev-parse HEAD); node deploy/deploy.mjs
-```
+Follow [DEPLOY.md](../DEPLOY.md) to deploy from the repository root on merged `main`.
 
 **Do not run `npx wrangler deploy` from `worker/`.** That would replace the live site with the voice Worker alone and leave `/`, `/journal`, and `/admin` returning 404.
 

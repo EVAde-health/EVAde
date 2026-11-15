@@ -1,4 +1,3 @@
 [submodule "backend-models"]
 	path = backend-models
 	url = https://github.com/Mikeblackbelt/EVAde-backend-models.git
-	branch = main

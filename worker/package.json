@@ -6,7 +6,7 @@
   "scripts": {
     "postinstall": "wrangler types",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "node ../deploy/deploy.mjs",
     "build": "wrangler deploy --dry-run --outdir dist",
     "types": "wrangler types",
     "typecheck": "wrangler types && tsc --noEmit",
