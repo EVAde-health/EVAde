@@ -7,7 +7,7 @@ The only build setting is the public `VITE_API_URL` (see `.env.example`); never 
 because they ship to every browser. The USDA key and Access settings live in the Worker.
 
 - **Sign-in:** The API advertises the available sign-in options. Astronauts use `/auth/access`, and approved staff
-  use `/auth/access/staff`. **Try the demo** opens the synthetic read-only account when the API enables it.
+  use `/auth/access/staff`. **Try the demo** opens the shared synthetic crew (writable, with Reset demo data and Switch to flight surgeon at the top) when the API enables it.
 - **Sign-out:** Ends the EVAde session and opens Cloudflare Access logout for personal accounts. If the login
   page opens the wrong account, choose **Use a different email**, then return to the login page and enter your own email.
 - **Signed-in routes:** `AppFrame` checks `/auth/me` and redirects to `/login` on 401.

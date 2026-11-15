@@ -232,6 +232,9 @@ export async function signOut({ clearAccess = true, redirect = true } = {}) {
   return true;
 }
 
+// Puts the shared demo crew back to its seeded data (demo sessions only).
+export const resetDemo = () => api<{ reset: boolean; reset_at: string }>('/demo/reset', { method: 'POST' });
+
 // ---------- health data ----------
 
 // Metric catalogue: units, colour bands and how-to text.

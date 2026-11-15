@@ -253,16 +253,10 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
   });
 
   // Today's mission list: materialized from task_templates for the client's local day, plus the streak.
-  route("GET", "/users/:id/today", async (_r, env, p, url, _c, who) => {
+  route("GET", "/users/:id/today", async (_r, env, p, url) => {
     const user = await requireUser(env, p.id);
     let day: string;
     try { day = trackingDay(url.searchParams.get("day")); } catch (e) { throw fail(422, (e as Error).message); }
-    if (who.demo) {
-      const { results: tasks } = await env.DB.prepare(
-        "SELECT t.*, CASE WHEN category='advanced' THEN 'protocol' ELSE 'basic' END AS kind FROM tasks t WHERE user_id=? AND id BETWEEN 900001 AND 900004 ORDER BY id"
-      ).bind(p.id).all();
-      return json({ day, week: weekStart(day), tasks, streak_days: user.streak_days, points: user.points });
-    }
     const week = await materializeTasks(env, p.id, day);
     const [tasks, done] = await env.DB.batch<any>([
       env.DB.prepare(
@@ -365,7 +359,7 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
         .then(() => {}, (e) => console.error("journal analysis", e instanceof Error ? e.name : "Error")));
     }
     // Asking for the flight surgeon, or describing an emergency, forwards the message to the surgeon console now.
-    const forward = who.kind === "user" && who.role === "astronaut" && !who.demo && (ASKS_FOR_SURGEON.test(content) || describesEmergency(content));
+    const forward = who.kind === "user" && who.role === "astronaut" && (ASKS_FOR_SURGEON.test(content) || describesEmergency(content));
     // Forward first, so the companion is told what actually happened and never claims a contact that didn't occur.
     const forwarded = forward
       ? await deliverSurgeonRequest(env.DB, userId, {
@@ -387,14 +381,13 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
   });
 
   // Food search: the offline pantry and cached foods from D1, then USDA (server key) and Open Food Facts.
-  route("GET", "/foods/search", async (_r, env, _p, url, _c, who) => {
+  route("GET", "/foods/search", async (_r, env, _p, url) => {
     const q = (url.searchParams.get("q") ?? "").trim().replace(/\s+/g, " ");
     if (q.length < 2 || q.length > 80) throw fail(422, "q must be 2-80 characters");
     const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
     const { results: local } = await env.DB.prepare(
       "SELECT * FROM foods WHERE label LIKE ? ESCAPE '\\' ORDER BY source='space_pantry' DESC, length(label) LIMIT 8"
     ).bind(like).all<FoodRow>();
-    if (who.demo) return json(local.map(foodResponse));
     const remote = (await Promise.allSettled([env.USDA_API_KEY ? usdaFoods(env.USDA_API_KEY, q) : Promise.resolve([]), openFoodFacts(q)]))
       .flatMap((r) => (r.status === "fulfilled" ? r.value : []));
     if (remote.length) {

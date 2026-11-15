@@ -3,12 +3,13 @@
 
 import { accessAssertion, accessConfigured, accessLogoutUrl, verifyAccessJwt, type AccessEnv } from "./access";
 import { handleLocalAccess } from "./localAccess";
+import { DEMO_PERSONAS, isDemoId, type DemoPersona } from "./demo";
 
 export interface AuthEnv extends AccessEnv {
   DB: D1Database;
   SESSIONS: KVNamespace;
   AUTH_RATE_LIMITER: RateLimit;
-  /** "true" enables GET /auth/demo (seeded fake astronaut only). */
+  /** "true" enables GET /auth/demo (the seeded fake demo astronaut or flight surgeon only). */
   DEMO_LOGIN?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
@@ -28,7 +29,7 @@ export interface Principal {
   user_id?: string;
   role?: string;
   email?: string | null;
-  /** True for a read-only session on the seeded demo astronaut. */
+  /** True for a shared session on the seeded demo crew (astronaut or flight surgeon). */
   demo?: boolean;
 }
 
@@ -60,8 +61,6 @@ const PROVIDERS = {
 type Provider = keyof typeof PROVIDERS | "dev";
 type SessionProvider = Provider | "cloudflare_access" | "cloudflare_access_staff" | "demo";
 const SESSION_PROVIDERS = new Set<SessionProvider>(["google", "github", "dev", "cloudflare_access", "cloudflare_access_staff", "demo"]);
-/** The seeded demo astronaut (migration 0007): the only account "Try demo" can ever sign into. */
-const DEMO_IDENTITY = { provider: "demo", subject: "vega" } as const;
 const DEMO_SESSION_TTL = 2 * 3600;
 
 // ---------- small crypto helpers ----------
@@ -94,10 +93,13 @@ export function enabledProviders(env: AuthEnv, url: URL) {
   return providers.concat(oauthProviders(env, url));
 }
 
-function demoUser(env: AuthEnv) {
-  return env.DB.prepare(
-    "SELECT u.user_id, u.role FROM auth_identities a JOIN users u USING (user_id) WHERE a.provider=? AND a.subject=? AND u.role='astronaut'"
-  ).bind(DEMO_IDENTITY.provider, DEMO_IDENTITY.subject).first<{ user_id: string; role: string }>();
+/** The seeded demo account for a persona (migration 0012): the only accounts "Try demo" can ever sign into. */
+async function demoUser(env: AuthEnv, persona: DemoPersona = "astronaut") {
+  const { subject, role } = DEMO_PERSONAS[persona];
+  const user = await env.DB.prepare(
+    "SELECT u.user_id, u.role FROM auth_identities a JOIN users u USING (user_id) WHERE a.provider='demo' AND a.subject=? AND u.role=?"
+  ).bind(subject, role).first<{ user_id: string; role: string }>();
+  return user && isDemoId(user.user_id) ? user : null;
 }
 
 const allowedOrigins = (env: AuthEnv) => (env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -157,13 +159,12 @@ export async function getSessionPrincipalByReference(reference: string, env: Aut
     user_id: string; role: string; email: string | null; provider?: SessionProvider; audience?: string; expires?: number;
   }>(reference, "json");
   if (!s?.provider || !SESSION_PROVIDERS.has(s.provider) || (s.expires !== undefined && s.expires <= Date.now())) return null;
-  if (s.provider === "demo" && env.DEMO_LOGIN !== "true") return null;
+  if (s.provider === "demo" && (env.DEMO_LOGIN !== "true" || !isDemoId(s.user_id))) return null;
   const user = await env.DB.prepare("SELECT role FROM users WHERE user_id=?").bind(s.user_id).first<{ role: string }>();
   if (!user) return null;
   // The D1 role is authoritative on every request, so promoting or demoting someone takes effect at once.
-  // The shared demo session is always a read-only astronaut.
-  const role = s.provider === "demo" ? "astronaut" : user.role;
-  return { kind: "user", user_id: s.user_id, role, email: s.email, demo: s.provider === "demo" };
+  // A demo session can only ever be a demo-crew account (checked above), astronaut or flight surgeon.
+  return { kind: "user", user_id: s.user_id, role: user.role, email: s.email, demo: s.provider === "demo" };
 }
 
 async function createSession(
@@ -487,15 +488,19 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     }
   }
 
-  // "Try demo" for judges: signs into the seeded fake astronaut only. Never takes a user id from the request.
-  // Off unless DEMO_LOGIN = "true". The session is short (2 h) and can't delete the account.
+  // "Try demo" for judges: signs into the seeded fake astronaut, or with ?as=surgeon the seeded fake flight surgeon.
+  // Never takes a user id from the request. Off unless DEMO_LOGIN = "true". The session is short (2 h), stays
+  // inside the demo crew (demo.ts) and can't delete the account. Switching persona replaces the current session.
   if (path === "/auth/demo" && req.method === "GET") {
     if (env.DEMO_LOGIN !== "true") return Response.json({ error: "Demo sign-in is off" }, { status: 404 });
     const redirect = safeRedirect(env, url.searchParams.get("redirect"), url);
-    const user = await demoUser(env);
+    const persona: DemoPersona = url.searchParams.get("as") === "surgeon" ? "surgeon" : "astronaut";
+    const user = await demoUser(env, persona);
     if (!user) return Response.json({ error: "Demo account isn't set up" }, { status: 503 });
+    const previous = sessionCookie(req, url);
+    if (previous) await env.SESSIONS.delete(`sess:${await sha256(previous)}`);
     const token = await createSession(env, user, null, "demo", DEMO_SESSION_TTL);
-    await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', 'demo')").bind(user.user_id).run();
+    await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, `demo:${persona}`).run();
     return new Response(null, {
       status: 302, headers: { Location: redirect, "Set-Cookie": cookieHeader(url, "session", token, DEMO_SESSION_TTL), "Cache-Control": "no-store" },
     });

@@ -105,36 +105,26 @@ export default function MissionProvider({ user, children }: { user: SessionUser;
 
   // Logs water for today; returns the new total and XP earned.
   const addWater = useCallback(async (amount: number) => {
-    if (user.demo) {
-      const total = Math.max(0, waterMl + amount);
-      setWaterMl(total);
-      return { total, xp: 0 };
-    }
     const saved = await postHydration(amount);
     const total = Math.max(0, waterMl + saved.amount_ml);
     setWaterMl(total);
     setPoints(previous => previous + (saved.points_awarded ?? 0));
     return { total, xp: saved.points_awarded ?? 0 };
-  }, [user.demo, waterMl]);
+  }, [waterMl]);
 
   // Saves a meal portion; returns XP earned.
   const addMeal = useCallback(async (meal: Omit<MealEntry, 'id' | 'loggedAt'>) => {
-    if (user.demo) {
-      const entry = { ...meal, id: crypto.randomUUID(), loggedAt: Date.now() };
-      setMeals(previous => [entry, ...previous]);
-      return 0;
-    }
     const saved = await postMeal(meal);
     setMeals(previous => [toMeal(saved), ...previous.filter(item => item.id !== saved.id)]);
     setPoints(previous => previous + (saved.points_awarded ?? 0));
     return saved.points_awarded ?? 0;
-  }, [user.demo]);
+  }, []);
 
   // Deletes a logged meal.
   const removeMeal = useCallback(async (id: string) => {
-    if (!user.demo) await deleteMeal(id);
+    await deleteMeal(id);
     setMeals(previous => previous.filter(meal => meal.id !== id));
-  }, [user.demo]);
+  }, []);
 
   // Marks a tutorial complete; returns XP earned (0 if already done).
   const completeTutorial = useCallback(async (id: string) => {

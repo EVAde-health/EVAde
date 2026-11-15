@@ -101,7 +101,7 @@ export function registerCompanion<E extends CompanionEnv>(route: (method: string
   const { json, body } = deps;
 
   route("POST", "/journal/chat", async (req, env, _p, _url, ctx, who) => {
-    if (who.kind !== "user" || who.role !== "astronaut" || who.demo || !who.user_id) {
+    if (who.kind !== "user" || who.role !== "astronaut" || !who.user_id) {
       throw new HttpError(403, "Use your own astronaut account to chat");
     }
     const userId = who.user_id;

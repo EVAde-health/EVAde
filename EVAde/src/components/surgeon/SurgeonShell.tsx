@@ -27,6 +27,7 @@ import { roleLabel } from '../../services/clinic';
 import type { AdminNotifications } from '../../services/surgeon';
 import AmbientBackdrop from '../AmbientBackdrop';
 import BrandMark from '../BrandMark';
+import DemoBar from '../DemoBar';
 import MotionToggle from '../MotionToggle';
 import PageLoader from '../PageLoader';
 import ThemeToggle from '../ThemeToggle';
@@ -65,7 +66,7 @@ export default function SurgeonShell({ user }: { user: SessionUser }) {
     if (signingOut) return;
     setSigningOut(true);
     try {
-      await signOut({ redirect: false });
+      await signOut({ clearAccess: !user.demo, redirect: false });
     } catch {
       showToast({ body: 'Sign-out failed. Please try again.' });
       setSigningOut(false);
@@ -128,6 +129,7 @@ export default function SurgeonShell({ user }: { user: SessionUser }) {
         }
       >
         <VStack className="app-frame__page">
+          {user.demo && <DemoBar persona="surgeon" />}
           <EmergencyDropdown />
           <Suspense fallback={<PageLoader />}>
             <VStack key={pathname.split('/').slice(0, 3).join('/')}>

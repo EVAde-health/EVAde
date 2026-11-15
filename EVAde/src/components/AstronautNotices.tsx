@@ -10,8 +10,8 @@ import './surgeon/surgeon.css';
 
 // Top-of-page notices for the astronaut: emergency status ("A flight surgeon is responding")
 // and unread notes from flight surgeons (goal changes, corrected readings, resolved emergencies).
-export default function AstronautNotices({ readOnly }: { readOnly: boolean }) {
-  const emergencies = usePoll<{ emergencies: Emergency[] }>(readOnly ? null : '/emergencies/mine', 5000);
+export default function AstronautNotices() {
+  const emergencies = usePoll<{ emergencies: Emergency[] }>('/emergencies/mine', 5000);
   const notes = usePoll<{ notifications: UserNotification[]; unread: number }>('/me/notifications?unread=1', 10000);
   const [hidden, setHidden] = useState<number[]>([]);
   const { reload } = emergencies;
@@ -29,13 +29,13 @@ export default function AstronautNotices({ readOnly }: { readOnly: boolean }) {
   // Hides one note and marks it read in the database.
   function dismiss(id: number) {
     setHidden(previous => [...previous, id]);
-    if (!readOnly) markNotificationsRead([id]).then(notes.reload, () => undefined);
+    markNotificationsRead([id]).then(notes.reload, () => undefined);
   }
 
   // Hides every unread note and marks them all read in the database.
   function dismissAll() {
     setHidden(previous => [...previous, ...allUnread.map(item => item.id)]);
-    if (!readOnly) markNotificationsRead().then(notes.reload, () => undefined);
+    markNotificationsRead().then(notes.reload, () => undefined);
   }
 
   if (!active && !unread.length) return null;

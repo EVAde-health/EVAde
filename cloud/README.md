@@ -33,7 +33,7 @@ Python evade_space ──► /observations, /radiation, /space-weather (demo dat
 
 ## Deploy the backend
 
-Follow the [root deployment runbook](../DEPLOY.md) from merged `main`. `DEMO_LOGIN=true` advertises a read-only demo when the seeded astronaut from `0007_seed_demo_astronaut.sql` exists.
+Follow the [root deployment runbook](../DEPLOY.md) from merged `main`. `DEMO_LOGIN=true` advertises a shared, writable demo (Cmdr. Vega, or Dr. Ortiz with `?as=surgeon`) once `0012_demo_logins_and_roles.sql` has created its logins. Demo sessions only reach the demo crew, and `POST /demo/reset` restores the 0011 seed (regenerate `src/demoSeed.generated.ts` with `python3 scripts/gen_demo_reset.py` after changing that seed).
 
 Set `EVADE_API_KEY` in `worker/.dev.vars` for local development. Git ignores this file. Keep the service key in server-side configuration. For local Python commands, set `EVADE_API_KEY` in the Python process environment to the same value.
 

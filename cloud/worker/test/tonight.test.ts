@@ -138,6 +138,15 @@ async function astronaut(name = "Lee") {
 }
 
 // ---------- demo login ----------
+const DEMO_VEGA = "00000000-0000-4000-8000-00000000d001";
+const DEMO_ORTIZ = "00000000-0000-4000-8000-00000000d002";
+
+/** Signs in through "Try the demo" (optionally replacing a session) and returns the new session token. */
+async function demoLogin(query = "", previous?: string) {
+  const res = await call("GET", `/auth/demo${query}`, previous ? { cookie: previous } : {});
+  return /__Host-evade_session=([^;]+)/.exec(res.headers.get("Set-Cookie")!)![1];
+}
+
 describe("GET /auth/demo", () => {
   it("is off unless DEMO_LOGIN=true", async () => {
     expect((await call("GET", "/auth/demo")).status).toBe(404);
@@ -166,22 +175,79 @@ describe("GET /auth/demo", () => {
     expect((await call("GET", "/users/00000000-0000-4000-8000-00000000d002/tasks", { cookie: token })).status).toBe(403);
   });
 
-  it("advertises the demo when available and keeps the shared account read-only", async () => {
+  it("advertises the demo and lets it write, but not reach crew-wide feeds", async () => {
     env = { ...env, DEMO_LOGIN: "true" } as Env;
     expect((await (await call("GET", "/auth/providers")).json<any>()).providers).toContain("demo");
-    const login = await call("GET", "/auth/demo");
-    const token = /__Host-evade_session=([^;]+)/.exec(login.headers.get("Set-Cookie")!)![1];
-    const cookie = { cookie: token };
-    const userId = "00000000-0000-4000-8000-00000000d001";
-    const today = await call("GET", `/users/${userId}/today`, cookie);
+    const cookie = { cookie: await demoLogin() };
+    const today = await call("GET", `/users/${DEMO_VEGA}/today`, cookie);
     expect(today.status).toBe(200);
-    expect((await today.json<any>()).tasks).toHaveLength(4);
-    expect(count("tasks", userId)).toBe(4);
-    expect((await call("POST", "/journal/messages", { ...cookie, body: {} })).status).toBe(403);
+    expect((await call("POST", "/hydration", { ...cookie, body: { amount_ml: 250 } })).status).toBe(201);
+    expect(count("hydration", DEMO_VEGA)).toBeGreaterThan(0);
     expect((await call("GET", "/leaderboard", cookie)).status).toBe(403);
     expect((await call("GET", "/live", cookie)).status).toBe(403);
     env.DEMO_LOGIN = "false";
     expect((await call("GET", "/auth/me", cookie)).status).toBe(401);
+  });
+
+  it("switches to the demo flight surgeon and replaces the astronaut session", async () => {
+    env = { ...env, DEMO_LOGIN: "true" } as Env;
+    const astronautToken = await demoLogin();
+    const surgeonToken = await demoLogin("?as=surgeon", astronautToken);
+    const me = await (await call("GET", "/auth/me", { cookie: surgeonToken })).json<any>();
+    expect(me.user.user_id).toBe(DEMO_ORTIZ);
+    expect(me.role).toBe("flight_surgeon");
+    expect(me.demo).toBe(true);
+    expect((await call("GET", "/auth/me", { cookie: astronautToken })).status).toBe(401);
+  });
+
+  it("keeps the demo flight surgeon inside the demo crew", async () => {
+    env = { ...env, DEMO_LOGIN: "true" } as Env;
+    const real = await astronaut("Real");
+    const cookie = { cookie: await demoLogin("?as=surgeon") };
+    const crew = await (await call("GET", "/admin/astronauts", cookie)).json<any[]>();
+    expect(crew.map((u) => u.user_id)).toContain(DEMO_VEGA);
+    expect(crew.map((u) => u.user_id)).not.toContain(real.uid);
+    expect((await call("GET", `/admin/astronauts/${real.uid}`, cookie)).status).toBe(403);
+    expect((await call("POST", "/chat/threads", { ...cookie, body: { astronaut_id: real.uid, body: "hi" } })).status).toBe(403);
+  });
+
+  it("keeps real astronauts and the demo astronaut on their own crews' staff", async () => {
+    env = { ...env, DEMO_LOGIN: "true" } as Env;
+    const surgeonId = crypto.randomUUID();
+    db.raw.prepare("INSERT INTO users (user_id, display_name, role) VALUES (?, 'Real Surgeon', 'flight_surgeon')").run(surgeonId);
+    db.raw.prepare("INSERT INTO auth_identities (provider, subject, user_id, email) VALUES ('cloudflare_access', 'sub-real-surgeon', ?, 'doc@e.com')").run(surgeonId);
+    const real = await astronaut("Real");
+    const demoCookie = { cookie: await demoLogin() };
+    const demoContacts = (await (await call("GET", "/messages/contacts", demoCookie)).json<any[]>()).map((c) => c.user_id);
+    expect(demoContacts).toContain(DEMO_ORTIZ);
+    expect(demoContacts).not.toContain(surgeonId);
+    const realContacts = (await (await call("GET", "/messages/contacts", { cookie: real.token })).json<any[]>()).map((c) => c.user_id);
+    expect(realContacts).toContain(surgeonId);
+    expect(realContacts).not.toContain(DEMO_ORTIZ);
+    expect((await call("POST", `/messages/with/${surgeonId}`, { ...demoCookie, body: { body: "hello" } })).status).toBe(403);
+  });
+
+  it("resets the demo crew to its seed without touching real accounts", async () => {
+    env = { ...env, DEMO_LOGIN: "true" } as Env;
+    const real = await astronaut("Real");
+    const cookie = { cookie: await demoLogin() };
+    expect((await call("POST", "/demo/reset", { cookie: real.token })).status).toBe(403);
+    expect((await call("POST", "/demo/reset", cookie)).status).toBe(200);
+    const seededObservations = count("observations", DEMO_VEGA);
+    const unread = row("SELECT COUNT(*) n FROM user_notifications WHERE user_id=? AND read_at IS NULL", DEMO_VEGA).n;
+    expect(seededObservations).toBeGreaterThan(100);
+    expect(unread).toBeGreaterThan(0);
+    expect((await call("POST", "/me/notifications/read", { ...cookie, body: {} })).status).toBe(204);
+    expect(row("SELECT COUNT(*) n FROM user_notifications WHERE user_id=? AND read_at IS NULL", DEMO_VEGA).n).toBe(0);
+    const water = count("hydration", DEMO_VEGA);
+    expect((await call("POST", "/hydration", { ...cookie, body: { amount_ml: 250 } })).status).toBe(201);
+    expect((await call("POST", "/demo/reset", cookie)).status).toBe(200);
+    expect(count("hydration", DEMO_VEGA)).toBe(water);
+    expect(count("observations", DEMO_VEGA)).toBe(seededObservations);
+    expect(row("SELECT COUNT(*) n FROM user_notifications WHERE user_id=? AND read_at IS NULL", DEMO_VEGA).n).toBe(unread);
+    expect((await call("GET", "/auth/me", cookie)).status).toBe(200);
+    expect(count("meals", real.uid)).toBe(1);
+    expect(row("SELECT COUNT(*) n FROM auth_identities WHERE provider='demo'").n).toBe(2);
   });
 });
 

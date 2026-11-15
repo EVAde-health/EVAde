@@ -18,11 +18,11 @@ import './surgeon/surgeon.css';
 
 // 1:1 messages for both roles. Astronauts see flight surgeons; surgeons see astronauts.
 // Contacts poll every 5 s and the open thread every 3 s; opening a thread marks it read.
-export default function Messenger({ selfId, basePath, otherId, readOnly = false, onRead }: {
-  selfId: string; basePath: string; otherId?: string; readOnly?: boolean; onRead?: () => void;
+export default function Messenger({ selfId, basePath, otherId, onRead }: {
+  selfId: string; basePath: string; otherId?: string; onRead?: () => void;
 }) {
   const navigate = useNavigate();
-  const contacts = usePoll<Contact[]>(readOnly ? null : '/messages/contacts', 5000);
+  const contacts = usePoll<Contact[]>('/messages/contacts', 5000);
   const [query, setQuery] = useState('');
   const people = useMemo(() => responseRows(contacts.data).filter(contact => typeof contact.user_id === 'string' && contact.user_id), [contacts.data]);
   const visible = useMemo(() => {
@@ -72,17 +72,17 @@ export default function Messenger({ selfId, basePath, otherId, readOnly = false,
       <Card padding={4}>
         {otherId
           ? <ThreadView key={otherId} otherId={otherId} selfId={selfId} fallbackName={active ? personName(active) : undefined}
-              readOnly={readOnly} onRead={() => { contacts.reload(); onRead?.(); }} />
+              onRead={() => { contacts.reload(); onRead?.(); }} />
           : <EmptyState icon={<Icon icon={ChatBubbleLeftRightIcon} />} title="Pick a conversation" description="Choose someone on the left to read or start a 1:1 thread." />}
       </Card>
     </div>
   );
 }
 
-function ThreadView({ otherId, selfId, fallbackName, readOnly, onRead }: {
-  otherId: string; selfId: string; fallbackName?: string; readOnly: boolean; onRead: () => void;
+function ThreadView({ otherId, selfId, fallbackName, onRead }: {
+  otherId: string; selfId: string; fallbackName?: string; onRead: () => void;
 }) {
-  const thread = usePoll<Thread>(readOnly ? null : `/messages/with/${encodeURIComponent(otherId)}`, 3000);
+  const thread = usePoll<Thread>(`/messages/with/${encodeURIComponent(otherId)}`, 3000);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const showToast = useToast();
@@ -93,9 +93,9 @@ function ThreadView({ otherId, selfId, fallbackName, readOnly, onRead }: {
 
   // Mark read on open and whenever new messages arrive while the thread is open.
   useEffect(() => {
-    if (!unreadFromOther || readOnly) return;
+    if (!unreadFromOther) return;
     markThreadRead(otherId).then(onRead, () => { /* the badge just stays until the next poll */ });
-  }, [otherId, unreadFromOther, lastId, readOnly, onRead]);
+  }, [otherId, unreadFromOther, lastId, onRead]);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
@@ -148,14 +148,12 @@ function ThreadView({ otherId, selfId, fallbackName, readOnly, onRead }: {
           <div ref={bottom} />
         </VStack>
       </div>
-      {readOnly ? <Text type="supporting">The demo is read-only. Sign in with your own account to send messages.</Text> : (
-        <div onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send(); } }}>
-          <VStack gap={2}>
-            <TextArea label="Message" isLabelHidden value={draft} onChange={setDraft} placeholder={`Message ${name} (Ctrl+Enter to send)`} maxLength={2000} rows={3} />
-            <HStack hAlign="end"><Button label="Send" variant="primary" onClick={send} isLoading={sending} isDisabled={!draft.trim()} /></HStack>
-          </VStack>
-        </div>
-      )}
+      <div onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send(); } }}>
+        <VStack gap={2}>
+          <TextArea label="Message" isLabelHidden value={draft} onChange={setDraft} placeholder={`Message ${name} (Ctrl+Enter to send)`} maxLength={2000} rows={3} />
+          <HStack hAlign="end"><Button label="Send" variant="primary" onClick={send} isLoading={sending} isDisabled={!draft.trim()} /></HStack>
+        </VStack>
+      </div>
     </div>
   );
 }
