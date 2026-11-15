@@ -18,8 +18,8 @@ export const LANDING_HTML = `<!doctype html>
 <body>
 <main>
   <h1>🛰️ EVAde</h1>
-  <p>Onboard crew health co-pilot. Daily voice check-in with Grok, by phone or in the browser.</p>
-  <a class="btn" href="/voice/">Talk to EVAde</a>
+  <p>Onboard crew health co-pilot. Daily voice check-in with Grok, by phone or in the web app's Journal tab.</p>
+  <a class="btn" href="tel:+19086631285">Call EVAde: +1 (908) 663-1285</a>
   <small>Decision support only, not a medical device. NASA Space Apps 2026.</small>
 </main>
 </body>

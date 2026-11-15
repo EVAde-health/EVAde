@@ -5,7 +5,7 @@
   //
   // Combines two branches into one Worker:
   //   - features/web-app            -> React SPA (EVAde/dist) served at /, /dashboard, /journal, ...
-  //   - feature/twilio-grok-voice-agent -> Worker code (worker/src) + the /voice/ page (frontend/voice)
+  //   - feature/twilio-grok-voice-agent -> Worker code (worker/src)
   // Mirrors worker/wrangler.jsonc on the voice branch; the only differences are
   // the paths, SPA fallback, and "/" being served from assets instead of the Worker.
   "name": "evade",
@@ -17,9 +17,10 @@
   "workers_dev": false,
   "routes": [{ "pattern": "evade.health", "custom_domain": true }],
 
-  // ../.deploy/site = EVAde/dist (web app) + frontend/voice (voice chat page at /voice/).
+  // ../.deploy/site = EVAde/dist (web app). The old /voice/ page is gone; /voice/ falls back to the SPA.
   // Unknown navigation paths fall back to the SPA's index.html (react-router BrowserRouter).
-  // API, Twilio and WebSocket paths always hit the Worker first. Keep /voice/* here intact.
+  // API, Twilio and WebSocket paths always hit the Worker first. Keep these /voice/* entries:
+  // /voice/incoming + /voice/stream are the phone line, /voice/alert and /voice/browser are API aliases.
   "assets": {
     "directory": "../.deploy/site",
     "binding": "ASSETS",

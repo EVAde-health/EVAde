@@ -1,5 +1,5 @@
 // AudioWorklet that downsamples the microphone to 24 kHz mono PCM16 and posts ~20 ms chunks.
-// Ported from frontend/voice/mic-worklet.js (the /voice page keeps its own copy).
+// Ported from the old frontend/voice/mic-worklet.js (the /voice/ page has since been removed).
 // It is loaded from a Blob URL so it never depends on how static assets are routed.
 const MIC_WORKLET_SOURCE = `
 const TARGET_RATE = 24000;

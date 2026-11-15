@@ -6,7 +6,7 @@
 //
 // Env overrides:
 //   WEB_DIR     web app folder to build (default: EVAde, i.e. this checkout)
-//   WORKER_REF  git ref for the Worker + /voice page (default: origin/feature/twilio-grok-voice-agent)
+//   WORKER_REF  git ref for the Worker (default: origin/feature/twilio-grok-voice-agent)
 //
 // Needs: git, Node 20+, and `npx wrangler login` with access to the "EVAde" Cloudflare account.
 import { execSync } from "node:child_process";
@@ -42,15 +42,14 @@ if (!existsSync(join(workerSrc, ".git"))) {
 sh("npm ci --no-audit --no-fund", webDir);
 sh("npm run build", webDir);
 
-// 3. Assemble the static site: web app at /, voice chat page at /voice/.
+// 3. Assemble the static site: the web app. (The old /voice/ page was removed; /voice/
+//    now falls through to the SPA. The Journal tab is the browser voice client.)
 rmSync(site, { recursive: true, force: true });
 cpSync(join(webDir, "dist"), site, { recursive: true });
-if (existsSync(join(site, "voice"))) throw new Error("web app build has a /voice folder; it would clobber the voice chat page");
-cpSync(join(workerSrc, "frontend", "voice"), join(site, "voice"), { recursive: true });
 
 // 4. Deploy the Worker with wrangler from the Worker's own dependencies.
 const workerDir = join(workerSrc, "worker");
 sh("npm ci --no-audit --no-fund", workerDir);
 sh(`npx wrangler deploy -c "${config}"${dryRun ? " --dry-run" : ""}`, workerDir);
 
-console.log(dryRun ? "\nDry run OK (nothing uploaded)." : "\nDeployed: https://evade.health  (voice chat: https://evade.health/voice/)");
+console.log(dryRun ? "\nDry run OK (nothing uploaded)." : "\nDeployed: https://evade.health  (voice check-in: https://evade.health/journal)");

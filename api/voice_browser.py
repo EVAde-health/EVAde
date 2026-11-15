@@ -1,7 +1,8 @@
 """EVAde browser voice mode: talk to the same Grok voice agent from a laptop mic.
 
-  GET  /voice/                      page (frontend/voice/index.html)
-  GET  /voice/app.js, /voice/mic-worklet.js
+(The old /voice/ page was removed; the web app's Journal tab is the browser client and
+talks to the Cloudflare Worker. These endpoints remain for local use and tests.)
+
   WS   /voice/browser               browser <-> xAI bridge (server-side, so
                                     XAI_API_KEY never reaches the browser)
   GET  /voice/api/checkins/latest   latest check-in result
@@ -30,12 +31,10 @@ import asyncio
 import json
 import logging
 import secrets
-from pathlib import Path
 from typing import Any, Mapping, Optional
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
 
 from api import voice_agent, voice_tools
 from api.voice_agent import BROWSER_AUDIO, AgentSession, SendFn, connect_xai  # noqa: F401
@@ -43,7 +42,6 @@ from api.voice_agent import BROWSER_AUDIO, AgentSession, SendFn, connect_xai  # 
 log = logging.getLogger("evade.voice.browser")
 router = APIRouter(prefix="/voice", tags=["voice-browser"])
 
-FRONTEND = Path(__file__).resolve().parent.parent / "frontend" / "voice"
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
 TUNNEL_HEADERS = ("x-forwarded-for", "cf-connecting-ip", "x-real-ip", "forwarded")
 
@@ -70,22 +68,6 @@ def _guard(request: Request, token: Optional[str]) -> None:
     host = request.client.host if request.client else None
     if not browser_allowed(request.headers, host, token):
         raise HTTPException(status_code=403, detail="Local access only (or set EVADE_BROWSER_TOKEN)")
-
-
-# -------------------------------------------------------------------- page
-@router.get("/", include_in_schema=False)
-def voice_page() -> FileResponse:
-    return FileResponse(FRONTEND / "index.html", media_type="text/html")
-
-
-@router.get("/app.js", include_in_schema=False)
-def voice_app_js() -> FileResponse:
-    return FileResponse(FRONTEND / "app.js", media_type="text/javascript")
-
-
-@router.get("/mic-worklet.js", include_in_schema=False)
-def voice_worklet_js() -> FileResponse:
-    return FileResponse(FRONTEND / "mic-worklet.js", media_type="text/javascript")
 
 
 # -------------------------------------------------------------------- data

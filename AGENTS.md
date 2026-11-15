@@ -9,8 +9,8 @@ Web app conventions (Astryx design system, component rules) are in [`EVAde/AGENT
 | URL | What serves it |
 | --- | --- |
 | https://evade.health | Cloudflare Worker `evade`: the React web app (this branch) plus the voice agent |
-| https://evade.health/voice/ | Browser voice chat page (`frontend/voice/` on `feature/twilio-grok-voice-agent`) |
-| https://evade.health/api/... , `/health` | Voice/API routes in the `evade` Worker |
+| https://evade.health/journal | Journal tab: browser voice check-in with EVAde (web app, calls `/api/voice/*`) |
+| https://evade.health/api/... , `/health`, `/voice/incoming` | Voice/API routes and the Twilio phone line (+1 908 663 1285) in the `evade` Worker |
 | https://api.evade.health | Separate Worker `evade-api`, not touched by this deploy |
 
 Both domains are Cloudflare Workers custom domains in the **EVAde** Cloudflare account (`2e5df567f3580c5af313ebb51e1920fa`), zone `evade.health`.
@@ -18,12 +18,12 @@ Both domains are Cloudflare Workers custom domains in the **EVAde** Cloudflare a
 ## Branches
 
 - `features/web-app`: the web app (Vite + React 19 + react-router `BrowserRouter`, Astryx UI) in `EVAde/`. Pages: `/`, `/login`, `/dashboard`, `/tutorials`, `/tasks`, `/journal`, `/selfies`.
-- `feature/twilio-grok-voice-agent`: the voice agent. `worker/` is the Cloudflare Worker (TypeScript), `frontend/voice/` is the `/voice/` page, and `api/` is the original Python version. API reference: `worker/API.md`.
+- `feature/twilio-grok-voice-agent`: the voice agent. `worker/` is the Cloudflare Worker (TypeScript) and `api/` is the original Python version. (The old `frontend/voice/` page was removed; the Journal tab replaces it.) API reference: `worker/API.md`.
 - `main`: default branch.
 
 ## Hard rules
 
-- **`/voice` stays the voice chat.** Don't change `frontend/voice/*`, its routing, or the `/voice/*` entries in `run_worker_first`. New voice features (for example in the Journal tab) go in the web app and call the existing API.
+- **The browser voice chat lives in the web app's Journal tab** (`EVAde/src/components/VoiceJournal.tsx`, `src/services/voiceAgent.ts`). The old `/voice/` page was removed. Keep the `/voice/incoming`, `/voice/stream`, `/voice/alert`, `/voice/browser`, `/voice/api/*` entries in `run_worker_first`: the phone line and API aliases depend on them.
 - Don't change existing Worker endpoints. The phone line (Twilio) and the React Native app depend on them.
 - Never commit secrets. Worker secrets (`XAI_API_KEY`, `TWILIO_AUTH_TOKEN`, `EVADE_BROWSER_TOKEN`, `EVADE_ALERT_TOKEN`) are stored on the Worker and survive deploys.
 
@@ -32,15 +32,15 @@ Both domains are Cloudflare Workers custom domains in the **EVAde** Cloudflare a
 One Worker (`evade`) serves everything on `evade.health`:
 
 1. Requests to `/api`, `/api/*`, `/health`, `/voice/incoming`, `/voice/stream`, `/voice/alert`, `/voice/browser`, `/voice/api/*` go to the Worker code first (Twilio webhooks, WebSockets, JSON API).
-2. Everything else is a static asset: the web app build (`EVAde/dist`) at the root, and `frontend/voice/` at `/voice/`.
-3. Unknown page paths (such as `/journal` on refresh) fall back to the SPA's `index.html` (`not_found_handling: single-page-application`).
+2. Everything else is a static asset: the web app build (`EVAde/dist`).
+3. Unknown page paths (such as `/journal` on refresh, or the retired `/voice/`) fall back to the SPA's `index.html` (`not_found_handling: single-page-application`).
 
 Config: [`deploy/wrangler.jsonc`](deploy/wrangler.jsonc). It mirrors `worker/wrangler.jsonc` on the voice branch, except for paths, the SPA fallback, and `/` being served from assets instead of the Worker's old landing page.
 
 ### Voice API for web clients (same origin, no CORS needed)
 
 - `POST /api/voice/start` returns a one-time WebSocket ticket.
-- `WS /api/voice/ws` is the voice socket (24 kHz PCM16 audio; see `frontend/voice/app.js` and `mic-worklet.js` for a working client).
+- `WS /api/voice/ws` is the voice socket (24 kHz PCM16 audio; see `EVAde/src/services/voiceAgent.ts` and `micWorklet.ts` for a working client).
 - `GET /api/checkins/latest`, `GET /api/downlink` return crew data.
 - `DEMO_OPEN=true` (hackathon demo) means no access key is needed for voice or read APIs. Limits: 5 concurrent browser sessions, 300 s each.
 
@@ -56,7 +56,7 @@ node deploy/deploy.mjs             # build and deploy to https://evade.health
 The script:
 1. checks out `origin/feature/twilio-grok-voice-agent` into `.deploy/worker-src` (a git worktree; override with `WORKER_REF=<ref>`),
 2. runs `npm ci && npm run build` in `EVAde/`,
-3. assembles `.deploy/site` = `EVAde/dist` + `frontend/voice` (it fails if the web build would overwrite `/voice`),
+3. assembles `.deploy/site` = `EVAde/dist`,
 4. runs `wrangler deploy -c deploy/wrangler.jsonc` using the Worker's own Wrangler.
 
 `.deploy/` is gitignored.
@@ -66,7 +66,6 @@ After deploying, smoke-test:
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" https://evade.health/          # 200, web app
 curl -s -o /dev/null -w "%{http_code}\n" https://evade.health/journal   # 200, SPA fallback
-curl -s -o /dev/null -w "%{http_code}\n" https://evade.health/voice/    # 200, voice chat
 curl -s https://evade.health/health                                      # {"status":"ok"}
 curl -s -o /dev/null -w "%{http_code}\n" -X POST https://evade.health/voice/incoming  # 403 (unsigned Twilio request is rejected, as it should be)
 ```
