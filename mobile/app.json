@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "EVAde",
+    "slug": "evade",
+    "version": "1.0.0",
+    "scheme": "evade",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0B0F1A"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "health.evade.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "EVAde uses the camera for selfie check-ins in your private journal.",
+        "NSMicrophoneUsageDescription": "EVAde uses the microphone for voice journal entries."
+      }
+    },
+    "android": {
+      "package": "health.evade.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B0F1A",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": ["CAMERA", "RECORD_AUDIO"],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
