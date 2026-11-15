@@ -28,7 +28,7 @@ Python evade_space ──► /observations, /radiation, /space-weather (demo dat
 | Worker `evade-api` | built and tested locally, Cloudflare Access login included; serves at **https://api.evade.health** after deploy (workers.dev URL as fallback) |
 | KV `evade-sessions` | Live session namespace bound in `worker/wrangler.jsonc`. |
 | R2 `evade-media` | Private bucket bound as `MEDIA` for authenticated uploads. |
-| Workers AI, Durable Object `CrewFeed` | created automatically on deploy |
+| Durable Object `CrewFeed` | created automatically on deploy |
 | Python `evade_space` | done, 5 tests pass, standard library only |
 
 ## Deploy the backend
@@ -83,7 +83,7 @@ Optional direct OAuth fallbacks:
 1. **Google**: console.cloud.google.com → APIs & Services → Credentials → Create OAuth client ID → Web application. Authorized redirect URI: `https://api.evade.health/auth/callback/google`. Set up the OAuth consent screen as External/Testing and add the team as test users.
 2. **GitHub**: github.com/settings/developers → New OAuth App. Homepage `https://evade.health`, callback `https://api.evade.health/auth/callback/github`.
 3. **Turnstile**: Cloudflare dashboard → Turnstile → Add widget for `evade.health` and `api.evade.health`. Put the site key in `TURNSTILE_SITE_KEY` in `wrangler.jsonc`.
-4. Secrets: `npx wrangler secret put` for `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `TURNSTILE_SECRET`, then `npx wrangler deploy`.
+4. Secrets: `npx wrangler secret put` for `XAI_API_KEY` (xAI Grok, every AI feature), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `TURNSTILE_SECRET`, then `npx wrangler deploy`.
 
 Local testing: set `DEV_LOGIN=true`, `FRONTEND_URL=http://localhost:5173`, and `ALLOWED_ORIGINS=http://localhost:5173` in `worker/.dev.vars`. Open the local Worker's `/login` page for the loopback-only test sign-in. Keep `DEV_LOGIN` off in production.
 
@@ -98,8 +98,7 @@ Local testing: set `DEV_LOGIN=true`, `FRONTEND_URL=http://localhost:5173`, and `
 | Cron Triggers | NOAA space weather every 15 minutes, EVA go/no-go |
 | Custom Domains + DNS | `api.evade.health` on Daniel's domain |
 | Workers Observability | logs and traces for the API |
-| Workers AI | journal summary, mood and concern level for the psychologist; Whisper voice-to-text for voice journals; plain-language daily briefing |
-| AI Gateway (optional) | set `AI_GATEWAY` to log, cache and rate-limit every AI call |
+| xAI Grok (`XAI_API_KEY` secret) | journal summary, mood and concern level for the psychologist; the health-data parser (`journalParse.ts`: stated sleep, mood, stress, vitals and symptoms become `self_reports` / `observations` rows, source `model`, device `journal_parser`; voice-agent check-in values are `manual`, device `voice_agent`); the EVA companion's replies on `POST /journal/messages` (`evaCompanion.ts`, the text version of the voice agent); the private check-in's next question (`POST /journal/chat`, `companion.ts`); the staff 24-hour summary (`GET /admin/astronauts/:id/summary`); plain-language daily briefing (`XAI_TEXT_MODEL`, default `grok-4.20-0309-non-reasoning`, fallback `XAI_FALLBACK_TEXT_MODEL`, default `grok-4.3`, strict JSON schemas); speech-to-text for voice journals (`XAI_STT_MODEL`, default `grok-voice-transcribe-2.0`, REST `POST /v1/stt`). Without the key, entries still save: no analysis, rule-based companion and summary text, a rules briefing, and `/journal/voice` returns 503 |
 | R2 | photos, ultrasound images, voice journal audio, PDFs (private, access-checked per astronaut) |
 | Durable Objects | live crew feed over WebSockets (hibernating), staff see the whole crew in real time |
 
@@ -139,10 +138,12 @@ Local testing: set `DEV_LOGIN=true`, `FRONTEND_URL=http://localhost:5173`, and `
 | POST | `/auth/identities` | **server-side only (API key or staff)**: links an external login manually; `{provider, subject, email?, display_name?}`. Links a login to an astronaut and creates the astronaut on first login. Returns the user with `user_id` |
 | GET | `/auth/identities/:provider/:subject` | look up the astronaut behind a login |
 | GET | `/admin/crew`, `/admin/escalations`, `/admin/therapist-feed?user_id=` | doctor/therapist panel: crew overview with risk band and alert counts, escalations waiting for the flight surgeon, journal summaries with that day's mood |
-| POST | `/journal?analyze=sync` | same as `/journal` but waits for the Workers AI analysis and returns it (demo) |
-| POST | `/journal/voice` | raw audio body (`audio/webm`, `wav`, `mp3`, `m4a`, `ogg`) → stored in R2 → Whisper transcript → journal entry → AI analysis |
+| POST | `/journal?analyze=sync` | same as `/journal` but waits for the Grok analysis and returns it (demo) |
+| POST | `/journal/voice` | raw audio body (`audio/webm`, `wav`, `mp3`, `m4a`, `ogg`) → stored in R2 → xAI Grok speech-to-text → journal entry → AI analysis |
+| POST | `/journal/voice-sessions` | the web app's voice check-in: `{session_id, turns:[{sender,content,ts}], checkin?}` → one `voice` journal entry, the turns as journal messages, analysis + parser rows. Idempotent per user and `session_id` |
+| POST | `/journal/messages` | Journal chat: saves the message as a journal entry and replies as the EVA companion; analysis + parser run after the response |
 | POST | `/journal/:id/analyze` | staff: re-run the AI analysis |
-| GET | `/users/:id/briefing` | plain-language daily briefing from Workers AI (cached 30 min; `?refresh=1`), falls back to rules if AI is down |
+| GET | `/users/:id/briefing` | plain-language daily briefing from Grok (cached 30 min; `?refresh=1`), falls back to rules if AI is down |
 | POST | `/media?kind=photo\|ultrasound\|audio\|document&metric=&note=` | raw file body with its Content-Type, max 25 MB → R2 |
 | GET | `/users/:id/media`, `/media/:id` | list files, download a file (owner or staff only) |
 | GET (WebSocket) | `/live` | live feed: `observation`, `alert`, `risk`, `journal` (staff only), `media`, `task`, `space_weather` events. Staff get the whole crew, astronauts get their own |
