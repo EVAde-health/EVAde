@@ -15,6 +15,7 @@ import {
   AuthEnv, clearSessionCookie, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, sessionReference, sha256hex, STAFF_ACCESS_PROVIDER, STAFF_ROLES, trustedOrigin,
 } from "./auth";
 import { analyzeJournal, dailyBriefing, transcribe, TEXT_MODEL } from "./ai";
+import { registerCompanion } from "./companion";
 import type { LiveEvent } from "./live";
 import {
   callModelApi, deleteModelUser, isMock, ModelApiError, ModelEnv, modelsConfigured, modelUserId, PREDICT_KINDS, PredictKind,
@@ -1048,6 +1049,7 @@ registerWebAppRoutes<Env>({
 });
 registerOps(route, { json, body, now });
 registerMessaging(route, { json, body, now });
+registerCompanion<Env>(route, { json, body });
 
 // ---------- Access control ----------
 // service  = X-EVAde-Key (Python seeding, Michael's FastAPI, Ryan B's edge functions): integration routes

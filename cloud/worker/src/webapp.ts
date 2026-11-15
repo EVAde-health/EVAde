@@ -306,9 +306,11 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
   route("GET", "/users/:id/journal/messages", async (_r, env, p, url, _c, who) => {
     if (who.kind === "user" && p.id !== who.user_id) throw fail(403, "Only the astronaut can read their journal");
     const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit")) || 200, 500));
+    const owner = who.kind === "user" && who.user_id === p.id;
     const { results } = await env.DB.prepare(
-      "SELECT id, sender, content, ts FROM journal_messages WHERE user_id=? AND thread_id IS NULL ORDER BY ts DESC LIMIT ?"
-    ).bind(p.id, limit).all();
+      "SELECT m.id, m.sender, m.content, m.ts FROM journal_messages m WHERE m.user_id=? AND m.thread_id IS NULL " +
+      "AND (?=1 OR (m.id NOT LIKE 'companion:%' AND NOT EXISTS (SELECT 1 FROM journal_messages reply WHERE reply.user_id=m.user_id AND reply.id='companion:'||m.id))) ORDER BY m.ts DESC LIMIT ?"
+    ).bind(p.id, owner ? 1 : 0, limit).all();
     return json(results.reverse());
   });
 
