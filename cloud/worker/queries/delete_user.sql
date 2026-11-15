@@ -2,13 +2,13 @@
 -- Not a migration (it lives outside migrations/ so wrangler never applies it).
 --
 -- Bind ?1 = the user_id from the verified session (never from the URL or request body).
--- Run every statement in ONE env.DB.batch([...]) so it is all-or-nothing.
+-- Apply the current migrations first. Run the statements in ONE env.DB.batch([...]).
 -- Most tables also have ON DELETE CASCADE, but each table is listed explicitly so the delete
 -- does not depend on PRAGMA foreign_keys and stays correct if a future table forgets the FK.
 --
 -- Outside D1, the Worker must also:
 --   1. Delete R2 objects: list media.r2_key for the user (and the prefix users/<user_id>/) BEFORE this batch.
---   2. Delete the user's KV sessions (sess:*) so open logins stop working immediately.
+--   2. Remove the active session from KV. Other sessions fail their D1 user check after deletion.
 --   3. Delete Daniel's voice-agent rows (checkins / downlink_queue) if they still live in a separate DB.
 -- Keep the shared catalogue tables (metric_definitions, space_weather): they hold no personal data.
 
@@ -44,12 +44,8 @@ DELETE FROM observations    WHERE user_id = ?1;
 DELETE FROM auth_identities WHERE user_id = ?1;
 DELETE FROM action_log      WHERE user_id = ?1;   -- no FK on this table, so it must be explicit
 
--- Historical frontend migration. The Worker runs these only where the tables exist.
-DELETE FROM agent_jobs WHERE user_id = ?1;
-DELETE FROM daily_rollups WHERE user_id = ?1;
-DELETE FROM journal_messages WHERE user_id = ?1;
-DELETE FROM metric_forecasts WHERE user_id = ?1;
-DELETE FROM tutorial_progress WHERE user_id = ?1;
-DELETE FROM user_settings WHERE user_id = ?1;
+-- D1 cascades user deletion for these tables when the historical frontend migration is present.
+-- src/deleteUser.ts also deletes their rows explicitly after checking which tables exist.
+--   agent_jobs, daily_rollups, journal_messages, metric_forecasts, tutorial_progress, user_settings
 
 DELETE FROM users           WHERE user_id = ?1;

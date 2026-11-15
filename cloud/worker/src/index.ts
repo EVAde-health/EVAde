@@ -12,7 +12,7 @@ import {
   Level,
 } from "./health";
 import {
-  AuthEnv, clearSessionCookie, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, sha256hex, STAFF_ROLES, trustedOrigin,
+  AuthEnv, clearSessionCookie, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, sessionReference, sha256hex, STAFF_ACCESS_PROVIDER, STAFF_ROLES, trustedOrigin,
 } from "./auth";
 import { analyzeJournal, dailyBriefing, transcribe, TEXT_MODEL } from "./ai";
 import type { LiveEvent } from "./live";
@@ -414,6 +414,7 @@ route("GET", "/users/:id", async (_r, env, p) => json(await requireUser(env, p.i
 route("POST", "/auth/identities", async (req, env) => {
   const b = await body(req);
   if (!b.provider || !b.subject) throw new HttpError(422, "provider and subject are required");
+  if (b.provider === STAFF_ACCESS_PROVIDER) throw new HttpError(403, "Staff enrollment requires the staff Access application");
   if (b.user_id) await requireUser(env, b.user_id);
   return json(await linkIdentity(env, b, (id) => seedTasks(env, id)), 201);
 });
@@ -879,11 +880,19 @@ route("GET", "/media/:mid", async (_r, env, p) => {
 });
 
 // Live crew feed (Durable Object WebSocket). Browser: new WebSocket("wss://api.evade.health/live") with the login cookie.
-route("GET", "/live", async (req, env, _p, _u, _c, who) => {
+route("GET", "/live", async (req, env, _p, url, _c, who) => {
   if (!env.LIVE) throw new HttpError(503, "Live feed not configured");
   if (req.headers.get("Upgrade") !== "websocket") throw new HttpError(426, "Expected a WebSocket upgrade");
+  const origin = req.headers.get("Origin");
+  if (origin !== null && !trustedOrigin(env, url, origin)) throw new HttpError(403, "Live feed origin not allowed");
   const headers = new Headers(req.headers);
-  headers.set("X-Live-Principal", JSON.stringify({ staff: isStaff(who), user_id: who.user_id ?? null }));
+  headers.delete("Cookie");
+  headers.delete("Authorization");
+  headers.delete("X-EVAde-Key");
+  headers.set("X-Live-Principal", JSON.stringify({
+    kind: who.kind, staff: isStaff(who), user_id: who.user_id ?? null,
+    sessionRef: who.kind === "user" ? await sessionReference(req) : null,
+  }));
   return env.LIVE.get(env.LIVE.idFromName("crew")).fetch(new Request(req, { headers }));
 });
 route("GET", "/live/stats", async (_r, env) => {
@@ -1034,6 +1043,9 @@ async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Reque
     const origin = req.headers.get("Origin");
     if ((origin || sessionCookie(req, url)) && !trustedOrigin(env, url, origin))
       throw new HttpError(403, "Cross-origin request blocked");
+  }
+  if (session.demo && req.method !== "GET" && /^\/(?:meals|hydration)(?:\/|$)/.test(path)) {
+    throw new HttpError(403, "Use a personal account to change shared demo nutrition records");
   }
   const staff = STAFF_ROLES.has(session.role ?? "");
   if (STAFF_ONLY.some(([m, re]) => (m === "*" || m === req.method) && re.test(path)) && !staff)

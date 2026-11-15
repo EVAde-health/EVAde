@@ -29,6 +29,7 @@ export interface Principal {
   demo?: boolean;
 }
 
+export const STAFF_ACCESS_PROVIDER = "cloudflare_access_staff";
 export const STAFF_ROLES = new Set(["flight_surgeon", "therapist", "admin"]);
 const SESSION_TTL = 7 * 24 * 3600;
 const OAUTH_TTL = 600;
@@ -120,14 +121,21 @@ export const clearSessionCookie = (url: URL) => cookieHeader(url, "session", "",
 export const sha256hex = async (s: string) => sha256(s);
 
 // ---------- sessions ----------
-export async function getSessionPrincipal(req: Request, env: AuthEnv): Promise<Principal | null> {
-  let token = sessionCookie(req);
+export async function sessionReference(req: Request): Promise<string | null> {
   const authz = req.headers.get("Authorization");
-  if (!token && authz?.startsWith("Bearer ")) token = authz.slice(7);
-  if (!token) return null;
+  const token = sessionCookie(req) || (authz?.startsWith("Bearer ") ? authz.slice(7) : null);
+  return token ? "sess:" + await sha256(token) : null;
+}
+
+export async function getSessionPrincipal(req: Request, env: AuthEnv): Promise<Principal | null> {
+  const reference = await sessionReference(req);
+  return reference ? getSessionPrincipalByReference(reference, env) : null;
+}
+
+export async function getSessionPrincipalByReference(reference: string, env: AuthEnv): Promise<Principal | null> {
   const s = await env.SESSIONS.get<{
     user_id: string; role: string; email: string | null; provider?: SessionProvider; audience?: string; expires?: number;
-  }>(`sess:${await sha256(token)}`, "json");
+  }>(reference, "json");
   if (!s?.provider || !SESSION_PROVIDERS.has(s.provider) || (s.expires !== undefined && s.expires <= Date.now())) return null;
   const user = await env.DB.prepare("SELECT role FROM users WHERE user_id=?").bind(s.user_id).first<{ role: string }>();
   if (!user) return null;
@@ -398,6 +406,15 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
       const user = await linkIdentity(env, {
         provider: "cloudflare_access", subject: identity.subject, email: identity.email, display_name: identity.name,
       }, seedTasks);
+      if (staff) {
+        const enrolled = await env.DB.prepare(
+          `INSERT INTO auth_identities (provider,subject,user_id,last_login)
+           VALUES (?,?,?,?)
+           ON CONFLICT(provider,subject) DO UPDATE SET last_login=excluded.last_login
+           WHERE auth_identities.user_id=excluded.user_id`
+        ).bind(STAFF_ACCESS_PROVIDER, identity.subject, user.user_id, new Date().toISOString()).run();
+        if (!enrolled.meta.changes) return fail("This staff identity is linked to another account.", 403);
+      }
       if (staff !== STAFF_ROLES.has(user.role)) {
         return fail(staff ? `Staff access is pending. Give your EVAde administrator your account reference: ${user.user_id}` : "Staff accounts sign in at /auth/access/staff.", 403);
       }

@@ -234,6 +234,22 @@ describe("astronaut health reads", () => {
 });
 
 describe("staff session enforcement", () => {
+  it("keeps the shared demo nutrition rows read-only", async () => {
+    const demo = await session(NOVA, "astronaut", "demo");
+    expect((await call("GET", `/users/${NOVA}/meals`, demo)).status).toBe(200);
+    expect((await call("POST", "/meals", demo, {})).status).toBe(403);
+    expect((await call("DELETE", `/meals/${KEPLER}`, demo)).status).toBe(403);
+    expect((await call("POST", "/hydration", demo, {})).status).toBe(403);
+  });
+
+  it("keeps the staff enrollment provider reserved for Access login", async () => {
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
+    const response = await call("POST", "/auth/identities", surgeon, {
+      provider: "cloudflare_access_staff", subject: "fixture", user_id: NOVA,
+    });
+    expect(response.status).toBe(403);
+  });
+
   it("denies demo and service credentials on staff routes", async () => {
     const demo = await session(NOVA, "admin", "demo");
     expect((await call("GET", "/admin/crew", demo)).status).toBe(403);

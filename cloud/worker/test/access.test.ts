@@ -223,6 +223,11 @@ describe("GET /auth/access", () => {
 });
 
 describe("staff login (/auth/access/staff)", () => {
+  it("records staff enrollment only through the staff application", async () => {
+    await login(await sign({ sub: "crew-only" }));
+    expect(row("SELECT * FROM auth_identities WHERE provider='cloudflare_access_staff' AND subject=?", "crew-only")).toBeUndefined();
+  });
+
   async function makeStaff(sub: string, role = "flight_surgeon") {
     await login(await sign({ sub, email: `${sub}@evade.health` }));
     const id = row("SELECT user_id FROM auth_identities WHERE subject=?", sub).user_id;
@@ -265,6 +270,8 @@ describe("staff login (/auth/access/staff)", () => {
     const identity = row("SELECT user_id FROM auth_identities WHERE provider='cloudflare_access' AND subject=?", "pending-staff");
     expect((await response.text())).toContain(identity.user_id);
     expect(row("SELECT role FROM users WHERE user_id=?", identity.user_id).role).toBe("astronaut");
+    expect(row("SELECT user_id FROM auth_identities WHERE provider='cloudflare_access_staff' AND subject=?", "pending-staff"))
+      .toMatchObject({ user_id: identity.user_id });
 
     (env.DB as any).raw.prepare("UPDATE users SET role='flight_surgeon' WHERE user_id=?").run(identity.user_id);
     const approved = await login(token, "/auth/access/staff");
