@@ -115,6 +115,61 @@ export async function transcribe(env: AiEnv, audio: ArrayBuffer): Promise<{ text
   return { text: String(res?.text ?? "").trim(), word_count: res?.transcription_info?.duration ? undefined : res?.word_count };
 }
 
+export interface JournalOverview {
+  overview: string;
+  mood_trend: "improving" | "stable" | "declining" | "unclear";
+  concerns: string[];
+  follow_up: string[];
+  model: string;
+}
+
+const OVERVIEW_SCHEMA = {
+  type: "object",
+  properties: {
+    overview: { type: "string" },
+    mood_trend: { type: "string", enum: ["improving", "stable", "declining", "unclear"] },
+    concerns: { type: "array", items: { type: "string" } },
+    follow_up: { type: "array", items: { type: "string" } },
+  },
+  required: ["overview", "mood_trend", "concerns", "follow_up"],
+};
+
+const OVERVIEW_SYSTEM = `You brief the flight surgeon and crew psychologist of a long-duration space mission.
+The JSON holds an astronaut's recent journal summaries and check-ins, oldest first. Return JSON only:
+- overview: 3-5 neutral sentences in third person on the astronaut's overall condition and how it has changed. No diagnosis.
+- mood_trend: improving, stable, declining, or unclear across the period.
+- concerns: up to 4 short items worth the surgeon's attention (for example sleep, workload, isolation, symptoms). Empty if none.
+- follow_up: up to 3 short, gentle topics the surgeon could raise in the next private conference.
+Use only what is in the facts. Do not quote the astronaut at length. Any entry with concern_level high must be named in concerns.`;
+
+/** Staff-only overview of an astronaut's condition from journal summaries and check-ins. Never shown to the astronaut. */
+export async function journalOverview(env: AiEnv, facts: unknown): Promise<JournalOverview | null> {
+  if (!env.AI) return null;
+  const input = {
+    messages: [{ role: "system", content: OVERVIEW_SYSTEM }, { role: "user", content: JSON.stringify(facts).slice(0, 12000) }],
+    response_format: { type: "json_schema", json_schema: OVERVIEW_SCHEMA },
+    max_tokens: 500,
+    temperature: 0.2,
+  };
+  for (const model of [TEXT_MODEL, FALLBACK_TEXT_MODEL]) {
+    try {
+      const out = parseModelJson(await env.AI.run(model as any, input as any, runOpts(env)));
+      if (!out || typeof out.overview !== "string") continue;
+      const list = (v: unknown, max: number) => (Array.isArray(v) ? v.slice(0, max).map((s) => String(s).slice(0, 160)) : []);
+      return {
+        overview: out.overview.slice(0, 1200),
+        mood_trend: ["improving", "stable", "declining", "unclear"].includes(out.mood_trend) ? out.mood_trend : "unclear",
+        concerns: list(out.concerns, 4),
+        follow_up: list(out.follow_up, 3),
+        model,
+      };
+    } catch (e) {
+      console.log("journal overview failed on", model, String(e));
+    }
+  }
+  return null;
+}
+
 /** Plain-language daily briefing so astronauts don't need medical training to read their dashboard. */
 export async function dailyBriefing(env: AiEnv, facts: unknown): Promise<string | null> {
   if (!env.AI) return null;

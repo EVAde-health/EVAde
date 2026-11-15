@@ -12,6 +12,7 @@ import { Heading, Text } from '@astryxdesign/core/Text';
 import { ChatBubbleLeftRightIcon, UserGroupIcon } from '@heroicons/react/24/outline';
 import { Icon } from '@astryxdesign/core/Icon';
 import AstronautPicker from '../../components/surgeon/AstronautPicker';
+import ReturnForecast from '../../components/ReturnForecast';
 import StatusBadge from '../../components/StatusBadge';
 import { useSurgeon } from '../../context/SurgeonContext';
 import { bandStatus } from '../../services/clinic';
@@ -101,6 +102,7 @@ function Record({ id, section, onSection }: { id: string; section: Section; onSe
           </Grid>
         )}
       </Card>
+      <ReturnForecast userId={id} />
       <SummaryCard id={id} simulated={hasSimulatedData(user)} />
       <TabList value={section} onChange={value => onSection(value as Section)} hasDivider>
         {SECTIONS.map(item => <Tab key={item.value} value={item.value} label={item.label} />)}

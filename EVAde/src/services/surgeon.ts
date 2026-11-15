@@ -143,6 +143,27 @@ export interface JournalData {
   journal: { ts: string; source: string; mood_label: string | null; concern_level: string | null; ai_summary: string | null }[];
 }
 
+// Staff-only AI overview of an astronaut's condition from recent journal entries and check-ins.
+export interface JournalOverview {
+  days: number;
+  entries: number;
+  checkins: number;
+  high_concern: number;
+  moderate_concern: number;
+  sentiment_earlier: number | null;
+  sentiment_recent: number | null;
+  last_entry_at: string | null;
+  generated_at: string;
+  cached?: boolean;
+  overview: {
+    overview: string;
+    mood_trend: 'improving' | 'stable' | 'declining' | 'unclear';
+    concerns: string[];
+    follow_up: string[];
+    model: string;
+  } | null;
+}
+
 export interface TasksData {
   day: string;
   points: number;

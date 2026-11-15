@@ -27,7 +27,7 @@ import { AXIS_TICK, BAR_CURSOR, CHART_MARGIN, GRID_STROKE, SERIES, Y_AXIS_WIDTH 
 import { useResource } from '../../services/useResource';
 import {
   correctObservation, formatValue, hasTimestamp, levelStatus, responseRows, setGoals,
-  type AstronautDetail, type Correction, type GoalHistoryRow, type GoalType, type GoalTypeInfo, type JournalData,
+  type AstronautDetail, type Correction, type GoalHistoryRow, type GoalType, type GoalTypeInfo, type JournalData, type JournalOverview,
   type NutritionData, type Observation, type ResolvedGoal, type SeriesMetric, type SleepData, type TasksData,
 } from '../../services/surgeon';
 
@@ -268,6 +268,73 @@ function CorrectionDialog({ row, onClose, onSaved }: { row: Observation; onClose
 }
 
 // ---------------------------------------------------------------- journal & check-ins
+const MOOD_TREND_BADGE = {
+  improving: { variant: 'success', label: 'Mood improving' },
+  stable: { variant: 'neutral', label: 'Mood stable' },
+  declining: { variant: 'warning', label: 'Mood declining' },
+  unclear: { variant: 'neutral', label: 'Mood trend unclear' },
+} as const;
+
+// Staff-only AI overview of the astronaut's condition from journal entries and check-ins.
+function JournalOverviewCard({ id }: { id: string }) {
+  const [runs, setRuns] = useState(0);
+  const { data, error, loading } = useResource<JournalOverview>(`/admin/astronauts/${id}/journal/overview?days=14${runs ? `&refresh=1&run=${runs}` : ''}`);
+  const overview = data?.overview;
+  const trendBadge = overview ? MOOD_TREND_BADGE[overview.mood_trend] : null;
+
+  return (
+    <Card padding={5}>
+      <VStack gap={3}>
+        <SectionTitle
+          title="Condition overview"
+          caption="From the journal and check-ins over the last 14 days. Visible to staff only; the astronaut never sees it."
+          end={data && <Button label={loading ? 'Analyzing…' : 'Re-run'} size="sm" variant="ghost" onClick={() => setRuns(value => value + 1)} isDisabled={loading} />}
+        />
+        {error && <Text role="alert">{error}</Text>}
+        {loading && !data && <Loading height={140} />}
+        {data && (
+          <HStack gap={2} wrap="wrap" vAlign="center">
+            {trendBadge && <Badge variant={trendBadge.variant} label={trendBadge.label} />}
+            {data.high_concern > 0 && <StatusBadge status="critical" label={`${data.high_concern} high-concern ${data.high_concern === 1 ? 'entry' : 'entries'}`} />}
+            {data.moderate_concern > 0 && <StatusBadge status="caution" label={`${data.moderate_concern} moderate-concern`} />}
+            <Text type="supporting">{data.entries} journal {data.entries === 1 ? 'entry' : 'entries'} · {data.checkins} check-ins</Text>
+          </HStack>
+        )}
+        {data && !data.entries && !data.checkins && <Text type="supporting">No journal entries or check-ins in the last 14 days.</Text>}
+        {data && (data.entries > 0 || data.checkins > 0) && !overview && (
+          <Text type="supporting">The AI overview is unavailable right now; the entries below are still complete.</Text>
+        )}
+        {overview && (
+          <>
+            <Text>{overview.overview}</Text>
+            <Grid columns={{ minWidth: 260, max: 2 }} gap={4}>
+              {!!overview.concerns.length && (
+                <VStack gap={1}>
+                  <Text type="label">Worth attention</Text>
+                  <List density="compact" edge="flush">
+                    {overview.concerns.map(item => <ListItem key={item} label={item} />)}
+                  </List>
+                </VStack>
+              )}
+              {!!overview.follow_up.length && (
+                <VStack gap={1}>
+                  <Text type="label">Topics for the next private conference</Text>
+                  <List density="compact" edge="flush">
+                    {overview.follow_up.map(item => <ListItem key={item} label={item} />)}
+                  </List>
+                </VStack>
+              )}
+            </Grid>
+            <Text type="supporting">
+              AI overview (Workers AI, Llama 3.3 70B) · verify against the entries below, not a diagnosis · <Timestamp value={data!.generated_at} />
+            </Text>
+          </>
+        )}
+      </VStack>
+    </Card>
+  );
+}
+
 export function JournalSection({ id }: { id: string }) {
   const { data, error, loading } = useResource<JournalData>(`/admin/astronauts/${id}/journal?days=35`);
   const checkins = responseRows(data?.checkins);
@@ -280,6 +347,7 @@ export function JournalSection({ id }: { id: string }) {
   if (!data) return null;
   return (
     <VStack gap={4}>
+      <JournalOverviewCard id={id} />
       {!!trend.length && (
         <Card padding={4}>
           <VStack gap={2}>

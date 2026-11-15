@@ -234,6 +234,59 @@ export const fetchDashboard = (userId: string, { signal }: Signal = {}) => api<D
 export const fetchRadiation = (userId: string, days: number, { signal }: Signal = {}) =>
   api<RadiationHistory>(userPath(userId, `radiation?days=${days}`), { signal });
 
+// ---------- return forecast ----------
+
+export type ReturnDriver = 'risk' | 'trend' | 'radiation_limit' | 'bone_limit' | 'acute' | 'extreme_domain';
+
+export interface MetricTrend {
+  metric: string;
+  label: string;
+  unit: string;
+  domain: string;
+  level: Level;
+  latest: number;
+  latest_ts: string;
+  days_with_data: number;
+  slope_per_week: number | null;
+  direction: 'rising' | 'falling' | 'steady' | null;
+  worsening: boolean;
+  r2: number | null;
+  confidence: 'high' | 'medium' | 'low' | null;
+  limit: number | null;
+  days_to_limit: number | null;
+  days_to_limit_range: { low: number; high: number | null } | null;
+  concern: number;
+}
+
+export interface ReturnPrediction {
+  generated_at: string;
+  source: 'workers-ai' | 'model-api' | 'rules';
+  model: string | null;
+  provider_fallback: string | null;
+  window_days: number;
+  return: {
+    status: 'ok' | 'insufficient_data';
+    days: number | null;
+    display: string;
+    driver: ReturnDriver | null;
+    driver_metric: string | null;
+    driver_label: string | null;
+    interval_days: { low: number; high: number | null } | null;
+    provisional: boolean;
+    scheduled_days_left: number | null;
+  };
+  most_concerning: { metric: string; label: string; level: Level; reason: string } | null;
+  headline: string;
+  explanation: string;
+  trends: MetricTrend[];
+  note: string;
+  cached?: boolean;
+}
+
+// Trend analysis and the projected days until return; refresh skips the 30-minute cache.
+export const fetchPrediction = (userId: string, refresh = false, { signal }: Signal = {}) =>
+  api<ReturnPrediction>(userPath(userId, `prediction${refresh ? '?refresh=1' : ''}`), { signal });
+
 // Saves a mood (and optional stress) self-report; also closes the mood task.
 export const postSelfReport = (report: { mood?: number; stress?: number; note?: string }) =>
   api<{ ok: boolean }>('/self-reports', { method: 'POST', body: { client_id: crypto.randomUUID(), ...report } });

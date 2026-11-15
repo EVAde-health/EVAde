@@ -14,7 +14,8 @@ import {
 import {
   AuthEnv, clearSessionCookie, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, sessionReference, sha256hex, STAFF_ACCESS_PROVIDER, STAFF_ROLES, trustedOrigin,
 } from "./auth";
-import { analyzeJournal, dailyBriefing, transcribe, TEXT_MODEL } from "./ai";
+import { analyzeJournal, dailyBriefing, journalOverview, transcribe, TEXT_MODEL } from "./ai";
+import { predict, WINDOW_DAYS, type PredictionEnv } from "./prediction";
 import type { LiveEvent } from "./live";
 import {
   callModelApi, deleteModelUser, isMock, ModelApiError, ModelEnv, modelsConfigured, modelUserId, PREDICT_KINDS, PredictKind,
@@ -28,7 +29,7 @@ import { awardDaily, voiceSavedReply, materializeTasks, registerWebAppRoutes, ty
 import { extractHealth, rowsFor, stableId, type CheckinIn, type Extraction } from "./journalParse";
 export { CrewFeed } from "./live";
 
-export interface Env extends AuthEnv, ModelEnv, WebAppEnv {
+export interface Env extends AuthEnv, ModelEnv, WebAppEnv, PredictionEnv {
   DB: D1Database;
   AI?: Ai; // Workers AI
   AI_GATEWAY?: string; // optional AI Gateway id
@@ -833,6 +834,87 @@ route("GET", "/users/:id/briefing", async (_r, env, p, url, _c, who) => {
 });
 route("GET", "/users/:id/risk/history", async (_r, env, p) =>
   json((await env.DB.prepare("SELECT ts,r,band,mdtr,domains FROM risk_scores WHERE user_id=? ORDER BY ts DESC LIMIT 200").bind(p.id).all()).results));
+
+// Return-to-Earth forecast: metric trends, days until return and the most concerning metric (prediction.ts).
+// Seen by the astronaut and by staff. Cached in KV until new readings arrive or 30 minutes pass.
+route("GET", "/users/:id/prediction", async (_r, env, p, url, _c, who) => {
+  const user = await requireUser(env, p.id);
+  const since = new Date(Date.now() - WINDOW_DAYS * 864e5).toISOString();
+  const marker = await env.DB.prepare(
+    `SELECT (SELECT MAX(ts) FROM observations WHERE user_id=?1) AS obs, (SELECT MAX(ts) FROM radiation_doses WHERE user_id=?1) AS dose`
+  ).bind(p.id).first<{ obs: string | null; dose: string | null }>();
+  const cacheKey = `pred:v1:${p.id}:${marker?.obs ?? "-"}:${marker?.dose ?? "-"}:${env.PREDICTION_PROVIDER ?? "workers-ai"}`;
+  if (url.searchParams.get("refresh") !== "1") {
+    const cached = await env.SESSIONS?.get(cacheKey, "json");
+    if (cached) return json({ ...(cached as object), cached: true });
+  }
+  const [defs, { results: observations }, { results: doses }, risk] = await Promise.all([
+    metricDefs(env),
+    env.DB.prepare("SELECT metric, value, ts FROM observations WHERE user_id=? AND ts>=? ORDER BY ts").bind(p.id, since)
+      .all<{ metric: string; value: number; ts: string }>(),
+    env.DB.prepare("SELECT ts, cumulative_msv, daily_dose_msv FROM radiation_doses WHERE user_id=? AND ts>=? ORDER BY ts").bind(p.id, since)
+      .all<{ ts: string; cumulative_msv: number | null; daily_dose_msv: number | null }>(),
+    riskFor(env, p.id, false),
+  ]);
+  const start = user.mission_start ? Date.parse(user.mission_start) : NaN;
+  const scheduledDaysLeft = Number.isFinite(start) && user.mission_length_days
+    ? Math.max(0, Math.round(start / 864e5 + user.mission_length_days - Date.now() / 864e5)) : null;
+  const out = await predict(who.demo ? { ...env, AI: undefined } : env, p.id, {
+    defs, observations, doses, radiationLimitMsv: user.radiation_limit_msv ?? 600,
+    riskMdtrDays: observations.length ? risk.mdtr_days : null, scheduledDaysLeft,
+  });
+  await env.SESSIONS?.put(cacheKey, JSON.stringify(out), { expirationTtl: 1800 });
+  return json(out);
+});
+
+// Staff-only overview of an astronaut's condition from journal summaries and check-ins (/admin/* is staff-only in
+// authorize()). The astronaut never sees it, so the journal stays a place to talk rather than an assessment.
+route("GET", "/admin/astronauts/:id/journal/overview", async (_r, env, p, url) => {
+  const user = await requireUser(env, p.id);
+  if (user.role !== "astronaut") throw new HttpError(404, "Astronaut not found");
+  const days = Math.max(3, Math.min(Number(url.searchParams.get("days")) || 14, 60));
+  const since = new Date(Date.now() - days * 864e5).toISOString();
+  const [{ results: entries }, { results: checkins }] = await Promise.all([
+    env.DB.prepare(
+      `SELECT id, ts, source, mood_label, concern_level, sentiment, ai_summary, substr(content,1,300) AS excerpt
+       FROM journal_entries WHERE user_id=? AND ts>=? ORDER BY ts LIMIT 80`
+    ).bind(p.id, since).all<any>(),
+    env.DB.prepare(
+      "SELECT id, ts, mood, stress, fatigue, sleep_quality, sleep_hours, symptoms FROM self_reports WHERE user_id=? AND ts>=? ORDER BY ts LIMIT 120"
+    ).bind(p.id, since).all<any>(),
+  ]);
+  const sentiments = entries.map((e) => e.sentiment).filter((s): s is number => typeof s === "number");
+  const half = Math.floor(sentiments.length / 2);
+  const mean = (a: number[]) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : null);
+  const stats = {
+    days, entries: entries.length, checkins: checkins.length,
+    high_concern: entries.filter((e) => e.concern_level === "high").length,
+    moderate_concern: entries.filter((e) => e.concern_level === "moderate").length,
+    sentiment_earlier: half ? mean(sentiments.slice(0, half)) : null,
+    sentiment_recent: half ? mean(sentiments.slice(half)) : mean(sentiments),
+    last_entry_at: entries.at(-1)?.ts ?? null,
+  };
+  if (!entries.length && !checkins.length) return json({ ...stats, overview: null, generated_at: now() });
+  const cacheKey = `jov:v1:${p.id}:${days}:${entries.at(-1)?.id ?? "-"}:${checkins.at(-1)?.id ?? "-"}`;
+  if (url.searchParams.get("refresh") !== "1") {
+    const cached = await env.SESSIONS?.get(cacheKey, "json");
+    if (cached) return json({ ...(cached as object), cached: true });
+  }
+  const ai = await journalOverview(env, {
+    period_days: days,
+    journal: entries.map((e) => ({
+      ts: e.ts.slice(0, 16), mood: e.mood_label, concern_level: e.concern_level, sentiment: e.sentiment,
+      summary: e.ai_summary ?? e.excerpt,
+    })),
+    checkins: checkins.map((c) => ({
+      ts: c.ts.slice(0, 16), mood: c.mood, stress: c.stress, fatigue: c.fatigue, sleep_quality: c.sleep_quality,
+      sleep_hours: c.sleep_hours, symptoms: c.symptoms,
+    })),
+  });
+  const out = { ...stats, overview: ai, generated_at: now() };
+  if (ai) await env.SESSIONS?.put(cacheKey, JSON.stringify(out), { expirationTtl: 6 * 3600 });
+  return json(out);
+});
 
 // Dashboard: one call for the frontend home screen
 route("GET", "/users/:id/dashboard", async (_r, env, p) => {

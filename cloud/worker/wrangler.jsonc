@@ -54,7 +54,13 @@
     // "true" shows a no-OAuth test login. Keep "false" in production.
     "DEV_LOGIN": "false",
     // Optional AI Gateway id (create one named "evade" in the dashboard for logs + caching of AI calls)
-    "AI_GATEWAY": ""
+    "AI_GATEWAY": "",
+    // Who decides "days until return" in GET /users/:id/prediction. "workers-ai": trend math in this Worker, with
+    // Workers AI ranking the most concerning metric and explaining it. "model-api": the custom model's
+    // POST /v1/predict/risk via evade-gateway (falls back to "workers-ai" if the gateway is not connected or fails).
+    "PREDICTION_PROVIDER": "workers-ai",
+    // Lead time in days to arrange a return; the model service withholds days-to-return without it.
+    "LOGISTICS_FLOOR_DAYS": "3"
   }
   // Secrets (set with `npx wrangler secret put <NAME>`):
   //   EVADE_API_KEY  server-side service key for the X-EVAde-Key header
