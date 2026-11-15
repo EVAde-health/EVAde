@@ -12,21 +12,21 @@ import BrandMark from '../components/BrandMark';
 import NebulaCanvas from '../components/NebulaCanvas';
 import OrbitalHud from '../components/OrbitalHud';
 import ThemeToggle from '../components/ThemeToggle';
-import { accessLoginUrl, demoLoginUrl, staffLoginUrl } from '../services/api';
-import { fetchAuthProviders, signOut, type AuthProviders } from '../services/healthApi';
+import { accessLoginUrl, demoLoginUrl } from '../services/api';
+import { fetchAuthProviders, type AuthProviders } from '../services/healthApi';
 import './css/LoginPage.css';
 
 type AuthMode = 'signin' | 'signup';
 
 const MAX_ERROR_LENGTH = 160;
 
-// Sign in / sign up screen; both go through Cloudflare Access.
+// Sign in / sign up screen; both go through Cloudflare Access (passkey or emailed code). Astronauts and flight
+// surgeons share the sign-in; the account's role decides which app opens. Locally, /auth/access opens the
+// Worker's stand-in for the Access page, and the seeded test accounts are listed under the sign-in button.
 export default function LoginPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [config, setConfig] = useState<AuthProviders>();
   const [failed, setFailed] = useState(false);
-  const [switching, setSwitching] = useState(false);
-  const [switchError, setSwitchError] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -43,25 +43,14 @@ export default function LoginPage() {
   const mode: AuthMode = searchParams.get('mode') === 'signup' ? 'signup' : 'signin';
   const isSignUp = mode === 'signup';
   const hasAccess = config?.providers.includes('cloudflare_access') ?? false;
-  const hasStaffAccess = config?.providers.includes('cloudflare_access_staff') ?? false;
+  // The Worker lists 'dev' only on a loopback host with DEV_LOGIN=true, i.e. exactly where the test accounts work.
+  const hasDev = config?.providers.includes('dev') ?? false;
   const hasDemo = config?.providers.includes('demo') ?? false;
   const serverError = searchParams.get('error')?.slice(0, MAX_ERROR_LENGTH);
 
   // Swaps between sign in and sign up, keeping it in the URL.
   function changeMode(next: string) {
     setSearchParams(next === 'signup' ? { mode: 'signup' } : {}, { replace: true });
-  }
-
-  async function switchAccount() {
-    if (switching) return;
-    setSwitching(true);
-    setSwitchError(false);
-    try {
-      if (!(await signOut())) setSwitching(false);
-    } catch {
-      setSwitchError(true);
-      setSwitching(false);
-    }
   }
 
   return (
@@ -88,29 +77,26 @@ export default function LoginPage() {
           <Card padding={6} className="login__card">
             <VStack gap={4}>
               {serverError && <Text role="alert">{serverError}</Text>}
-              {switchError && <Text role="alert">Could not sign out. Try again before switching accounts.</Text>}
               {failed && <Text role="alert">Sign-in options could not load. Refresh to try again.</Text>}
               {!config && !failed && <Text role="status">Checking sign-in options…</Text>}
-              {config && !hasAccess && !hasStaffAccess && !hasDemo && <Text>Sign-in is currently unavailable. Please try again later.</Text>}
+              {config && !hasAccess && !hasDemo && <Text>Sign-in is currently unavailable. Please try again later.</Text>}
               {hasAccess && (
                 <VStack gap={2}>
-                  <Button variant="primary" size="lg" width="100%" label={isSignUp ? 'Create astronaut account' : 'Astronaut sign-in'} href={accessLoginUrl()} />
+                  <Button variant="primary" size="lg" width="100%" label={isSignUp ? 'Create astronaut account' : 'Sign in'} href={accessLoginUrl()} />
                   <Text type="supporting">
                     {isSignUp
                       ? 'Cloudflare Access emails you a one-time code; your crew account is created on first sign-in.'
                       : 'Cloudflare Access emails you a one-time code to confirm it’s you.'}
                   </Text>
+                  {hasDev && !isSignUp && (
+                    <Text type="supporting" color="secondary" className="login__test-accounts">
+                      Local test accounts: vega@demo.evade.local → astronaut test · ortiz@demo.evade.local → flight surgeon test
+                    </Text>
+                  )}
                 </VStack>
               )}
-              {hasStaffAccess && <Button variant="secondary" size="lg" width="100%" label="Flight surgeon sign-in" href={staffLoginUrl()} />}
-              {(hasAccess || hasStaffAccess) && <Button variant="ghost" width="100%" label="Use a different email" onClick={switchAccount} isDisabled={switching} />}
               {hasDemo && <Button variant="ghost" width="100%" label="Try the demo" href={demoLoginUrl()} />}
-              <Button
-                variant="secondary"
-                width="100%"
-                label={isSignUp ? 'Already have an account? Sign in' : 'New to EVAde? Sign up'}
-                onClick={() => changeMode(isSignUp ? 'signin' : 'signup')}
-              />
+              {isSignUp && <Button variant="secondary" width="100%" label="Already have an account? Sign in" onClick={() => changeMode('signin')} />}
             </VStack>
           </Card>
           <HStack gap={2} vAlign="center">

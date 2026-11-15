@@ -13,7 +13,6 @@ import { ArrowPathIcon, ArrowRightIcon } from '@heroicons/react/24/outline';
 import BehaviorPanel from '../components/BehaviorPanel';
 import BonePanel from '../components/BonePanel';
 import CardioPanel from '../components/CardioPanel';
-import { EmergencyBanner } from '../components/EmergencyButton';
 import HealthDataProvider from '../components/HealthDataProvider';
 import MetricExplorer from '../components/MetricExplorer';
 import MoodPanel from '../components/MoodPanel';
@@ -135,7 +134,6 @@ function DashboardContent() {
         }
       />
 
-      {!user.demo && <EmergencyBanner />}
 
       {status === 'error' && (
         <Card padding={4} role="alert">

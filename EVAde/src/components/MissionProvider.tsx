@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { MissionContext, type MealEntry, type MissionContextValue } from '../context/MissionContext';
 import { nutritionGoals, toMissionTask } from '../data/tasks';
-import { api, userPath } from '../services/api';
-import type { Goal } from '../services/clinic';
 import {
   completeTutorialRequest,
   deleteMeal,
@@ -40,7 +38,6 @@ export default function MissionProvider({ user, children }: { user: SessionUser;
   const [streak, setStreak] = useState(user.streak_days);
   const [watchedTutorials, setWatchedTutorials] = useState<string[]>([]);
   const [settings, setSettings] = useState<UserSettings | null>(null);
-  const [staffGoals, setStaffGoals] = useState<Goal[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -55,8 +52,7 @@ export default function MissionProvider({ user, children }: { user: SessionUser;
       fetchHydration(user.user_id, options),
       fetchTutorialProgress(user.user_id, options),
       fetchSettings(user.user_id, options),
-      user.demo ? Promise.resolve({ goals: [] }) : api<{ goals: Goal[] }>(userPath(user.user_id, 'goals'), options),
-    ]).then(([today, mealRows, water, progress, prefs, assigned]) => {
+    ]).then(([today, mealRows, water, progress, prefs]) => {
       if (controller.signal.aborted) return;
       if (today.status === 'fulfilled') {
         setTasks(today.value.tasks);
@@ -67,7 +63,6 @@ export default function MissionProvider({ user, children }: { user: SessionUser;
       if (water.status === 'fulfilled') setWaterMl(Math.max(0, water.value.total_ml));
       if (progress.status === 'fulfilled') setWatchedTutorials(progress.value.map(p => p.tutorial_id));
       if (prefs.status === 'fulfilled') setSettings(prefs.value);
-      if (assigned.status === 'fulfilled') setStaffGoals(assigned.value.goals);
       setLoadError([today, mealRows, water, progress, prefs].some(result => result.status === 'rejected'));
       setLoading(false);
     });
@@ -164,24 +159,19 @@ export default function MissionProvider({ user, children }: { user: SessionUser;
   }, [refreshToday]);
 
   const value = useMemo<MissionContextValue>(() => {
+    // The Worker resolves goals into settings: the latest flight-surgeon (or own) goal, then saved settings, then defaults.
     const prefs = settings ?? DEFAULT_SETTINGS;
-    const assigned = new Map(staffGoals.filter(goal => goal.source === 'set').map(goal => [goal.metric, goal.target]));
     const goals = nutritionGoals(prefs);
     return {
       user, xp: points, streak, tasks: tasks.map(toMissionTask),
       completed: tasks.filter(row => row.completed_at).map(row => String(row.id)),
       meals, waterMl, watchedTutorials, settings,
-      goals: {
-        kcal: assigned.get('kcal_intake') ?? goals.kcal,
-        protein: assigned.get('protein_intake_g') ?? goals.protein,
-        carbs: assigned.get('carbs_intake_g') ?? goals.carbs,
-        fat: assigned.get('fat_intake_g') ?? goals.fat,
-      },
-      waterGoalMl: assigned.get('water_intake_ml') ?? prefs.water_goal_ml,
+      goals,
+      waterGoalMl: prefs.water_goal_ml,
       waterStepMl: prefs.water_step_ml, loading, loadError,
       toggleTask, completeTaskByKey, addWater, addMeal, removeMeal, completeTutorial, logMood, refreshToday, reload,
     };
-  }, [user, points, streak, tasks, meals, waterMl, watchedTutorials, settings, staffGoals, loading, loadError,
+  }, [user, points, streak, tasks, meals, waterMl, watchedTutorials, settings, loading, loadError,
     toggleTask, completeTaskByKey, addWater, addMeal, removeMeal, completeTutorial, logMood, refreshToday, reload]);
 
   return <MissionContext.Provider value={value}>{children}</MissionContext.Provider>;

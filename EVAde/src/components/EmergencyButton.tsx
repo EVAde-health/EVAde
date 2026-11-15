@@ -1,78 +1,104 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { Icon } from '@astryxdesign/core/Icon';
-import { Dialog } from '@astryxdesign/core/Dialog';
-import { Banner } from '@astryxdesign/core/Banner';
-import { Heading, Text } from '@astryxdesign/core/Text';
-import { HStack, VStack } from '@astryxdesign/core/Stack';
+import { Text } from '@astryxdesign/core/Text';
 import { TextArea } from '@astryxdesign/core/TextArea';
+import { VStack } from '@astryxdesign/core/Stack';
 import { useToast } from '@astryxdesign/core/Toast';
-import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
-import { api } from '../services/api';
-import type { Emergency } from '../services/clinic';
-import { useResource } from '../services/useResource';
+import { ExclamationTriangleIcon } from '@heroicons/react/24/solid';
+import { raiseEmergency } from '../services/surgeon';
+import './surgeon/surgeon.css';
 
-export function EmergencyBanner() {
-  const { data, reload } = useResource<{ emergencies: Emergency[] }>('/emergencies/mine');
-  useEffect(() => {
-    const timer = window.setInterval(reload, 12000);
-    return () => window.clearInterval(timer);
-  }, [reload]);
-  const open = data?.emergencies.find(item => item.status !== 'resolved');
-  if (!open) return null;
-  return (
-    <Banner
-      status={open.status === 'open' ? 'error' : 'warning'}
-      title={open.status === 'open' ? 'Emergency sent to the staff console' : 'A flight surgeon acknowledged your emergency'}
-      description={open.message || 'The console will show when a staff member acknowledges it.'}
-    />
-  );
-}
+const HOLD_MS = 1750;
 
-export default function EmergencyButton() {
-  const [open, setOpen] = useState(false);
-  const [message, setMessage] = useState('');
+// Press and hold (about 1.75 s, mouse, touch or Space/Enter) to alert every flight surgeon.
+// Letting go early cancels. An optional note can be added first.
+export default function EmergencyButton({ onSent }: { onSent?: () => void }) {
+  const [fill, setFill] = useState(0);
+  const [holding, setHolding] = useState(false);
   const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [note, setNote] = useState('');
+  const frame = useRef<number | null>(null);
+  const started = useRef(0);
   const showToast = useToast();
 
-  async function send() {
+  useEffect(() => () => { if (frame.current) cancelAnimationFrame(frame.current); }, []);
+
+  async function fire() {
     setSending(true);
     try {
-      const result = await api<{ already: boolean }>('/emergencies', {
-        method: 'POST',
-        body: { message: message.trim() || undefined },
-      });
-      showToast({ body: result.already ? 'An emergency is already open in the staff console.' : 'Emergency sent to the flight surgeon team.' });
-      setOpen(false);
-      setMessage('');
+      const result = await raiseEmergency(note);
+      setSent(true);
+      setNote('');
+      setNoteOpen(false);
+      showToast({ body: result.already ? 'Your emergency is already open. The flight surgeons can see it.' : 'Emergency sent. Every flight surgeon on duty has been alerted.' });
+      onSent?.();
+      window.dispatchEvent(new Event('evade:emergency-sent'));
+      window.setTimeout(() => setSent(false), 4000);
     } catch (error) {
-      showToast({ body: error instanceof Error ? error.message : 'The emergency could not be sent.' });
+      showToast({ body: error instanceof Error ? error.message : 'The emergency could not be sent. Use your backup channel.' });
     } finally {
       setSending(false);
+      setFill(0);
     }
   }
 
+  function start() {
+    if (sending || holding) return;
+    setHolding(true);
+    started.current = performance.now();
+    const step = (now: number) => {
+      const progress = Math.min(1, (now - started.current) / HOLD_MS);
+      setFill(progress);
+      if (progress >= 1) {
+        frame.current = null;
+        setHolding(false);
+        void fire();
+        return;
+      }
+      frame.current = requestAnimationFrame(step);
+    };
+    frame.current = requestAnimationFrame(step);
+  }
+
+  function cancel() {
+    if (!frame.current) return;
+    cancelAnimationFrame(frame.current);
+    frame.current = null;
+    setHolding(false);
+    setFill(0);
+  }
+
+  const label = sending ? 'Sending…' : sent ? 'Emergency sent' : holding ? 'Keep holding…' : 'Hold for emergency';
   return (
-    <>
-      <Button
-        label="Emergency"
-        variant="destructive"
-        icon={<Icon icon={ExclamationTriangleIcon} />}
-        onClick={() => setOpen(true)}
-      />
-      <Dialog isOpen={open} onOpenChange={setOpen} purpose="form" width={480}>
-        <VStack gap={4} padding={2}>
-          <VStack gap={1}>
-            <Heading level={2}>Contact the flight surgeon</Heading>
-            <Text color="secondary">This sends an alert to the EVAde staff console. For urgent help, use your established emergency channel.</Text>
-          </VStack>
-          <TextArea label="What is happening?" description="Optional. A short note helps the team respond." isOptional value={message} onChange={setMessage} />
-          <HStack gap={2} hAlign="end">
-            <Button label="Cancel" variant="secondary" onClick={() => setOpen(false)} isDisabled={sending} />
-            <Button label="Send emergency" variant="destructive" onClick={send} isLoading={sending} />
-          </HStack>
-        </VStack>
-      </Dialog>
-    </>
+    <VStack gap={1.5}>
+      {noteOpen && (
+        <TextArea label="What is happening? (optional)" value={note} onChange={setNote} maxLength={500} rows={2} size="sm" />
+      )}
+      <button
+        type="button"
+        className="hold-button"
+        data-holding={holding}
+        data-done={sent || sending}
+        style={{ '--fill': sent || sending ? 1 : fill } as CSSProperties}
+        aria-label="Emergency: press and hold for about two seconds to alert the flight surgeons"
+        onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); start(); }}
+        onPointerUp={cancel}
+        onPointerCancel={cancel}
+        onPointerLeave={cancel}
+        onKeyDown={event => { if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) { event.preventDefault(); start(); } }}
+        onKeyUp={event => { if (event.key === ' ' || event.key === 'Enter') cancel(); }}
+        onBlur={cancel}
+        onContextMenu={event => event.preventDefault()}
+      >
+        <span className="hold-button__fill" aria-hidden="true" />
+        <span className="hold-button__label"><Icon icon={ExclamationTriangleIcon} size="sm" /> {label}</span>
+      </button>
+      {!noteOpen
+        ? <Button label="Add a note first" size="sm" variant="ghost" onClick={() => setNoteOpen(true)} />
+        : <Text type="supporting">The note is sent with the alert.</Text>}
+    </VStack>
   );
 }
