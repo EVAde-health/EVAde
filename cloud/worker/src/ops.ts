@@ -4,9 +4,11 @@
 import { Principal, STAFF_ACCESS_PROVIDER, STAFF_ROLES } from "./auth";
 import { HttpError } from "./http";
 import { levelFromThresholds, type MetricDef } from "./health";
+import { limitMessageSend, recordMessage } from "./messages";
 
 export interface OpsDb {
   DB: D1Database;
+  AUTH_RATE_LIMITER: RateLimit;
 }
 
 type Handler = (req: Request, env: OpsDb, p: Record<string, string>, url: URL, ctx: ExecutionContext, who: Principal) => Promise<Response>;
@@ -164,8 +166,8 @@ export async function crewOverview(db: D1Database, staffId: string | null) {
               (SELECT value FROM v_latest_indicators v WHERE v.user_id=c.user_id AND v.metric='mood') AS mood,
               (SELECT COUNT(*) FROM alerts a WHERE a.user_id=c.user_id AND a.level='red' AND a.acknowledged=0) AS red_alerts,
               (SELECT MAX(j.ts) FROM journal_entries j WHERE j.user_id=c.user_id) AS last_journal_at,
-              (SELECT COUNT(*) FROM staff_threads t JOIN staff_messages m ON m.thread_id=t.id
-               WHERE t.astronaut_id=c.user_id AND t.staff_id=? AND m.sender_id=t.astronaut_id AND m.read_at IS NULL) AS unread_messages
+              (SELECT COUNT(*) FROM conversations t JOIN conversation_messages m ON m.conversation_id=t.id
+               WHERE t.astronaut_id=c.user_id AND t.surgeon_id=? AND m.sender_id=t.astronaut_id AND m.read_at IS NULL) AS unread_messages
        FROM v_crew_overview c JOIN users u ON u.user_id=c.user_id
        ORDER BY open_emergencies DESC, c.escalated_alerts DESC, c.display_name`
     ).bind(staffId).all<CrewSummary>(),
@@ -338,15 +340,16 @@ async function seriesFor(env: OpsDb, userId: string, group: string | null, metri
 }
 
 async function threadFor(env: OpsDb, who: Principal, threadId: number) {
+  if (who.kind !== "user" || !who.user_id || who.demo) throw new HttpError(403, "Use your own account to open a conversation");
   const thread = await env.DB.prepare(
-    `SELECT t.*, au.display_name AS astronaut_name, su.display_name AS staff_name, su.role AS staff_role
-     FROM staff_threads t
+    `SELECT t.id, t.astronaut_id, t.surgeon_id AS staff_id, t.created_at, t.updated_at,
+            au.display_name AS astronaut_name, su.display_name AS staff_name, su.role AS staff_role
+     FROM conversations t
      JOIN users au ON au.user_id=t.astronaut_id
-     JOIN users su ON su.user_id=t.staff_id
+     JOIN users su ON su.user_id=t.surgeon_id
      WHERE t.id=?`
-  ).bind(threadId).first<any>();
+  ).bind(threadId).first<{ id: number; astronaut_id: string; staff_id: string }>();
   if (!thread) throw new HttpError(404, "Conversation not found");
-  if (who.kind !== "user" || who.demo) throw new HttpError(403, "Use your own account to open a conversation");
   const mine = staffPerson(who) ? thread.staff_id === who.user_id : thread.astronaut_id === who.user_id;
   if (!mine) throw new HttpError(403, "You can only open your own conversations");
   return thread;
@@ -507,6 +510,7 @@ export function registerOps(route: (method: string, path: string, handler: Handl
   });
 
   route("POST", "/admin/observations/:oid/correct", async (req, env, p, _u, _c, who) => {
+    if (who.kind !== "user" || who.role !== "flight_surgeon") throw new HttpError(403, "Flight surgeon access required");
     const reading = await env.DB.prepare(
       `SELECT o.id, o.user_id, o.metric, o.value, o.level, o.unit, o.ts, u.role
        FROM observations o JOIN users u USING (user_id) WHERE o.id=?`
@@ -591,10 +595,10 @@ export function registerOps(route: (method: string, path: string, handler: Handl
     const start = `${sinceDay(daysOf(url, 35))}T00:00:00.000Z`;
     const [reports, journal] = await Promise.all([
       env.DB.prepare(
-        "SELECT id, ts, mood, stress, fatigue, sleep_quality, note FROM self_reports WHERE user_id=? AND ts>=? ORDER BY ts"
+        "SELECT id, ts, mood, stress, fatigue, sleep_quality FROM self_reports WHERE user_id=? AND ts>=? ORDER BY ts"
       ).bind(p.id, start).all(),
       env.DB.prepare(
-        `SELECT id, ts, source, mood_label, concern_level, sentiment, ai_summary, substr(content,1,400) AS excerpt
+        `SELECT id, ts, source, mood_label, concern_level, sentiment, ai_summary
          FROM journal_entries WHERE user_id=? ORDER BY ts DESC LIMIT 20`
       ).bind(p.id).all(),
     ]);
@@ -606,12 +610,12 @@ export function registerOps(route: (method: string, path: string, handler: Handl
     const start = `${sinceDay(daysOf(url, 35))}T00:00:00.000Z`;
     const [reports, journal] = await Promise.all([
       env.DB.prepare(
-        `SELECT id, ts, mood, stress, fatigue, sleep_quality, note, source, sleep_hours, symptoms, checkin_level
+        `SELECT id, ts, mood, stress, fatigue, sleep_quality, source, sleep_hours, symptoms, checkin_level
          FROM self_reports WHERE user_id=? AND ts>=? ORDER BY ts DESC LIMIT 200`
       ).bind(p.id, start).all<{ symptoms: string | null }>(),
       env.DB.prepare(
-        `SELECT id, ts, source, mood_label, concern_level, ai_summary, substr(content,1,4000) AS content
-         FROM journal_entries WHERE user_id=? AND ts>=? ORDER BY ts DESC LIMIT 60`
+        `SELECT ts, source, mood_label, concern_level, ai_summary
+         FROM journal_entries WHERE user_id=? AND ts>=? ORDER BY ts DESC, id DESC LIMIT 60`
       ).bind(p.id, start).all(),
     ]);
     return json({ checkins: reports.results.map(row => ({ ...row, symptoms: symptomsList(row.symptoms) })), journal: journal.results });
@@ -764,9 +768,9 @@ export function registerOps(route: (method: string, path: string, handler: Handl
       ).all<ActiveEmergency>(),
       who.user_id
         ? env.DB.prepare(
-          `SELECT COUNT(*) AS n FROM staff_messages m JOIN staff_threads t ON t.id=m.thread_id
-           WHERE t.staff_id=? AND m.sender_id!=? AND m.read_at IS NULL`
-        ).bind(who.user_id, who.user_id).first<{ n: number }>()
+          `SELECT COUNT(*) AS n FROM conversation_messages m JOIN conversations t ON t.id=m.conversation_id
+           WHERE t.surgeon_id=? AND m.sender_id=t.astronaut_id AND m.read_at IS NULL`
+        ).bind(who.user_id).first<{ n: number }>()
         : Promise.resolve({ n: 0 }),
     ]);
     return json({
@@ -786,29 +790,26 @@ export function registerOps(route: (method: string, path: string, handler: Handl
     return json(results.map((row) => ({ ...displayProfile(row), role: row.role })));
   });
 
-  async function appendMessage(env: OpsDb, threadId: number, sender: string, content: string, ts: string) {
-    const [created] = await env.DB.batch([
-      env.DB.prepare("INSERT INTO staff_messages (thread_id, sender_id, body, created_at) VALUES (?,?,?,?) RETURNING *")
-        .bind(threadId, sender, content, ts),
-      env.DB.prepare("UPDATE staff_threads SET updated_at=? WHERE id=?").bind(ts, threadId),
-    ]);
-    return created.results[0];
+  function legacyMessage({ conversation_id: thread_id, ...message }: Awaited<ReturnType<typeof recordMessage>>) {
+    return { thread_id, ...message };
   }
 
+  // Keep the original numeric thread API as an alias for the migrated conversations.
   route("GET", "/chat/threads", async (_r, env, _p, _u, _c, who) => {
-    if (!who.user_id || who.demo) throw new HttpError(403, "Use your own account to see conversations");
-    const column = staffPerson(who) ? "t.staff_id" : "t.astronaut_id";
+    if (who.kind !== "user" || !who.user_id || who.demo) throw new HttpError(403, "Use your own account to see conversations");
+    const [column, peer] = staffPerson(who) ? ["t.surgeon_id", "t.astronaut_id"] : ["t.astronaut_id", "t.surgeon_id"];
     const { results } = await env.DB.prepare(
-      `SELECT t.id, t.astronaut_id, t.staff_id, t.updated_at,
+      `SELECT t.id, t.astronaut_id, t.surgeon_id AS staff_id, t.updated_at,
               au.display_name AS astronaut_name, su.display_name AS staff_name, su.role AS staff_role,
-              (SELECT body FROM staff_messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) AS last_body,
-              (SELECT created_at FROM staff_messages m WHERE m.thread_id=t.id ORDER BY m.id DESC LIMIT 1) AS last_at,
-              (SELECT COUNT(*) FROM staff_messages m WHERE m.thread_id=t.id AND m.sender_id!=? AND m.read_at IS NULL) AS unread
-       FROM staff_threads t
+              last.body AS last_body, last.created_at AS last_at,
+              (SELECT COUNT(*) FROM conversation_messages m WHERE m.conversation_id=t.id AND m.sender_id=${peer} AND m.read_at IS NULL) AS unread
+       FROM conversations t
        JOIN users au ON au.user_id=t.astronaut_id
-       JOIN users su ON su.user_id=t.staff_id
+       JOIN users su ON su.user_id=t.surgeon_id
+       LEFT JOIN conversation_messages last ON last.id=(SELECT id FROM conversation_messages
+         WHERE conversation_id=t.id AND sender_id IN (t.astronaut_id,t.surgeon_id) ORDER BY id DESC LIMIT 1)
        WHERE ${column}=? ORDER BY t.updated_at DESC`
-    ).bind(who.user_id, who.user_id).all();
+    ).bind(who.user_id).all();
     return json(results);
   });
 
@@ -832,23 +833,28 @@ export function registerOps(route: (method: string, path: string, handler: Handl
       if (!staff || !STAFF_ROLES.has(staff.role)) throw new HttpError(422, "Choose a flight surgeon, therapist, or admin");
     }
     const ts = now();
+    if (first) {
+      const message = await recordMessage(env, { astronautId, surgeonId: staffId, senderId: who.user_id, content: first, ts });
+      return json({ thread: await threadFor(env, who, message.conversation_id), message: legacyMessage(message) }, 201);
+    }
+    await limitMessageSend(env, who.user_id);
     await env.DB.prepare(
-      "INSERT INTO staff_threads (astronaut_id, staff_id, created_at, updated_at) VALUES (?,?,?,?) ON CONFLICT(astronaut_id, staff_id) DO NOTHING"
+      "INSERT INTO conversations (astronaut_id, surgeon_id, created_at, updated_at) VALUES (?,?,?,?) ON CONFLICT(astronaut_id, surgeon_id) DO NOTHING"
     ).bind(astronautId, staffId, ts, ts).run();
     const thread = await env.DB.prepare(
-      "SELECT * FROM staff_threads WHERE astronaut_id=? AND staff_id=?"
-    ).bind(astronautId, staffId).first<any>();
-    const message = first ? await appendMessage(env, thread.id, who.user_id, first, ts) : null;
-    return json({ thread: await threadFor(env, who, thread.id), message }, message ? 201 : 200);
+      "SELECT id FROM conversations WHERE astronaut_id=? AND surgeon_id=?"
+    ).bind(astronautId, staffId).first<{ id: number }>();
+    if (!thread) throw new HttpError(409, "Conversation unavailable");
+    return json({ thread: await threadFor(env, who, thread.id), message: null });
   });
 
   route("GET", "/chat/threads/:id/messages", async (_r, env, p, _u, _c, who) => {
     const thread = await threadFor(env, who, idOf(p.id, "conversation"));
     const { results } = await env.DB.prepare(
       `SELECT m.id, m.sender_id, u.display_name AS sender_name, m.body, m.created_at, m.read_at
-       FROM staff_messages m JOIN users u ON u.user_id=m.sender_id
-       WHERE m.thread_id=? ORDER BY m.id DESC LIMIT 200`
-    ).bind(thread.id).all();
+       FROM conversation_messages m JOIN users u ON u.user_id=m.sender_id
+       WHERE m.conversation_id=? AND m.sender_id IN (?,?) ORDER BY m.id DESC LIMIT 200`
+    ).bind(thread.id, thread.astronaut_id, thread.staff_id).all();
     return json({ thread, messages: results.reverse() });
   });
 
@@ -856,8 +862,9 @@ export function registerOps(route: (method: string, path: string, handler: Handl
     const thread = await threadFor(env, who, idOf(p.id, "conversation"));
     const { through_id: through } = await body(req);
     if (!Number.isSafeInteger(through) || through < 1) throw new HttpError(422, "through_id must be a message ID");
-    await env.DB.prepare("UPDATE staff_messages SET read_at=? WHERE thread_id=? AND sender_id!=? AND read_at IS NULL AND id<=?")
-      .bind(now(), thread.id, who.user_id!, through).run();
+    const sender = staffPerson(who) ? thread.astronaut_id : thread.staff_id;
+    await env.DB.prepare("UPDATE conversation_messages SET read_at=? WHERE conversation_id=? AND sender_id=? AND read_at IS NULL AND id<=?")
+      .bind(now(), thread.id, sender, through).run();
     return new Response(null, { status: 204 });
   });
 
@@ -865,7 +872,7 @@ export function registerOps(route: (method: string, path: string, handler: Handl
     const thread = await threadFor(env, who, idOf(p.id, "conversation"));
     const input = await body(req);
     const content = text(input?.body, "body", 2000, true)!;
-    const message = await appendMessage(env, thread.id, who.user_id!, content, now());
-    return json({ message }, 201);
+    const message = await recordMessage(env, { astronautId: thread.astronaut_id, surgeonId: thread.staff_id, senderId: who.user_id!, content, ts: now() });
+    return json({ message: legacyMessage(message) }, 201);
   });
 }

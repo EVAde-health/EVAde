@@ -222,10 +222,12 @@ describe("DELETE /me", () => {
     expect(count("users", uid)).toBe(1);
   });
 
-  it("removes console rows and data in deployed legacy tables while preserving other accounts", async () => {
+  it("removes old and current console records while preserving other accounts", async () => {
     const { uid, token } = await astronaut();
     const other = await astronaut("Other");
+    const third = await astronaut("Third");
     const sql = db.raw;
+    const ts = new Date().toISOString();
     sql.prepare("INSERT INTO journal_messages (id,user_id,sender,content,ts) VALUES (?,?,'user','fixture',?)")
       .run(crypto.randomUUID(), uid, new Date().toISOString());
     sql.prepare("INSERT INTO user_settings (user_id) VALUES (?)").run(uid);
@@ -236,6 +238,24 @@ describe("DELETE /me", () => {
     sql.prepare("INSERT INTO emergencies (user_id,status) VALUES (?,'open')").run(uid);
     const thread = sql.prepare("INSERT INTO staff_threads (astronaut_id,staff_id) VALUES (?,?)").run(other.uid, uid).lastInsertRowid;
     sql.prepare("INSERT INTO staff_messages (thread_id,sender_id,body) VALUES (?,?, 'fixture')").run(thread, other.uid);
+    const insertGoal = sql.prepare("INSERT INTO user_goals (user_id, goal_type, target, unit, set_by) VALUES (?,'sleep_h',8,'h',?)");
+    insertGoal.run(uid, other.uid);
+    insertGoal.run(other.uid, uid);
+    const insertConversation = sql.prepare("INSERT INTO conversations (astronaut_id,surgeon_id) VALUES (?,?)");
+    const deletedConversation = insertConversation.run(uid, other.uid).lastInsertRowid;
+    const unaffectedConversation = insertConversation.run(third.uid, other.uid).lastInsertRowid;
+    const insertMessage = sql.prepare("INSERT INTO conversation_messages (conversation_id,sender_id,body) VALUES (?,?,'Fixture message')");
+    insertMessage.run(deletedConversation, other.uid);
+    insertMessage.run(unaffectedConversation, other.uid);
+    const observe = sql.prepare("INSERT INTO observations (user_id,metric,value,unit,ts,source) VALUES (?,'heart_rate',72,'bpm',?,'manual')");
+    const reading = observe.run(uid, ts).lastInsertRowid;
+    const otherReading = observe.run(other.uid, ts).lastInsertRowid;
+    const correct = sql.prepare("INSERT INTO vital_corrections (observation_id,user_id,metric,original_value,corrected_value,reason,corrected_by) VALUES (?,?,'heart_rate',72,73,'Test correction',?)");
+    correct.run(reading, uid, other.uid);
+    correct.run(otherReading, other.uid, uid);
+    const notify = sql.prepare("INSERT INTO user_notifications (user_id,kind,title,body,actor_id) VALUES (?,'goal_updated','Fixture','Fixture',?)");
+    notify.run(uid, other.uid);
+    notify.run(other.uid, uid);
 
     const remainingLogin = crypto.randomUUID();
     await kv.put(`sess:${await sha256hex(remainingLogin)}`, JSON.stringify({
@@ -243,10 +263,19 @@ describe("DELETE /me", () => {
     }));
     const response = await call("DELETE", "/me", { cookie: token, body: { confirm: "DELETE" } });
     expect(response.status).toBe(200);
-    for (const table of ["journal_messages", "user_settings", "daily_goals", "emergencies"]) expect(count(table, uid)).toBe(0);
+    for (const table of ["journal_messages", "user_settings", "daily_goals", "emergencies", "user_goals", "vital_corrections", "user_notifications"]) {
+      expect(count(table, uid)).toBe(0);
+    }
     expect(count("user_settings", other.uid)).toBe(1);
     expect(sql.prepare("SELECT COUNT(*) AS n FROM staff_threads").get()).toMatchObject({ n: 0 });
     expect(sql.prepare("SELECT COUNT(*) AS n FROM staff_messages").get()).toMatchObject({ n: 0 });
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM conversations WHERE id=?").get(deletedConversation)).toMatchObject({ n: 0 });
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM conversation_messages WHERE conversation_id=?").get(deletedConversation)).toMatchObject({ n: 0 });
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM conversations WHERE id=?").get(unaffectedConversation)).toMatchObject({ n: 1 });
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM conversation_messages WHERE conversation_id=?").get(unaffectedConversation)).toMatchObject({ n: 1 });
+    expect(sql.prepare("SELECT set_by FROM user_goals WHERE user_id=?").get(other.uid)).toMatchObject({ set_by: null });
+    expect(sql.prepare("SELECT corrected_by FROM vital_corrections WHERE user_id=?").get(other.uid)).toMatchObject({ corrected_by: null });
+    expect(sql.prepare("SELECT actor_id FROM user_notifications WHERE user_id=?").get(other.uid)).toMatchObject({ actor_id: null });
     expect(sql.prepare("SELECT set_by FROM daily_goals WHERE user_id=?").get(other.uid)).toMatchObject({ set_by: null });
     expect(sql.prepare("SELECT acknowledged_by, resolved_by FROM emergencies WHERE user_id=?").get(other.uid))
       .toMatchObject({ acknowledged_by: null, resolved_by: null });
