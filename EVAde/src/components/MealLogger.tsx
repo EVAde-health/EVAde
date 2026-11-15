@@ -40,8 +40,8 @@ export default function MealLogger() {
     if (!selected || !portion || saving) return;
     setSaving(true);
     try {
-      await addMeal({ name: selected.label, grams, macros: portion }, MEAL_XP);
-      showToast({ body: `🍽️ Logged ${selected.label} · +${MEAL_XP} XP` });
+      const xp = await addMeal({ name: selected.label, grams, macros: portion });
+      showToast({ body: xp ? `🍽️ Logged ${selected.label} · +${xp} XP` : `🍽️ Logged ${selected.label}` });
       setSelected(null);
       setGrams(DEFAULT_GRAMS);
     } catch {
@@ -51,6 +51,7 @@ export default function MealLogger() {
     }
   }
 
+  // Removes a logged meal, reporting failures with a toast.
   async function deleteMeal(id: string) {
     try {
       await removeMeal(id);
@@ -69,7 +70,6 @@ export default function MealLogger() {
           value={selected}
           onChange={setSelected}
           startIcon={MagnifyingGlassIcon}
-          hasEntriesOnFocus
           minQueryLength={2}
           debounceMs={300}
           emptySearchText="No foods found — try a simpler name"
@@ -93,7 +93,7 @@ export default function MealLogger() {
       )}
 
       {meals.length === 0 ? (
-        <EmptyState isCompact title="No meals logged yet" description="Your first meal of the day earns bonus XP." />
+        <EmptyState isCompact title="No meals logged yet" description={`Each meal you log earns +${MEAL_XP} XP (up to 6 a day).`} />
       ) : (
         <List hasDividers edge="flush" density="compact">
           {meals.map(meal => (

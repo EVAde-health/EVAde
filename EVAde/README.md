@@ -1,5 +1,32 @@
 # React + TypeScript + Vite
 
+## EVAde sign-in and API
+
+The website reads and writes everything through the `evade-api` Worker (`../cloud/worker`, D1 `evade-db`).
+The only build setting is the public `VITE_API_URL` (see `.env.example`); never put secrets in `VITE_*` values,
+because they ship to every browser. The USDA key and Access settings live in the Worker.
+
+- **Sign-in:** The login page links to `/auth/access` for astronauts and `/auth/access/staff` for approved staff.
+  Staff role assignments happen on the API. **Try the demo** opens the seeded astronaut account.
+- **Sign-out:** Ends the EVAde session and opens Cloudflare Access logout for personal accounts. If the login
+  page opens the wrong account, choose **Use a different email**, then return to the login page and enter your own email.
+- **Signed-in routes:** `AppFrame` checks `/auth/me` and redirects to `/login` on 401.
+- **Points:** task, tutorial, meal, water and measurement XP is decided and capped by the Worker.
+- **Selfies:** stored privately in R2 through `/media` (shows a notice until the R2 bucket is enabled).
+- **New users:** panels show "No readings yet" until data syncs.
+
+### Local development
+
+1. `cd ../cloud/worker`, copy `.dev.vars.example` to `.dev.vars` (localhost origin), then
+   `npx wrangler d1 migrations apply evade-db --local` and
+   `npx wrangler dev --port 8787 --local-upstream localhost:8787 --upstream-protocol http`.
+2. Here: `VITE_API_URL=http://localhost:8787 npm run dev -- --port 5179`.
+
+Cloudflare Access can't sit in front of localhost, so the local site has no sign-in; signed-in pages are tested
+against the deployed API. Scripts can call the local API with the `X-EVAde-Key` header.
+
+Run `npm ci`, `npm run lint`, and `npm run build` from this folder. The website host should serve `index.html` for SPA routes, including `/login` and `/dashboard`.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:
@@ -46,7 +73,6 @@ export default defineConfig([
 ])
 
 ```
-
 You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
 
 ```js
@@ -76,7 +102,3 @@ export default defineConfig([
 ])
 
 ```
-
-## Browser-local data
-
-Journal entries and selfies are stored in this browser under the signed-in account. Data saved before sign-in was added stays in its original storage, without an assigned account. Demo changes stay in memory for the current page session.

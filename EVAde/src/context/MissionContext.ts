@@ -1,6 +1,7 @@
 import { createContext, useContext } from 'react';
-import type { SessionUser } from '../services/api';
 import type { Macros } from '../services/foodSearch';
+import type { SessionUser, UserSettings } from '../services/healthApi';
+import type { MissionTask, NutritionGoals } from '../data/tasks';
 
 export interface MealEntry {
   id: string;
@@ -11,37 +12,34 @@ export interface MealEntry {
 }
 
 export interface MissionState {
-  day: string;
+  user: SessionUser;
   xp: number;
   streak: number;
+  tasks: MissionTask[];
   completed: string[];
   waterMl: number;
   meals: MealEntry[];
   watchedTutorials: string[];
-}
-
-export interface DailyGoals {
-  kcal: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-  waterMl: number;
+  settings: UserSettings | null;
+  goals: NutritionGoals;
+  waterGoalMl: number;
+  waterStepMl: number;
+  loading: boolean;
+  loadError: boolean;
 }
 
 export interface MissionActions {
-  toggleTask: (id: string, xp: number) => boolean;
-  addWater: (ml: number, xp: number) => Promise<number>;
-  addMeal: (meal: Omit<MealEntry, 'id' | 'loggedAt'>, xp: number) => Promise<void>;
+  toggleTask: (id: string) => Promise<boolean>;
+  completeTaskByKey: (key: string) => Promise<number>;
+  addWater: (ml: number) => Promise<{ total: number; xp: number }>;
+  addMeal: (meal: Omit<MealEntry, 'id' | 'loggedAt'>) => Promise<number>;
   removeMeal: (id: string) => Promise<void>;
-  completeTutorial: (id: string, xp: number) => boolean;
+  completeTutorial: (id: string) => Promise<number>;
+  logMood: (score: number) => Promise<void>;
+  reload: () => void;
 }
 
-export type MissionContextValue = MissionState & MissionActions & {
-  user: SessionUser;
-  goals: DailyGoals;
-  loading: boolean;
-  nutritionUnavailable: boolean;
-};
+export type MissionContextValue = MissionState & MissionActions;
 
 export const LEVEL_XP = 400;
 export const RANKS = ['Cadet', 'Specialist', 'Flight Engineer', 'Mission Specialist', 'Commander', 'Station Legend'];

@@ -20,7 +20,7 @@ import {
   ExclamationTriangleIcon as ExclamationSolid,
   UserGroupIcon as UserGroupSolid,
 } from '@heroicons/react/24/solid';
-import { api, type SessionUser } from '../services/api';
+import { signOut, type SessionUser } from '../services/healthApi';
 import { roleLabel } from '../services/clinic';
 import AmbientBackdrop from './AmbientBackdrop';
 import BrandMark from './BrandMark';
@@ -54,12 +54,11 @@ export default function AdminShell({ user, onSignOut }: { user: SessionUser; onS
   }, [reload]);
   if (!pathname.startsWith('/admin')) return <Navigate to="/admin" replace />;
 
-  async function signOut() {
+  async function handleSignOut() {
     if (signingOut) return;
     setSigningOut(true);
     try {
-      await api('/auth/logout', { method: 'POST' });
-      onSignOut();
+      if (!(await signOut())) onSignOut();
     } catch {
       showToast({ body: 'Sign-out failed. Please try again.' });
       setSigningOut(false);
@@ -97,7 +96,7 @@ export default function AdminShell({ user, onSignOut }: { user: SessionUser; onS
                   </HStack>
                 </HStack>
                 <Divider />
-                <SideNavItem label="Sign out" icon={ArrowLeftStartOnRectangleIcon} onClick={signOut} isDisabled={signingOut} />
+                <SideNavItem label="Sign out" icon={ArrowLeftStartOnRectangleIcon} onClick={handleSignOut} isDisabled={signingOut} />
               </VStack>
             }
           >

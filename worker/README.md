@@ -21,7 +21,7 @@ rules, Twilio flow and security checks; the Python version stays in the repo for
 | Tools + rules | `src/tools.ts` (`save_checkin`, `queue_flight_surgeon_message`, same JSON schemas) and `src/rules.ts` (green / yellow / red). |
 | Storage | **D1** database `evade` (binding `DB`) replaces `data/evade.db`: tables `checkins`, `downlink_queue`, `stream_tokens`, `sessions`. |
 | One-time tokens | `/voice/incoming` writes a random token (120 s TTL) to `stream_tokens`; the DO consumes it with a single `DELETE … RETURNING` when Twilio's `start` event arrives, before any xAI session opens. Works across isolates; can't be replayed. App WebSocket tickets from `POST /api/voice/start` use the same table (`ws.` prefix, 60 s TTL). |
-| Session cap | Browser/app sessions take a row in `sessions` (heartbeat in the last ~2 minutes counts as live). `MAX_CONCURRENT_SESSIONS` (default 5) rejects new browser sessions with "too many people talking". Phone calls are not counted. |
+| Session cap | Browser/app sessions take a row in `sessions` (heartbeat in the last ~2 minutes counts as live). `MAX_CONCURRENT_SESSIONS` (set to 4 in Wrangler) rejects new browser sessions with "too many people talking". Phone calls are not counted. |
 | Twilio signature | WebCrypto HMAC-SHA1 of `PUBLIC_BASE_URL + path + query` + sorted form params, constant-time compare (matches twilio-python's `RequestValidator`, incl. the `:443` variant). |
 | Outbound call | Twilio REST `Calls.json` with `fetch` + basic auth; TwiML `<Say voice="Polly.Joanna">` ×2 with a 1 s pause. |
 
@@ -32,11 +32,25 @@ Vars (in `wrangler.jsonc`): `PUBLIC_BASE_URL=https://evade.health`, `TWILIO_ACCO
 `TWILIO_VALIDATE_SIGNATURE`, `CORS_ALLOW_ORIGINS`, `DEMO_OPEN`, `MAX_SESSION_SECONDS`,
 `MAX_CONCURRENT_SESSIONS`.
 
-| Var | Default | Meaning |
+| Var | Configured value | Meaning |
 | --- | --- | --- |
-| `DEMO_OPEN` | `"true"` | When `"true"`, the web/app voice socket and read APIs (`/voice/browser`, `/api/voice/ws`, `/api/voice/start`, check-ins, downlink) do not require a token. `/api/alert` and `/voice/alert` stay token-protected, and Twilio signature checks are unchanged. **To turn it off:** set `DEMO_OPEN` to `"false"` in `wrangler.jsonc` and redeploy (`npx wrangler deploy`). |
+| `DEMO_OPEN` | `"true"` | When `"true"`, the web/app voice socket and read APIs (`/voice/browser`, `/api/voice/ws`, `/api/voice/start`, check-ins, downlink) do not require a token. `/api/alert` and `/voice/alert` stay token-protected, and Twilio signature checks are unchanged. |
+| `CORS_ALLOW_ORIGINS` | `https://evade.health,https://www.evade.health` | Echo the request's origin in the CORS response only for an exact match. |
 | `MAX_SESSION_SECONDS` | `"300"` | Max length of a browser/app voice session. The Durable Object sends a notice (`session limit reached`) and closes with code 1000. Browser sessions also close after 60 s with no client audio (`time-up`). Phone calls use a 600 s limit and are not subject to the idle-audio timer or the concurrency cap. |
-| `MAX_CONCURRENT_SESSIONS` | `"5"` | Max live browser/app sessions (rows in `sessions` with a heartbeat in the last ~2 minutes). Extra callers get `"too many people talking"` (HTTP 429 on `POST /api/voice/start`, or a notice + close on the WebSocket). |
+| `MAX_CONCURRENT_SESSIONS` | `"4"` | Max live browser/app sessions (rows in `sessions` with a heartbeat in the last ~2 minutes). Extra callers get `"too many people talking"` (HTTP 429 on `POST /api/voice/start`, or a notice + close on the WebSocket). |
+
+### Turn off open demo access
+
+1. Set `DEMO_OPEN` to `"false"` in both `deploy/wrangler.jsonc` and `worker/wrangler.jsonc`.
+2. Once the change is on `main`, redeploy from the repository root in PowerShell.
+
+   ```powershell
+   $env:WORKER_REF = (git rev-parse HEAD); node deploy/deploy.mjs
+   ```
+
+The web/app voice socket and read APIs will require `EVADE_BROWSER_TOKEN` again.
+
+### Required secrets
 
 Secrets (`npx wrangler secret put <NAME>`, never in git):
 
@@ -48,6 +62,18 @@ Secrets (`npx wrangler secret put <NAME>`, never in git):
 | `EVADE_ALERT_TOKEN` | `X-EVADE-Token` (or `Authorization: Bearer`) for `POST /api/alert` |
 
 ## Deploy
+
+Deploy only from the repository root on merged `main` in PowerShell.
+
+```powershell
+$env:WORKER_REF = (git rev-parse HEAD); node deploy/deploy.mjs
+```
+
+**Do not run `npx wrangler deploy` from `worker/`.** That would replace the live site with the voice Worker alone and leave `/`, `/journal`, and `/admin` returning 404.
+
+After deploying, open [the Journal](https://evade.health/journal), start a voice check-in, and confirm it connects.
+
+### One-time setup
 
 ```bash
 cd worker
@@ -65,7 +91,6 @@ npx wrangler secret put EVADE_BROWSER_TOKEN
 npx wrangler secret put EVADE_ALERT_TOKEN
 
 npm test                         # vitest, fully local (Miniflare + fake xAI/Twilio)
-npx wrangler deploy              # creates the evade.health custom domain on first deploy
 ```
 
 Then in the Twilio Console set the number's **"A call comes in"** webhook to

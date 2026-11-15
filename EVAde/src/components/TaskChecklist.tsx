@@ -16,8 +16,12 @@ export default function TaskChecklist({ label, tasks }: { label: string; tasks: 
   const showToast = useToast();
 
   // Toggles a task and shows an XP toast on completion.
-  function handleCheck(task: MissionTask) {
-    if (toggleTask(task.id, task.xp)) showToast({ body: `✅ ${task.title} · +${task.xp} XP`, uniqueID: 'task-xp' });
+  async function handleCheck(task: MissionTask) {
+    try {
+      if (await toggleTask(task.id)) showToast({ body: `✅ ${task.title} · +${task.xp} XP`, uniqueID: 'task-xp' });
+    } catch {
+      showToast({ body: 'The task could not be updated. Try again.' });
+    }
   }
 
   return (
@@ -38,7 +42,7 @@ export default function TaskChecklist({ label, tasks }: { label: string; tasks: 
             onCheck={() => handleCheck(task)}
             endContent={
               <HStack gap={2} vAlign="center">
-                {task.tutorialId && <Button label="How to" size="sm" variant="ghost" href="/tutorials" icon={<Icon icon={PlayCircleIcon} />} />}
+                {task.tutorialId && <Button label="How to" size="sm" variant="ghost" href={`/tutorials?open=${encodeURIComponent(task.tutorialId)}`} icon={<Icon icon={PlayCircleIcon} />} />}
                 <Token label={`+${task.xp} XP`} size="sm" color={isDone ? 'green' : 'purple'} />
               </HStack>
             }

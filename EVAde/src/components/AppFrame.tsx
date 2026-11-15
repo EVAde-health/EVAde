@@ -26,14 +26,14 @@ import {
   PlayCircleIcon as PlayCircleSolid,
   Squares2X2Icon as Squares2X2Solid,
 } from '@heroicons/react/24/solid';
-import { BASIC_TASKS, PROTOCOL_TASKS } from '../data/tasks';
 import { AccountStorageContext } from '../context/AccountStorageContext';
 import { useMission } from '../context/MissionContext';
-import { api, ApiError, SIGN_IN_REQUIRED, STAFF_ROLES, type SessionUser } from '../services/api';
-import AdminShell from './AdminShell';
-import EmergencyButton from './EmergencyButton';
+import { ApiError, SIGN_IN_REQUIRED, STAFF_ROLES } from '../services/api';
+import { fetchSession, signOut, type SessionUser } from '../services/healthApi';
 import AmbientBackdrop from './AmbientBackdrop';
+import AdminShell from './AdminShell';
 import BrandMark from './BrandMark';
+import EmergencyButton from './EmergencyButton';
 import LevelMeter from './LevelMeter';
 import MotionToggle from './MotionToggle';
 import MissionProvider from './MissionProvider';
@@ -50,67 +50,83 @@ const NAV_ITEMS = [
   { href: '/chat', label: 'Team line', icon: ChatBubbleLeftRightIcon, selectedIcon: ChatSolid },
 ];
 
+type SessionState = SessionUser | 'loading' | 'signed-out' | 'error';
+
+// Session gate: every app route renders only for a verified /auth/me user.
 export default function AppFrame() {
-  const [session, setSession] = useState<SessionUser | 'loading' | 'signed-out' | 'error'>('loading');
+  const [session, setSession] = useState<SessionState>('loading');
   const [attempt, setAttempt] = useState(0);
   const location = useLocation();
+
   useEffect(() => {
     const expire = () => setSession('signed-out');
     const refresh = () => setAttempt(previous => previous + 1);
     window.addEventListener(SIGN_IN_REQUIRED, expire);
-    window.addEventListener("focus", refresh);
+    window.addEventListener('focus', refresh);
     return () => {
       window.removeEventListener(SIGN_IN_REQUIRED, expire);
-      window.removeEventListener("focus", refresh);
+      window.removeEventListener('focus', refresh);
     };
   }, []);
+
   useEffect(() => {
     const controller = new AbortController();
-    api<{ user: Omit<SessionUser, 'demo'> | null; demo?: boolean }>('/auth/me', { signal: controller.signal })
-      .then(({ user, demo }) => { if (!controller.signal.aborted) setSession(user?.user_id ? { ...user, demo: demo === true } : 'signed-out'); })
+    fetchSession({ signal: controller.signal })
+      .then(({ user, demo }) => {
+        if (!controller.signal.aborted) setSession(user?.user_id ? { ...user, demo: demo === true } : 'signed-out');
+      })
       .catch(error => {
         if (!controller.signal.aborted) setSession(error instanceof ApiError && error.status === 401 ? 'signed-out' : 'error');
       });
     return () => controller.abort();
   }, [attempt]);
 
-  if (session === 'signed-out') return <Navigate to="/login" replace />;
-  if (session === 'loading') return <PageLoader />;
-  if (session === 'error') return (
-    <VStack padding={6} gap={3}>
-      <Text role="alert">Your session could not be checked.</Text>
-      <Button label="Try again" onClick={() => { setSession('loading'); setAttempt(previous => previous + 1); }} />
-    </VStack>
-  );
-
-  if (STAFF_ROLES.has(session.role)) {
-    return <AdminShell user={session} onSignOut={() => setSession('signed-out')} />;
+  // Re-checks the session after a network or server failure.
+  function retry() {
+    setSession('loading');
+    setAttempt(previous => previous + 1);
   }
 
-  if (matchRoutes([{ path: "/admin/*" }], location)) return <Navigate to="/dashboard" replace />;
-  if (session.demo && matchRoutes([{ path: "/chat/*" }], location)) return <Navigate to="/dashboard" replace />;
+  if (session === 'signed-out') return <Navigate to="/login" replace />;
+  if (session === 'loading') return <PageLoader />;
+  if (session === 'error') {
+    return (
+      <VStack padding={6} gap={3}>
+        <Text role="alert">Your session could not be checked. The EVAde API may be unreachable.</Text>
+        <Button label="Try again" onClick={retry} />
+      </VStack>
+    );
+  }
+
+  if (STAFF_ROLES.has(session.role) && !session.demo) {
+    return <AdminShell key={session.user_id} user={session} onSignOut={() => setSession('signed-out')} />;
+  }
+  if (matchRoutes([{ path: '/admin/*' }], location) || (session.demo && matchRoutes([{ path: '/chat/*' }], location))) {
+    return <Navigate to="/dashboard" replace />;
+  }
 
   return (
     <AccountStorageContext.Provider value={session.demo ? null : session.user_id}>
-      <MissionProvider key={`${session.demo ? "demo" : "user"}:${session.user_id}`} user={session}>
+      <MissionProvider key={`${session.user_id}:${session.demo}`} user={session}>
         <SignedInFrame onSignOut={() => setSession('signed-out')} />
       </MissionProvider>
     </AccountStorageContext.Provider>
   );
 }
 
+// Signed-in shell: side navigation, level meter, sign-out and the routed page.
 function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
-  const { pathname } = useLocation();
-  const { completed, user } = useMission();
-  const remaining = BASIC_TASKS.length + PROTOCOL_TASKS.length - completed.length;
   const [signingOut, setSigningOut] = useState(false);
+  const { pathname } = useLocation();
+  const { completed, tasks, user } = useMission();
   const showToast = useToast();
-  async function signOut() {
+  const remaining = tasks.length - completed.length;
+
+  async function handleSignOut() {
     if (signingOut) return;
     setSigningOut(true);
     try {
-      await api('/auth/logout', { method: 'POST' });
-      onSignOut();
+      if (!(await signOut({ clearAccess: !user.demo }))) onSignOut();
     } catch {
       showToast({ body: 'Sign-out failed. Please try again.' });
       setSigningOut(false);
@@ -130,7 +146,7 @@ function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
             header={
               <SideNavHeading
                 heading="EVAde"
-                subheading={user.mission_name ?? user.display_name}
+                subheading={user.mission_name ?? user.full_name ?? user.display_name}
                 icon={<NavIcon icon={<BrandMark size="sm" />} />}
                 headingHref="/dashboard"
               />
@@ -141,7 +157,7 @@ function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
                 {!user.demo && <EmergencyButton />}
                 <Divider />
                 <HStack gap={1} vAlign="center" hAlign="between">
-                  <SideNavItem label="Sign out" icon={ArrowLeftStartOnRectangleIcon} onClick={signOut} isDisabled={signingOut} />
+                  <SideNavItem label="Sign out" icon={ArrowLeftStartOnRectangleIcon} onClick={handleSignOut} isDisabled={signingOut} />
                   <HStack gap={0.5}>
                     <MotionToggle size="sm" />
                     <ThemeToggle size="sm" />

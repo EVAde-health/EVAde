@@ -1,0 +1,17 @@
+# Local-only settings for `npx wrangler dev`. Copy to .dev.vars (git-ignored) and fill in.
+# Never commit real secrets; production values are set with `npx wrangler secret put <NAME>`.
+
+# Let the Vite dev server (npm run dev in EVAde/) use the session cookie.
+ALLOWED_ORIGINS=http://localhost:5179
+FRONTEND_URL=http://localhost:5179
+
+# Server-side service key for scripts/seeding (X-EVAde-Key header). Any long random string locally.
+EVADE_API_KEY=
+
+# Optional: USDA FoodData Central key for /foods/search (Open Food Facts is used without it).
+USDA_API_KEY=
+
+# Production sign-in is Cloudflare Access (ACCESS_TEAM_DOMAIN / ACCESS_AUD in wrangler.jsonc). Access can't
+# front localhost, so leave these blank locally; scripts can use EVADE_API_KEY instead.
+ACCESS_TEAM_DOMAIN=
+ACCESS_AUD=

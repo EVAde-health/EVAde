@@ -1,125 +1,169 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { MissionContext, type DailyGoals, type MealEntry, type MissionContextValue, type MissionState } from '../context/MissionContext';
-import { NUTRITION_GOALS, WATER_GOAL_ML } from '../data/tasks';
-import { usePersistentState } from '../hooks/usePersistentState';
-import { api, userPath, type SessionUser } from '../services/api';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { MissionContext, type MealEntry, type MissionContextValue } from '../context/MissionContext';
+import { nutritionGoals, toMissionTask } from '../data/tasks';
+import {
+  completeTutorialRequest,
+  deleteMeal,
+  fetchHydration,
+  fetchMeals,
+  fetchSettings,
+  fetchToday,
+  fetchTutorialProgress,
+  postHydration,
+  postMeal,
+  postSelfReport,
+  setTaskDone,
+  type ApiMeal,
+  type ApiTask,
+  type SessionUser,
+  type UserSettings,
+} from '../services/healthApi';
 
-type ApiMeal = Omit<MealEntry, 'loggedAt'> & { ts: string };
-type LocalProgress = Omit<MissionState, 'meals' | 'waterMl'>;
+const DEFAULT_SETTINGS: UserSettings = {
+  kcal_goal: 2800, protein_goal_g: 110, carbs_goal_g: 360, fat_goal_g: 95, water_goal_ml: 2500, water_step_ml: 250,
+  sleep_target_h: 8, timezone: 'UTC', color_mode: null, reduced_motion: false,
+};
 
-const FALLBACK_GOALS: DailyGoals = { ...NUTRITION_GOALS, waterMl: WATER_GOAL_ML };
-const toMeal = ({ ts, ...entry }: ApiMeal): MealEntry => ({ ...entry, loggedAt: Date.parse(ts) });
-
-function todayKey() {
-  return new Date().toLocaleDateString('en-CA');
+// Converts a Worker meal row into a meal entry.
+function toMeal({ ts, ...meal }: ApiMeal): MealEntry {
+  return { id: meal.id, name: meal.name, grams: meal.grams, macros: meal.macros, loggedAt: Date.parse(ts) };
 }
 
-function today(now = new Date()) {
-  return {
-    since: new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(),
-    until: new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString(),
-  };
-}
-
-function initialState(user: SessionUser): LocalProgress {
-  return { day: todayKey(), xp: user.points, streak: user.streak_days, completed: [], watchedTutorials: [] };
-}
-
-function rollOver(state: LocalProgress): LocalProgress {
-  if (state.day === todayKey()) return state;
-  return { ...state, day: todayKey(), streak: state.completed.length ? state.streak + 1 : 0, completed: [] };
-}
-
+// Loads today's missions, logs and progress from D1 and exposes the actions that write them.
 export default function MissionProvider({ user, children }: { user: SessionUser; children: ReactNode }) {
-  const [stored, setStored] = usePersistentState<LocalProgress>('evade:mission', () => initialState(user));
-  const state = rollOver(stored);
+  const [tasks, setTasks] = useState<ApiTask[]>([]);
   const [meals, setMeals] = useState<MealEntry[]>([]);
-  const demo = user.demo;
-  const [waterMl, setWaterMl] = useState(demo ? 750 : 0);
-  const [goals, setGoals] = useState<DailyGoals>(FALLBACK_GOALS);
-  const [loading, setLoading] = useState(!demo);
-  const [nutritionUnavailable, setNutritionUnavailable] = useState(false);
-  const { since, until } = today();
-  const id = user.user_id;
+  const [waterMl, setWaterMl] = useState(0);
+  const [points, setPoints] = useState(user.points);
+  const [streak, setStreak] = useState(user.streak_days);
+  const [watchedTutorials, setWatchedTutorials] = useState<string[]>([]);
+  const [settings, setSettings] = useState<UserSettings | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [revision, setRevision] = useState(0);
+  const taskWrites = useRef(new Map<string, Promise<boolean>>());
 
   useEffect(() => {
-    if (demo) return;
     const controller = new AbortController();
-    const query = new URLSearchParams({ since, until });
     const options = { signal: controller.signal };
-    void Promise.allSettled([
-      api<ApiMeal[]>(userPath(id, `meals?${query}`), options),
-      api<{ total_ml: number }>(userPath(id, `hydration?${query}`), options),
-      api<{ goals: { metric: string; target: number }[] }>(userPath(id, 'goals'), options),
-    ]).then(([mealResult, waterResult, goalResult]) => {
+    Promise.allSettled([
+      fetchToday(user.user_id, options),
+      fetchMeals(user.user_id, options),
+      fetchHydration(user.user_id, options),
+      fetchTutorialProgress(user.user_id, options),
+      fetchSettings(user.user_id, options),
+    ]).then(([today, mealRows, water, progress, prefs]) => {
       if (controller.signal.aborted) return;
-      if (mealResult.status === 'fulfilled') setMeals(mealResult.value.map(toMeal));
-      if (waterResult.status === 'fulfilled') setWaterMl(Math.max(0, waterResult.value.total_ml));
-      if (goalResult.status === 'fulfilled') {
-        const target = (metric: string, fallback: number) => goalResult.value.goals.find(goal => goal.metric === metric)?.target ?? fallback;
-        setGoals({
-          kcal: target('kcal_intake', FALLBACK_GOALS.kcal),
-          protein: target('protein_intake_g', FALLBACK_GOALS.protein),
-          carbs: target('carbs_intake_g', FALLBACK_GOALS.carbs),
-          fat: target('fat_intake_g', FALLBACK_GOALS.fat),
-          waterMl: target('water_intake_ml', FALLBACK_GOALS.waterMl),
-        });
+      if (today.status === 'fulfilled') {
+        setTasks(today.value.tasks);
+        setPoints(today.value.points);
+        setStreak(today.value.streak_days);
       }
-      setNutritionUnavailable(mealResult.status === 'rejected' || waterResult.status === 'rejected');
+      if (mealRows.status === 'fulfilled') setMeals(mealRows.value.map(toMeal));
+      if (water.status === 'fulfilled') setWaterMl(Math.max(0, water.value.total_ml));
+      if (progress.status === 'fulfilled') setWatchedTutorials(progress.value.map(p => p.tutorial_id));
+      if (prefs.status === 'fulfilled') setSettings(prefs.value);
+      setLoadError([today, mealRows, water, progress, prefs].some(result => result.status === 'rejected'));
       setLoading(false);
     });
     return () => controller.abort();
-  }, [demo, id, since, until]);
+  }, [user.user_id, revision]);
 
-  // The Journal and Missions share the existing synchronous completion contract.
-  function toggleTask(taskId: string, xp: number) {
-    const isDone = state.completed.includes(taskId);
-    setStored(previous => {
-      const progress = rollOver(previous);
-      return {
-        ...progress,
-        xp: Math.max(0, progress.xp + (isDone ? -xp : xp)),
-        completed: isDone ? progress.completed.filter(item => item !== taskId) : [...progress.completed, taskId],
-      };
-    });
-    return !isDone;
-  }
+  // Re-fetches everything from the Worker.
+  const reload = useCallback(() => {
+    setLoading(true);
+    setRevision(previous => previous + 1);
+  }, []);
 
-  async function addWater(ml: number, xp: number) {
-    const timestamp = new Date();
-    const amount = demo ? ml : (await api<{ amount_ml: number }>('/hydration', {
-      method: 'POST', body: { id: crypto.randomUUID(), user_id: id, amount_ml: ml, ts: timestamp.toISOString(), ...today(timestamp) },
-    })).amount_ml;
-    setWaterMl(previous => Math.max(0, previous + amount));
-    setStored(previous => ({ ...rollOver(previous), xp: Math.max(0, previous.xp + (ml > 0 ? xp : -xp)) }));
-    return Math.max(0, waterMl + amount);
-  }
+  // Completes or reopens a task once at a time; resolves true when now complete.
+  const toggleTask = useCallback((id: string) => {
+    const pending = taskWrites.current.get(id);
+    if (pending) return pending;
+    const row = tasks.find(task => String(task.id) === id);
+    if (!row) return Promise.resolve(false);
+    const complete = !row.completed_at;
+    const write = setTaskDone(id, complete)
+      .then(result => {
+        setTasks(previous => previous.map(task => (String(task.id) === id ? { ...task, completed_at: complete ? new Date().toISOString() : null } : task)));
+        setPoints(previous => Math.max(0, previous + (result.points_awarded ?? 0)));
+        return complete;
+      })
+      .finally(() => taskWrites.current.delete(id));
+    taskWrites.current.set(id, write);
+    return write;
+  }, [tasks]);
 
-  async function addMeal(meal: Parameters<MissionContextValue['addMeal']>[0], xp: number) {
-    const mealId = crypto.randomUUID();
-    const saved = demo
-      ? { ...meal, id: mealId, loggedAt: Date.now() }
-      : toMeal(await api<ApiMeal>('/meals', { method: 'POST', body: { id: mealId, user_id: id, ...meal } }));
-    setMeals(previous => [saved, ...previous.filter(item => item.id !== saved.id)]);
-    setStored(previous => ({ ...rollOver(previous), xp: previous.xp + xp }));
-  }
+  // Completes today's task with a template key (e.g. the selfie); returns XP earned.
+  const completeTaskByKey = useCallback(async (key: string) => {
+    const row = tasks.find(task => task.task_key === key);
+    if (!row || row.completed_at) return 0;
+    const result = await setTaskDone(String(row.id), true);
+    setTasks(previous => previous.map(task => (task.id === row.id ? { ...task, completed_at: new Date().toISOString() } : task)));
+    setPoints(previous => previous + (result.points_awarded ?? 0));
+    return result.points_awarded ?? 0;
+  }, [tasks]);
 
-  async function removeMeal(mealId: string) {
-    if (!demo) await api(`/meals/${encodeURIComponent(mealId)}`, { method: 'DELETE' });
-    setMeals(previous => previous.filter(meal => meal.id !== mealId));
-  }
+  // Logs water for today; returns the new total and XP earned.
+  const addWater = useCallback(async (amount: number) => {
+    if (user.demo) {
+      const total = Math.max(0, waterMl + amount);
+      setWaterMl(total);
+      return { total, xp: 0 };
+    }
+    const saved = await postHydration(amount);
+    const total = Math.max(0, waterMl + saved.amount_ml);
+    setWaterMl(total);
+    setPoints(previous => previous + (saved.points_awarded ?? 0));
+    return { total, xp: saved.points_awarded ?? 0 };
+  }, [user.demo, waterMl]);
 
-  function completeTutorial(tutorialId: string, xp: number) {
-    if (state.watchedTutorials.includes(tutorialId)) return false;
-    setStored(previous => ({
-      ...rollOver(previous), watchedTutorials: [...previous.watchedTutorials, tutorialId], xp: previous.xp + xp,
-    }));
-    return true;
-  }
+  // Saves a meal portion; returns XP earned.
+  const addMeal = useCallback(async (meal: Omit<MealEntry, 'id' | 'loggedAt'>) => {
+    if (user.demo) {
+      const entry = { ...meal, id: crypto.randomUUID(), loggedAt: Date.now() };
+      setMeals(previous => [entry, ...previous]);
+      return 0;
+    }
+    const saved = await postMeal(meal);
+    setMeals(previous => [toMeal(saved), ...previous.filter(item => item.id !== saved.id)]);
+    setPoints(previous => previous + (saved.points_awarded ?? 0));
+    return saved.points_awarded ?? 0;
+  }, [user.demo]);
 
-  const value: MissionContextValue = {
-    ...state, user, meals, waterMl, goals, loading, nutritionUnavailable,
-    toggleTask, addWater, addMeal, removeMeal, completeTutorial,
-  };
+  // Deletes a logged meal.
+  const removeMeal = useCallback(async (id: string) => {
+    if (!user.demo) await deleteMeal(id);
+    setMeals(previous => previous.filter(meal => meal.id !== id));
+  }, [user.demo]);
+
+  // Marks a tutorial complete; returns XP earned (0 if already done).
+  const completeTutorial = useCallback(async (id: string) => {
+    const result = await completeTutorialRequest(id);
+    setWatchedTutorials(previous => (previous.includes(id) ? previous : [...previous, id]));
+    setPoints(previous => previous + result.points_awarded);
+    return result.points_awarded;
+  }, []);
+
+  // Saves a mood check-in, then refreshes tasks the Worker auto-completed.
+  const logMood = useCallback(async (score: number) => {
+    await postSelfReport({ mood: score });
+    const today = await fetchToday(user.user_id);
+    setTasks(today.tasks);
+    setPoints(today.points);
+    setStreak(today.streak_days);
+  }, [user.user_id]);
+
+  const value = useMemo<MissionContextValue>(() => {
+    const prefs = settings ?? DEFAULT_SETTINGS;
+    return {
+      user, xp: points, streak, tasks: tasks.map(toMissionTask),
+      completed: tasks.filter(row => row.completed_at).map(row => String(row.id)),
+      meals, waterMl, watchedTutorials, settings, goals: nutritionGoals(prefs),
+      waterGoalMl: prefs.water_goal_ml, waterStepMl: prefs.water_step_ml, loading, loadError,
+      toggleTask, completeTaskByKey, addWater, addMeal, removeMeal, completeTutorial, logMood, reload,
+    };
+  }, [user, points, streak, tasks, meals, waterMl, watchedTutorials, settings, loading, loadError,
+    toggleTask, completeTaskByKey, addWater, addMeal, removeMeal, completeTutorial, logMood, reload]);
+
   return <MissionContext.Provider value={value}>{children}</MissionContext.Provider>;
 }

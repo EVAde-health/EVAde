@@ -17,12 +17,12 @@ import { ArrowPathIcon, CameraIcon, CheckIcon, PhotoIcon, VideoCameraSlashIcon }
 import PageHeader from '../components/PageHeader';
 import { useCamera } from '../hooks/useCamera';
 import { useMission } from '../context/MissionContext';
-import { deleteSelfie, listSelfies, saveSelfie, type Selfie } from '../services/selfieStore';
+import { SELFIE_TASK_KEY } from '../data/tasks';
+import { deleteSelfie, isStorageUnavailable, listSelfies, saveSelfie, type Selfie } from '../services/selfieStore';
 import { stagger } from '../utils/style';
 import './css/SelfiesPage.css';
 
 const COUNTDOWN_SECONDS = 3;
-const SELFIE_TASK = { id: 'b-selfie', xp: 15 };
 
 interface GalleryItem extends Selfie {
   url: string;
@@ -38,7 +38,7 @@ function wait(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Daily selfie check-ins captured from the camera and stored locally.
+// Daily selfie check-ins captured from the camera and stored privately in R2.
 export default function SelfiesPage() {
   const { videoRef, state: cameraState, error: cameraError, start: startCamera, stop: stopCamera, capture } = useCamera();
   const [gallery, setGallery] = useState<GalleryItem[]>([]);
@@ -48,9 +48,10 @@ export default function SelfiesPage() {
   const [hasTimer, setHasTimer] = useState(true);
   const [isFlashing, setIsFlashing] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [storage, setStorage] = useState<'loading' | 'ready' | 'unavailable' | 'error'>('loading');
   const galleryRef = useRef<GalleryItem[]>([]);
-  const { completed, toggleTask, user } = useMission();
-  const accountId = user.demo ? null : user.user_id;
+  const { user, completeTaskByKey } = useMission();
+  const userId = user.user_id;
   const showToast = useToast();
   const lightboxMedia = useMemo(
     () => gallery.map(g => ({ src: g.url, alt: `Selfie from ${new Date(g.createdAt).toLocaleString()}`, caption: g.note || new Date(g.createdAt).toLocaleString() })),
@@ -58,14 +59,18 @@ export default function SelfiesPage() {
   );
 
   useEffect(() => {
-    let isActive = true;
-    listSelfies(accountId)
-      .then(selfies => isActive && setGallery(toGallery(selfies)))
-      .catch(() => isActive && setGallery([]));
-    return () => {
-      isActive = false;
-    };
-  }, [accountId]);
+    const controller = new AbortController();
+    listSelfies(userId, controller.signal)
+      .then(selfies => {
+        if (controller.signal.aborted) return;
+        setGallery(toGallery(selfies));
+        setStorage('ready');
+      })
+      .catch(error => {
+        if (!controller.signal.aborted) setStorage(isStorageUnavailable(error) ? 'unavailable' : 'error');
+      });
+    return () => controller.abort();
+  }, [userId]);
 
   useEffect(() => {
     galleryRef.current = gallery;
@@ -94,24 +99,33 @@ export default function SelfiesPage() {
     if (blob) setPending({ blob, url: URL.createObjectURL(blob) });
   }
 
-  // Persists the pending shot and awards the daily XP once.
+  // Uploads the pending shot; the Worker closes today's selfie task once.
   async function keepSelfie() {
     if (!pending) return;
-    const saved = await saveSelfie(accountId, pending.blob, note.trim());
-    setGallery(current => [{ ...saved, url: URL.createObjectURL(saved.blob) }, ...current]);
-    setPending(null);
-    setNote('');
-    const isFirstToday = !completed.includes(SELFIE_TASK.id);
-    if (isFirstToday) toggleTask(SELFIE_TASK.id, SELFIE_TASK.xp);
-    showToast({ body: isFirstToday ? `📸 Selfie saved · +${SELFIE_TASK.xp} XP` : '📸 Selfie saved' });
+    try {
+      const saved = await saveSelfie(pending.blob, note.trim());
+      setGallery(current => [{ ...saved, url: URL.createObjectURL(saved.blob) }, ...current]);
+      setPending(null);
+      setNote('');
+      const xp = await completeTaskByKey(SELFIE_TASK_KEY).catch(() => 0);
+      showToast({ body: xp ? `📸 Selfie saved · +${xp} XP` : '📸 Selfie saved' });
+    } catch (error) {
+      if (isStorageUnavailable(error)) setStorage('unavailable');
+      showToast({ body: isStorageUnavailable(error) ? 'Photo storage isn’t set up yet, so the selfie was not saved.' : 'The selfie could not be uploaded. Try again.' });
+    }
   }
 
   // Deletes a selfie from storage and the gallery.
   async function removeSelfie(id: string) {
-    await deleteSelfie(accountId, id);
-    const removed = gallery.find(g => g.id === id);
-    if (removed) URL.revokeObjectURL(removed.url);
-    setGallery(current => current.filter(g => g.id !== id));
+    try {
+      await deleteSelfie(id);
+      const removed = gallery.find(g => g.id === id);
+      if (removed) URL.revokeObjectURL(removed.url);
+      setGallery(current => current.filter(g => g.id !== id));
+      setLightboxIndex(null);
+    } catch {
+      showToast({ body: 'The selfie could not be deleted. Try again.' });
+    }
   }
 
   return (
@@ -120,10 +134,12 @@ export default function SelfiesPage() {
         eyebrow="Visual check-in"
         title="Daily selfie"
         description="A consistent daily photo helps track facial fluid shift, fatigue and wellbeing across the mission."
-        actions={<Text type="supporting" hasTabularNumbers>{gallery.length} photos stored on this device</Text>}
+        actions={storage === 'ready' && <Text type="supporting" hasTabularNumbers>{gallery.length} {gallery.length === 1 ? 'photo' : 'photos'} in your private archive</Text>}
       />
 
       {cameraError && <Banner status="error" title="Camera unavailable" description={cameraError} />}
+      {storage === 'unavailable' && <Banner status="warning" title="Photo storage is not set up yet" description="Selfies can't be saved until mission control enables storage. You can still use the camera." />}
+      {storage === 'error' && <Banner status="error" title="Your selfies could not load" description="The EVAde API did not respond. Refresh to try again." />}
 
       <Grid columns={{ minWidth: 340, max: 2 }} gap={6}>
         <Card padding={4} className="selfie__stage-card rise-in">
@@ -153,7 +169,7 @@ export default function SelfiesPage() {
                 <TextInput label="Note (optional)" placeholder="e.g. Puffy face after sleep" value={note} onChange={setNote} />
                 <HStack gap={2} hAlign="end">
                   <Button label="Retake" icon={<Icon icon={ArrowPathIcon} />} onClick={() => setPending(null)} />
-                  <Button label="Save selfie" variant="primary" icon={<Icon icon={CheckIcon} />} clickAction={keepSelfie} />
+                  <Button label="Save selfie" variant="primary" icon={<Icon icon={CheckIcon} />} clickAction={keepSelfie} isDisabled={storage === 'unavailable'} />
                 </HStack>
               </VStack>
             ) : (
@@ -170,7 +186,9 @@ export default function SelfiesPage() {
 
         <VStack gap={4}>
           <Heading level={2}>Gallery</Heading>
-          {gallery.length === 0 ? (
+          {storage === 'loading' ? (
+            <Text type="supporting" role="status">Loading your selfies…</Text>
+          ) : gallery.length === 0 ? (
             <EmptyState icon={<Icon icon={PhotoIcon} size="lg" />} title="No selfies yet" description="Your first check-in starts your visual health timeline." />
           ) : (
             <Grid columns={{ minWidth: 120, max: 4 }} gap={3}>

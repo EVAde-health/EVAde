@@ -6,11 +6,13 @@ import { StatusDot } from '@astryxdesign/core/StatusDot';
 import { Icon } from '@astryxdesign/core/Icon';
 import { HeartIcon, MoonIcon, ShieldCheckIcon, FaceSmileIcon } from '@heroicons/react/24/solid';
 import issUrl from '../assets/iss.svg';
-import { RADIATION, RADIATION_LIMIT_MSV, weeklySleepAverage } from '../data/mission';
 import EcgLine from './EcgLine';
 import './css/OrbitalHud.css';
 
 const HEART_INTERVAL_MS = 1100;
+// Illustrative values for the landing-page scene (decorative, aria-hidden; not user data).
+const DEMO_SLEEP_HOURS = 7.4;
+const DEMO_DOSE_SHARE = 12;
 
 // Next simulated heart rate, drifting gently around 68 bpm.
 function nextHeartRate(previous: number) {
@@ -47,7 +49,6 @@ function HeartCard() {
 // Planet, orbit rings, ISS and floating telemetry cards with pointer parallax.
 export default function OrbitalHud() {
   const rootRef = useRef<HTMLElement>(null);
-  const doseShare = Math.round((RADIATION.total / RADIATION_LIMIT_MSV) * 100);
 
   // Writes pointer offset to CSS variables (no React re-render).
   function handlePointerMove(event: PointerEvent) {
@@ -109,7 +110,7 @@ export default function OrbitalHud() {
           <Icon icon={MoonIcon} size="md" color="purple" />
           <VStack gap={0.5}>
             <Text type="supporting">Sleep · 7-night avg</Text>
-            <Text type="large" weight="semibold" hasTabularNumbers>{weeklySleepAverage()} h</Text>
+            <Text type="large" weight="semibold" hasTabularNumbers>{DEMO_SLEEP_HOURS} h</Text>
           </VStack>
         </HStack>
       </Card>
@@ -119,7 +120,7 @@ export default function OrbitalHud() {
           <Icon icon={ShieldCheckIcon} size="md" color="yellow" />
           <VStack gap={0.5}>
             <Text type="supporting">Mission dose</Text>
-            <Text type="large" weight="semibold" hasTabularNumbers>{doseShare}% of limit</Text>
+            <Text type="large" weight="semibold" hasTabularNumbers>{DEMO_DOSE_SHARE}% of limit</Text>
           </VStack>
         </HStack>
       </Card>

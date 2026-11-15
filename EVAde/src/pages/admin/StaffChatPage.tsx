@@ -8,7 +8,7 @@ import { Text } from '@astryxdesign/core/Text';
 import MessagePane from '../../components/MessagePane';
 import PageHeader from '../../components/PageHeader';
 import type { ChatThread } from '../../services/clinic';
-import type { SessionUser } from '../../services/api';
+import type { SessionUser } from '../../services/healthApi';
 import { useResource } from '../../services/useResource';
 
 export default function StaffChatPage() {
