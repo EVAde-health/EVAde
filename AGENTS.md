@@ -4,6 +4,12 @@ Guidance for AI coding agents (and humans) working on EVAde, NASA Space Apps 202
 
 Web app conventions (Astryx design system, component rules) are in [`EVAde/AGENTS.md`](EVAde/AGENTS.md). This file covers how the pieces fit together and how to ship them.
 
+## Deployment rule: only Daniel's PC deploys
+
+- Production deploys of the Cloudflare Workers `evade` (evade.health) and `evade-api` (api.evade.health) run **only from Daniel's PC (MKII)**, **only from `main`**, with `WORKER_REF` set to that `main` commit.
+- Nobody else may run `wrangler deploy` or `node deploy/deploy.mjs` against production: no other teammate machine, no AI agent elsewhere, no CI, and never from a feature branch (such as `evade-cloud`).
+- To ship a change, merge it to `main` and ask Daniel to deploy.
+
 ## Live URLs
 
 | URL | What serves it |
@@ -49,7 +55,7 @@ Config: [`deploy/wrangler.jsonc`](deploy/wrangler.jsonc). It mirrors `worker/wra
 
 Prereqs: git, Node 20+, and a Wrangler login with access to the EVAde Cloudflare account (`npx wrangler login`, check with `npx wrangler whoami`).
 
-Deploy only from the repository root on merged `main` in PowerShell.
+Deploy only from the repository root on merged `main` in PowerShell, on Daniel's PC (see the deployment rule above).
 
 ```powershell
 $env:WORKER_REF = (git rev-parse HEAD); node deploy/deploy.mjs
