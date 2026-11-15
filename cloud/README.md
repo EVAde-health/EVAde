@@ -25,7 +25,7 @@ Python evade_space ──► /observations, /radiation, /space-weather (demo dat
 | Piece | State |
 |---|---|
 | D1 `evade-db` (id `c97b8036-5c72-46eb-af95-de38ef64e0b8`) | **live**: migrations 0001-0004 applied |
-| Worker `evade-api` | built and tested locally, OAuth included; serves at **https://api.evade.health** after deploy (workers.dev URL as fallback) |
+| Worker `evade-api` | built and tested locally, Cloudflare Access login included; serves at **https://api.evade.health** after deploy (workers.dev URL as fallback) |
 | KV `evade-sessions` (id `09f54c946903407a94189a7db78bf20c`) | **live** |
 | R2 `evade-media` | needs R2 switched on once in the dashboard, then `npx wrangler r2 bucket create evade-media` |
 | Workers AI, Durable Object `CrewFeed` | created automatically on deploy |
@@ -53,20 +53,22 @@ Set `EVADE_API_KEY` in `worker/.dev.vars` for local development. Git ignores thi
 
 Local dev: `npx wrangler d1 migrations apply evade-db --local && npx wrangler dev`, which serves the API on http://localhost:8787.
 
-## Login (OAuth on Cloudflare)
+## Login with Cloudflare Access
 
-The frontend submits the login form after Turnstile. Auth0 is the default when configured, with direct Google and GitHub as fallbacks. The OAuth code flow uses PKCE and browser-bound state. The callback links the provider's subject to a D1 user, creates tasks for new crew accounts, and sets a host-only HttpOnly session cookie. See [Auth0 setup](worker/auth0/SETUP.md).
+The website links to the Cloudflare Access login. The Worker verifies the Access application token, links its subject to a D1 user, and sets a host-only HttpOnly session cookie. See [Access setup](worker/ACCESS_SETUP.md).
 
 | Path | Use |
 |---|---|
 | `GET /login?redirect=` | hosted sign-in page (redirect must be an allowed origin) |
-| `GET /auth/providers` | which buttons to show + Turnstile site key, if the frontend draws its own page |
+| `GET /auth/access` | crew login through Cloudflare Access |
+| `GET /auth/access/staff` | staff login through a separate Access application when enabled |
+| `GET /auth/providers` | configured login methods and the public site key for optional OAuth fallbacks |
 | `GET /auth/me` | current user and role, or 401 with the login URL |
-| `POST /auth/logout` | ends the local session and sends Auth0 users through the provider's logout |
+| `POST /auth/logout` | ends the EVAde session |
 
 Who can do what:
 - **Astronaut** (session): only their own data. A body without `user_id` is filled in from the session; a different `user_id` gets 403.
-- **Staff** (`flight_surgeon` / `therapist` / `admin`; roles are assigned in Auth0 and synced on every login, see `worker/auth0/SETUP.md`): every astronaut, plus `/admin/*`.
+- **Staff** (`flight_surgeon` / `therapist` / `admin`; staff sign in through Cloudflare Access at `/auth/access/staff`; roles are set in D1 by an admin, see `worker/ACCESS_SETUP.md`): every astronaut, plus `/admin/*`.
 - **Service** (`X-EVAde-Key`): full access, for Python, FastAPI and edge functions.
 - Cookie-authenticated writes from another origin are blocked (CSRF), on top of SameSite=Lax.
 
@@ -82,12 +84,11 @@ Upload a photo: `fetch(api + "/media?kind=photo&metric=body_temp", { method: "PO
 
 Journal safety: concerning language (self-harm, wanting to die) always creates a red alert for the flight surgeon / psychologist, even if the AI is unavailable, through a keyword check that the model can't override. The astronaut doesn't see concern scores about themselves; only staff do.
 
-One-time setup (by a person, the credentials can't be created by Claude):
+Optional direct OAuth fallbacks:
 1. **Google**: console.cloud.google.com → APIs & Services → Credentials → Create OAuth client ID → Web application. Authorized redirect URI: `https://api.evade.health/auth/callback/google`. Set up the OAuth consent screen as External/Testing and add the team as test users.
 2. **GitHub**: github.com/settings/developers → New OAuth App. Homepage `https://evade.health`, callback `https://api.evade.health/auth/callback/github`.
 3. **Turnstile**: Cloudflare dashboard → Turnstile → Add widget for `evade.health` and `api.evade.health`. Put the site key in `TURNSTILE_SITE_KEY` in `wrangler.jsonc`.
 4. Secrets: `npx wrangler secret put` for `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `TURNSTILE_SECRET`, then `npx wrangler deploy`.
-5. Assign the doctor/therapist demo accounts a staff role in Auth0 (see `worker/auth0/SETUP.md`).
 
 Local testing: set `DEV_LOGIN=true`, `FRONTEND_URL=http://localhost:5173`, and `ALLOWED_ORIGINS=http://localhost:5173` in `worker/.dev.vars`. Open the local Worker's `/login` page for the loopback-only test sign-in. Keep `DEV_LOGIN` off in production.
 
@@ -112,7 +113,7 @@ Local testing: set `DEV_LOGIN=true`, `FRONTEND_URL=http://localhost:5173`, and `
 - Google OAuth uses a **Web application** client with the authorized redirect URI `https://api.evade.health/auth/callback/google`. Put that client's ID and secret in Wrangler as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
 - GitHub OAuth uses the callback `https://api.evade.health/auth/callback/github` and the `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` bindings.
 - Use a Cloudflare Turnstile widget for `evade.health` and `api.evade.health`. Set its site key and secret as `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET`. OAuth providers are available only when their client credentials and both widget settings are present.
-- The website submits a form to `POST /auth/start` with `provider`, `redirect` (normally `https://evade.health/dashboard`), and the Turnstile response field. Pass `screen_hint=signup` for Auth0 signup. `GET /auth/providers` exposes the default provider, enabled provider names, and public site key. Browser API calls use the API's HttpOnly cookie with `credentials: "include"`. See [Auth0 setup](worker/auth0/SETUP.md) for the logout response.
+- The website links to `https://api.evade.health/auth/access?redirect=https://evade.health/dashboard`. Browser API calls use the API's HttpOnly cookie with `credentials: "include"`.
 
 ## API (sign in, or send header `X-EVAde-Key: <EVADE_API_KEY>`; /health and /metrics are public)
 

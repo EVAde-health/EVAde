@@ -37,6 +37,10 @@
     "FASTAPI_URL": "",
     // Where users land after signing in if no redirect was requested.
     "FRONTEND_URL": "https://evade.health",
+    // A blank staff application audience disables staff sign-in.
+    "ACCESS_TEAM_DOMAIN": "evade-health.cloudflareaccess.com",
+    "ACCESS_AUD": "ecbeabe1fc1a7bca3ebee00b3aef522ecd96ac431b0f9dd9b0d8ae3d06dc093b",
+    "ACCESS_STAFF_AUD": "",
     // "true" shows a no-OAuth test login. Keep "false" in production.
     "DEV_LOGIN": "false",
     // Optional AI Gateway id (create one named "evade" in the dashboard for logs + caching of AI calls)
@@ -45,8 +49,7 @@
   // Secrets (set with `npx wrangler secret put <NAME>`):
   //   EVADE_API_KEY  server-side service key for the X-EVAde-Key header
   //   FASTAPI_KEY    optional key forwarded to FastAPI in X-EVAde-Key
-  //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   Google OAuth client (fallback)
-  //   AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET   Auth0 application (default login; roles come from Auth0)
-  //   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET   GitHub OAuth app (fallback)
+  //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   Google OAuth client
+  //   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET   GitHub OAuth app
   //   TURNSTILE_SITE_KEY, TURNSTILE_SECRET     Turnstile widget site key and private secret
 }
