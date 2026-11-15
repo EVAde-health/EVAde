@@ -37,8 +37,10 @@
     "FASTAPI_URL": "",
     // Where users land after signing in if no redirect was requested.
     "FRONTEND_URL": "https://evade.health",
-    // Logins with these emails become flight_surgeon (doctor panel). Comma-separated.
-    "STAFF_EMAILS": "",
+    // A blank staff application audience disables staff sign-in.
+    "ACCESS_TEAM_DOMAIN": "evade-health.cloudflareaccess.com",
+    "ACCESS_AUD": "ecbeabe1fc1a7bca3ebee00b3aef522ecd96ac431b0f9dd9b0d8ae3d06dc093b",
+    "ACCESS_STAFF_AUD": "",
     // "true" shows a no-OAuth test login. Keep "false" in production.
     "DEV_LOGIN": "false",
     // Optional AI Gateway id (create one named "evade" in the dashboard for logs + caching of AI calls)
