@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("cloudflare:workers", () => ({ DurableObject: class {} }));
 const { default: worker } = await import("../src/index");
-const { streakFrom, trackingDay, weekStart, settingsPatch, journalReply } = await import("../src/webapp");
+const { streakFrom, trackingDay, weekStart, settingsPatch, voiceSavedReply } = await import("../src/webapp");
 
 const API = "https://api.evade.health";
 const FRONTEND = "https://evade.health";
@@ -86,9 +86,13 @@ const sha256 = async (s: string) =>
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
 let env: any;
-const ctx = { waitUntil: () => {}, passThroughOnException: () => {} } as unknown as ExecutionContext;
+const pending: Promise<unknown>[] = [];
+const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p), passThroughOnException: () => {} } as unknown as ExecutionContext;
+/** Waits for the work routes hand to ctx.waitUntil (journal analysis, the parser). */
+const settle = async () => { while (pending.length) await Promise.allSettled(pending.splice(0)); };
 
 beforeEach(async () => {
+  pending.length = 0; // work a previous test left hanging (a model call that never answers) is not awaited
   env = { DB: fakeD1(), SESSIONS: fakeKV(), AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) }, ALLOWED_ORIGINS: FRONTEND };
   const raw: DatabaseSync = env.DB.raw;
   const add = raw.prepare("INSERT INTO users (user_id, display_name, role, mission_start) VALUES (?,?,?,?)");
@@ -132,11 +136,12 @@ describe("AI companion routes", () => {
     const created = await call("POST", "/journal/chat", { body });
     expect(created.status).toBe(201);
     expect(created.data.reply.content).toContain("How much did you sleep");
-    expect(requests).toHaveLength(1);
-    expect(requests[0].auth).toBe("Bearer " + XAI_KEY);
-    expect(requests[0].body).toMatchObject({ model: "grok-test-model", max_completion_tokens: 64, temperature: 0.1 });
-    expect(requests[0].body.response_format).toMatchObject({ type: "json_schema", json_schema: { name: "companion_decision", strict: true } });
-    expect(requests[0].body).not.toHaveProperty("reasoning_effort");
+    const decisions = requests.filter((r) => r.body.response_format?.json_schema?.name === "companion_decision");
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0].auth).toBe("Bearer " + XAI_KEY);
+    expect(decisions[0].body).toMatchObject({ model: "grok-test-model", max_completion_tokens: 64, temperature: 0.1 });
+    expect(decisions[0].body.response_format).toMatchObject({ type: "json_schema", json_schema: { name: "companion_decision", strict: true } });
+    expect(decisions[0].body).not.toHaveProperty("reasoning_effort");
     expect((await call("POST", "/journal/chat", { body })).data.reply).toEqual(created.data.reply);
     const path = "/users/" + ASTRONAUT + "/journal/messages";
     expect((await call("GET", path)).data).toHaveLength(2);
@@ -234,6 +239,51 @@ describe("AI companion routes", () => {
   });
 });
 
+describe("health-data parser behind POST /journal/chat", () => {
+  const isParser = (b: any) => String(b.messages?.[0]?.content).includes("You extract health data");
+  it("stores stated values with idempotent client_ids and keeps the message text private", async () => {
+    env.XAI_API_KEY = XAI_KEY;
+    Object.assign(env, { ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com", ACCESS_AUD: "crew", ACCESS_STAFF_AUD: "staff" });
+    const requests = stubGrok((b) => isParser(b)
+      ? JSON.stringify({ sleep_duration: { value: 7, unit: "hours", quote: "about 7 hours" }, heart_rate: { value: 64, quote: "heart rate was 64" } })
+      : '{"crisis":false,"tone":0,"next":1}');
+    const id = crypto.randomUUID();
+    const body = { id, message: "Slept about 7 hours, heart rate was 64 this morning. private-chat-marker" };
+    expect((await call("POST", "/journal/chat", { body })).status).toBe(201);
+    await settle();
+    const raw: DatabaseSync = env.DB.raw;
+    expect(raw.prepare("SELECT client_id, metric, value, source, device FROM observations WHERE user_id=? ORDER BY metric").all(ASTRONAUT)).toEqual([
+      { client_id: `chat:${id}:heart_rate`, metric: "heart_rate", value: 64, source: "model", device: "journal_parser" },
+      { client_id: `chat:${id}:sleep_hours`, metric: "sleep_hours", value: 7, source: "model", device: "journal_parser" },
+    ]);
+    expect(raw.prepare("SELECT client_id, sleep_hours, note, source FROM self_reports WHERE user_id=?").all(ASTRONAUT))
+      .toEqual([{ client_id: `chat:${id}:sr`, sleep_hours: 7, note: null, source: "app" }]);
+    expect((raw.prepare("SELECT COUNT(*) n FROM journal_entries WHERE user_id=?").get(ASTRONAUT) as any).n).toBe(0); // no analysis, no entry
+    // A second message: the parser reads the companion's previous question with it.
+    expect((await call("POST", "/journal/chat", { body: { message: "About a 4." } })).status).toBe(201);
+    await settle();
+    const parserInputs = requests.filter((r) => isParser(r.body)).map((r) => r.body.messages[1].content);
+    expect(parserInputs[1]).toBe("EVAde: Thanks for checking in. How are your mood and stress today?\nMe: About a 4.");
+    // A retry of the first message writes nothing new; staff never see the text.
+    expect((await call("POST", "/journal/chat", { body })).data.duplicate).toBe(true);
+    await settle();
+    expect((raw.prepare("SELECT COUNT(*) n FROM observations WHERE client_id LIKE ?").get(`chat:${id}:%`) as any).n).toBe(2);
+    await env.SESSIONS.put("sess:" + await sha256("parser-staff"), JSON.stringify({ user_id: SURGEON, role: "flight_surgeon", provider: "cloudflare_access_staff", audience: "staff" }));
+    const staffJournal = await call("GET", "/admin/astronauts/" + ASTRONAUT + "/journal", { token: "parser-staff" });
+    expect(staffJournal.status).toBe(200);
+    expect(JSON.stringify(staffJournal.data)).not.toContain("private-chat-marker");
+  });
+
+  it("never sends a crisis message to the parser", async () => {
+    env.XAI_API_KEY = XAI_KEY;
+    const requests = stubGrok(() => "{}");
+    expect((await call("POST", "/journal/chat", { body: { message: "I want to die. I slept 3 hours." } })).status).toBe(201);
+    await settle();
+    expect(requests).toEqual([]);
+    expect((env.DB.raw.prepare("SELECT COUNT(*) n FROM observations WHERE user_id=?").get(ASTRONAUT) as any).n).toBe(0);
+  });
+});
+
 describe("xAI Grok", () => {
   it("falls back to the second Grok model and only ever calls Grok models", async () => {
     env.XAI_API_KEY = XAI_KEY;
@@ -244,7 +294,9 @@ describe("xAI Grok", () => {
     const res = await call("POST", "/journal/chat", { body: { message: "Feeling good today." } });
     expect(res.status).toBe(201);
     expect(res.data.reply.content).toBe("I'm glad you took a moment to check in. How are your mood and stress today?");
-    expect(requests.map((r) => r.body.model)).toEqual(["grok-4.20-0309-non-reasoning", "grok-4.3"]);
+    const decisions = requests.filter((r) => r.body.response_format?.json_schema?.name === "companion_decision");
+    expect(decisions.map((r) => r.body.model)).toEqual(["grok-4.20-0309-non-reasoning", "grok-4.3"]);
+    expect(requests.every((r) => r.body.model.startsWith("grok-"))).toBe(true);
     const { textModels } = await import("../src/ai");
     expect(textModels({})).toEqual(["grok-4.20-0309-non-reasoning", "grok-4.3"]);
     expect(textModels({ XAI_TEXT_MODEL: "grok-4.7", XAI_FALLBACK_TEXT_MODEL: "" })).toEqual(["grok-4.7"]);
@@ -279,7 +331,7 @@ describe("xAI Grok", () => {
     const res = await call("POST", "/journal?analyze=sync", { body: { user_id: ASTRONAUT, content: "Slept well, calm day." } });
     expect(res.status).toBe(201);
     expect(res.data.analysis).toMatchObject({ summary: "A calm day.", mood_label: "calm", model: "grok-4.20-0309-non-reasoning" });
-    expect(requests[0].body.response_format.json_schema).toMatchObject({ name: "journal_analysis", strict: true });
+    expect(requests.map((r) => r.body.response_format?.json_schema?.name).sort()).toEqual(["health_extraction", "journal_analysis"]);
     expect(env.DB.raw.prepare("SELECT analysis_model FROM journal_entries WHERE user_id=?").get(ASTRONAUT)).toEqual({ analysis_model: "grok-4.20-0309-non-reasoning" });
   });
 
@@ -321,10 +373,11 @@ describe("pure helpers", () => {
     expect(() => settingsPatch({ is_admin: true })).toThrow();
     expect(settingsPatch({ water_goal_ml: 3000.4, reduced_motion: true })).toEqual([["water_goal_ml", 3000], ["reduced_motion", 1]]);
   });
-  it("never shows concern scores in the journal reply", () => {
-    const reply = journalReply({ summary: "A hard day.", mood_label: "low", needs_human_review: true });
+  it("never shows a summary or concern scores after a voice check-in", () => {
+    const reply = voiceSavedReply(true);
     expect(reply).toContain("crew support team");
-    expect(reply).not.toMatch(/concern|high|score/i);
+    expect(reply).not.toMatch(/concern|high|score|mood/i);
+    expect(voiceSavedReply(false)).toBe("Your voice check-in is saved to your journal.");
   });
 });
 
@@ -413,6 +466,7 @@ describe("journal chat", () => {
     const sent = await call("POST", "/journal/messages", { body: { id, content: "I want to end it all" } });
     expect(sent.status).toBe(201);
     expect(sent.data.reply.content).toContain("crew support team");
+    await settle(); // the analysis (and its staff alert) runs after the response
     const raw: DatabaseSync = env.DB.raw;
     expect((raw.prepare("SELECT COUNT(*) n FROM alerts WHERE user_id=? AND metric='journal' AND level='red'").get(ASTRONAUT) as any).n).toBe(1);
     const history = await call("GET", `/users/${ASTRONAUT}/journal/messages`);

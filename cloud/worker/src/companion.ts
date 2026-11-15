@@ -95,10 +95,12 @@ const modelPrompt = "You support an astronaut's daily check-in, covering sleep, 
 export function registerCompanion<E extends CompanionEnv>(route: (method: string, path: string, h: Handler<E>) => void, deps: {
   json: (data: unknown, status?: number) => Response;
   body: <T>(req: Request) => Promise<T>;
+  /** Health-data parser for a new, non-crisis message (journalParse.ts via index.ts); runs after the response. */
+  parse?: (env: E, ctx: ExecutionContext, userId: string, messageId: string, content: string, ts: string) => Promise<void>;
 }) {
   const { json, body } = deps;
 
-  route("POST", "/journal/chat", async (req, env, _p, _url, _ctx, who) => {
+  route("POST", "/journal/chat", async (req, env, _p, _url, ctx, who) => {
     if (who.kind !== "user" || who.role !== "astronaut" || who.demo || !who.user_id) {
       throw new HttpError(403, "Use your own astronaut account to chat");
     }
@@ -157,6 +159,8 @@ export function registerCompanion<E extends CompanionEnv>(route: (method: string
       if (flagged) return json({ reply });
       throw error;
     }
+    // Stated values (sleep, mood, vitals, symptoms) go to the health record; crisis messages never go to a model.
+    if (!flagged && deps.parse) ctx.waitUntil(deps.parse(env, ctx, userId, id, content, ts));
     return json({ message: { id, sender: "user", content, ts }, reply }, 201);
   });
 
