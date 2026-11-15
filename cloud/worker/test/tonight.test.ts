@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
+import { sha256hex } from "../src/auth";
 import { DELETE_USER_SQL } from "../src/deleteUser";
 
 vi.mock("../src/live", () => ({ CrewFeed: class {} }));
@@ -138,6 +139,7 @@ async function astronaut(name = "Lee") {
 describe("GET /auth/demo", () => {
   it("is off unless DEMO_LOGIN=true", async () => {
     expect((await call("GET", "/auth/demo")).status).toBe(404);
+    expect((await (await call("GET", "/auth/providers")).json<any>()).providers).not.toContain("demo");
   });
 
   it("signs into the seeded demo astronaut only, as an astronaut, for 2 hours", async () => {
@@ -160,6 +162,24 @@ describe("GET /auth/demo", () => {
     const token = /__Host-evade_session=([^;]+)/.exec((await call("GET", "/auth/demo")).headers.get("Set-Cookie")!)![1];
     expect((await call("GET", "/users", { cookie: token })).status).toBe(403);
     expect((await call("GET", "/users/00000000-0000-4000-8000-00000000d002/tasks", { cookie: token })).status).toBe(403);
+  });
+
+  it("advertises the demo when available and keeps the shared account read-only", async () => {
+    env = { ...env, DEMO_LOGIN: "true" } as Env;
+    expect((await (await call("GET", "/auth/providers")).json<any>()).providers).toContain("demo");
+    const login = await call("GET", "/auth/demo");
+    const token = /__Host-evade_session=([^;]+)/.exec(login.headers.get("Set-Cookie")!)![1];
+    const cookie = { cookie: token };
+    const userId = "00000000-0000-4000-8000-00000000d001";
+    const today = await call("GET", `/users/${userId}/today`, cookie);
+    expect(today.status).toBe(200);
+    expect((await today.json<any>()).tasks).toHaveLength(4);
+    expect(count("tasks", userId)).toBe(4);
+    expect((await call("POST", "/journal/messages", { ...cookie, body: {} })).status).toBe(403);
+    expect((await call("GET", "/leaderboard", cookie)).status).toBe(403);
+    expect((await call("GET", "/live", cookie)).status).toBe(403);
+    env.DEMO_LOGIN = "false";
+    expect((await call("GET", "/auth/me", cookie)).status).toBe(401);
   });
 });
 
@@ -200,6 +220,37 @@ describe("DELETE /me", () => {
     deleteStatus = 503;
     expect((await call("DELETE", "/me", { cookie: token, body: { confirm: "DELETE" } })).status).toBe(503);
     expect(count("users", uid)).toBe(1);
+  });
+
+  it("removes console rows and data in deployed legacy tables while preserving other accounts", async () => {
+    const { uid, token } = await astronaut();
+    const other = await astronaut("Other");
+    const sql = db.raw;
+    sql.prepare("INSERT INTO journal_messages (id,user_id,sender,content,ts) VALUES (?,?,'user','fixture',?)")
+      .run(crypto.randomUUID(), uid, new Date().toISOString());
+    sql.prepare("INSERT INTO user_settings (user_id) VALUES (?)").run(uid);
+    sql.prepare("INSERT INTO user_settings (user_id) VALUES (?)").run(other.uid);
+    sql.prepare("INSERT INTO daily_goals (user_id,metric,target,set_by) VALUES (?, 'sleep_hours', 8,?)").run(uid, other.uid);
+    sql.prepare("INSERT INTO daily_goals (user_id,metric,target,set_by) VALUES (?, 'sleep_hours', 8,?)").run(other.uid, uid);
+    sql.prepare("INSERT INTO emergencies (user_id,status,acknowledged_by,resolved_by) VALUES (?,'resolved',?,?)").run(other.uid, uid, uid);
+    sql.prepare("INSERT INTO emergencies (user_id,status) VALUES (?,'open')").run(uid);
+    const thread = sql.prepare("INSERT INTO staff_threads (astronaut_id,staff_id) VALUES (?,?)").run(other.uid, uid).lastInsertRowid;
+    sql.prepare("INSERT INTO staff_messages (thread_id,sender_id,body) VALUES (?,?, 'fixture')").run(thread, other.uid);
+
+    const remainingLogin = crypto.randomUUID();
+    await kv.put(`sess:${await sha256hex(remainingLogin)}`, JSON.stringify({
+      user_id: uid, provider: "cloudflare_access", role: "astronaut", expires: Date.now() + 3600_000,
+    }));
+    const response = await call("DELETE", "/me", { cookie: token, body: { confirm: "DELETE" } });
+    expect(response.status).toBe(200);
+    for (const table of ["journal_messages", "user_settings", "daily_goals", "emergencies"]) expect(count(table, uid)).toBe(0);
+    expect(count("user_settings", other.uid)).toBe(1);
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM staff_threads").get()).toMatchObject({ n: 0 });
+    expect(sql.prepare("SELECT COUNT(*) AS n FROM staff_messages").get()).toMatchObject({ n: 0 });
+    expect(sql.prepare("SELECT set_by FROM daily_goals WHERE user_id=?").get(other.uid)).toMatchObject({ set_by: null });
+    expect(sql.prepare("SELECT acknowledged_by, resolved_by FROM emergencies WHERE user_id=?").get(other.uid))
+      .toMatchObject({ acknowledged_by: null, resolved_by: null });
+    expect((await call("GET", "/staff", { cookie: remainingLogin })).status).toBe(401);
   });
 
   it("the generated SQL matches every table that has a user_id column", () => {

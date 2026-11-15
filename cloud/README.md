@@ -15,7 +15,7 @@ Python evade_space ──► /observations, /radiation, /space-weather (demo dat
 
 | Person | Part | Touch points with this layer |
 |---|---|---|
-| Decong + Ryan L | D1 database, Worker API, **OAuth login**, Python space data | this repo; schema changes go in `worker/migrations/000N_*.sql` |
+| Decong + Ryan L | D1 database, Worker API, **Cloudflare Access login**, Python space data | this repo; schema changes go in `worker/migrations/000N_*.sql` |
 | Ryan B | frontend, DB edge functions | bind the same D1 (`evade-db`); call this Worker with `credentials: "include"` so the login cookie is sent, or use a Service Binding to `evade-api` from his Workers |
 | Daniel | GoDaddy domain (DNS pointed to Cloudflare), voice AI | Worker custom domain `api.<domain>`; frontend origin goes in `ALLOWED_ORIGINS` |
 | Michael | datasets, ECG/EEG models, FastAPI | trains on his datasets offline; D1 stores only results (`/model-results` or `/predict/*`), never raw waveforms |
@@ -24,30 +24,29 @@ Python evade_space ──► /observations, /radiation, /space-weather (demo dat
 
 | Piece | State |
 |---|---|
-| D1 `evade-db` (id `c97b8036-5c72-46eb-af95-de38ef64e0b8`) | **live**: migrations 0001-0004 applied |
+| D1 `evade-db` | Live database bound in `worker/wrangler.jsonc`. Check applied migrations before deployment. |
 | Worker `evade-api` | built and tested locally, Cloudflare Access login included; serves at **https://api.evade.health** after deploy (workers.dev URL as fallback) |
-| KV `evade-sessions` (id `09f54c946903407a94189a7db78bf20c`) | **live** |
-| R2 `evade-media` | needs R2 switched on once in the dashboard, then `npx wrangler r2 bucket create evade-media` |
+| KV `evade-sessions` | Live session namespace bound in `worker/wrangler.jsonc`. |
+| R2 `evade-media` | Private bucket bound as `MEDIA` for authenticated uploads. |
 | Workers AI, Durable Object `CrewFeed` | created automatically on deploy |
 | Python `evade_space` | done, 5 tests pass, standard library only |
 
-## Deploy (run on your laptop, once)
+## Deploy the backend
 
-```bash
-cd worker
-npm install
-npx wrangler login                 # sign in to Cloudflare, pick the EVAde account
-npx wrangler secret put EVADE_API_KEY # supply the service key at the masked prompt
-npx wrangler deploy                # prints https://evade-api.<subdomain>.workers.dev
-```
-Then seed demo crew into the live DB:
-```bash
-cd ../python
-EVADE_API_URL=https://evade-api.<subdomain>.workers.dev EVADE_API_KEY=<key> python3 -m evade_space seed
-```
-If `deploy` says the D1 database isn't found, the database was created in a different Cloudflare account. Run `npx wrangler d1 create evade-db`, paste the new id into `wrangler.jsonc`, then `npx wrangler d1 migrations apply evade-db --remote`.
+From `cloud/worker` on merged `evade-cloud`, sign in to the EVAde account with Wrangler and check the live D1 binding in `wrangler.jsonc`. Apply the migrations before publishing the Worker. Set up the separate Access application before testing staff login. [Staff setup](../docs/STAFF_SETUP.md)
 
-When Michael's FastAPI is up: set `FASTAPI_URL` in `wrangler.jsonc` and redeploy. CORS already allows https://evade.health and https://www.evade.health. If deploy fails on the custom domain, evade.health is not a zone in this Cloudflare account yet: remove the `routes` line, deploy on workers.dev, and add the domain once Daniel moves the zone.
+```powershell
+npm ci
+npx.cmd wrangler d1 migrations list evade-db --remote
+npx.cmd wrangler d1 time-travel info evade-db
+npx.cmd wrangler d1 migrations apply evade-db --remote
+npx.cmd wrangler deploy
+```
+
+Verify `https://api.evade.health`, then deploy the website from merged `main`. Use synthetic data for the demo.
+`DEMO_LOGIN=true` advertises a read-only demo only when the seeded astronaut exists. Check the migration
+ledger for `0006_frontend_gaps.sql` and apply `0009_staff_console.sql` from this branch. The demo account
+setup is kept by this branch's migration chain.
 
 Set `EVADE_API_KEY` in `worker/.dev.vars` for local development. Git ignores this file. Keep the service key in server-side configuration. For local Python commands, set `EVADE_API_KEY` in the Python process environment to the same value.
 
@@ -69,7 +68,7 @@ The website links to the Cloudflare Access login. The Worker verifies the Access
 Who can do what:
 - **Astronaut** (session): only their own data. A body without `user_id` is filled in from the session; a different `user_id` gets 403.
 - **Staff** (`flight_surgeon` / `therapist` / `admin`; staff sign in through Cloudflare Access at `/auth/access/staff`; roles are set in D1 by an admin, see `worker/ACCESS_SETUP.md`): every astronaut, plus `/admin/*`.
-- **Service** (`X-EVAde-Key`): full access, for Python, FastAPI and edge functions.
+- **Service** (`X-EVAde-Key`): integration endpoints for Python, FastAPI and edge functions. Console routes require a staff sign-in.
 - Cookie-authenticated writes from another origin are blocked (CSRF), on top of SameSite=Lax.
 
 Frontend call: `fetch("https://api.evade.health/users/<id>/dashboard", { credentials: "include" })`. Get `<id>` from `/auth/me`.

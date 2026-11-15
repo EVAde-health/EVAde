@@ -131,9 +131,11 @@ const tokenFrom = (res: Response) => /evade_session=([^;]*)/.exec(res.headers.ge
 // ---------- tests ----------
 describe("providers", () => {
   it("lists cloudflare_access first when configured", () => {
-    expect(enabledProviders(env, API_URL)).toEqual(["cloudflare_access"]);
-    expect(enabledProviders({ ...env, GOOGLE_CLIENT_ID: "g", GOOGLE_CLIENT_SECRET: "s", TURNSTILE_SITE_KEY: "test-site", TURNSTILE_SECRET: "test-secret" }, API_URL)).toEqual(["cloudflare_access", "google"]);
+    expect(enabledProviders(env, API_URL)).toEqual(["cloudflare_access", "cloudflare_access_staff"]);
+    expect(enabledProviders({ ...env, GOOGLE_CLIENT_ID: "g", GOOGLE_CLIENT_SECRET: "s", TURNSTILE_SITE_KEY: "test-site", TURNSTILE_SECRET: "test-secret" }, API_URL)).toEqual(["cloudflare_access", "cloudflare_access_staff", "google"]);
     expect(enabledProviders({ ...env, ACCESS_AUD: "" }, API_URL)).toEqual([]);
+    expect(enabledProviders({ ...env, ACCESS_STAFF_AUD: "" }, API_URL)).toEqual(["cloudflare_access"]);
+    expect(enabledProviders({ ...env, ACCESS_STAFF_AUD: env.ACCESS_AUD }, API_URL)).toEqual(["cloudflare_access"]);
   });
 
   it("login page links to /auth/access and keeps the redirect", async () => {
@@ -223,6 +225,11 @@ describe("GET /auth/access", () => {
 });
 
 describe("staff login (/auth/access/staff)", () => {
+  it("records staff enrollment only through the staff application", async () => {
+    await login(await sign({ sub: "crew-only" }));
+    expect(row("SELECT * FROM auth_identities WHERE provider='cloudflare_access_staff' AND subject=?", "crew-only")).toBeUndefined();
+  });
+
   async function makeStaff(sub: string, role = "flight_surgeon") {
     await login(await sign({ sub, email: `${sub}@evade.health` }));
     const id = row("SELECT user_id FROM auth_identities WHERE subject=?", sub).user_id;
@@ -257,13 +264,30 @@ describe("staff login (/auth/access/staff)", () => {
     }
   });
 
-  it("refuses to provision or elevate a non-staff identity at the staff endpoint", async () => {
-    const response = await login(await sign({ aud: [STAFF_AUD] }), "/auth/access/staff");
+  it("enrolls a verified staff-app identity without granting a session until D1 promotion", async () => {
+    const token = await sign({ aud: [STAFF_AUD], sub: "pending-staff", email: "New.Staff@example.com" });
+    const staffPath = `/auth/access/staff?redirect=${encodeURIComponent("https://evade.health/admin")}`;
+    const response = await login(token, staffPath);
     expect(response.status).toBe(403);
     expect(response.headers.get("Set-Cookie")).toBeNull();
-    expect(row("SELECT COUNT(*) AS n FROM users WHERE user_id NOT LIKE '00000000-0000-4000-8000-%'").n).toBe(0);
-  });
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    const identity = row("SELECT user_id FROM auth_identities WHERE provider='cloudflare_access' AND subject=?", "pending-staff");
+    const page = await response.text();
+    expect(page).toContain("Staff access is pending for new.staff@example.com.");
+    expect(page).toContain(identity.user_id);
+    expect(page).toContain('href="https://evade.health/login"');
+    expect(page).toContain("Use a different email");
+    expect(row("SELECT role FROM users WHERE user_id=?", identity.user_id).role).toBe("astronaut");
+    expect(row("SELECT user_id FROM auth_identities WHERE provider='cloudflare_access_staff' AND subject=?", "pending-staff"))
+      .toMatchObject({ user_id: identity.user_id });
 
+    (env.DB as any).raw.prepare("UPDATE users SET role='flight_surgeon' WHERE user_id=?").run(identity.user_id);
+    const approved = await login(token, staffPath);
+    expect(approved.status).toBe(302);
+    expect(approved.headers.get("Location")).toBe("https://evade.health/admin");
+    const session = await call("GET", "/auth/me", { Cookie: `__Host-evade_session=${tokenFrom(approved)}` });
+    expect((await session.json<any>())).toMatchObject({ user: { user_id: identity.user_id }, role: "flight_surgeon", demo: false });
+  });
   it("invalidates a staff API session when the D1 role is revoked", async () => {
     const userId = await makeStaff("doc");
     const session = await login(await sign({ sub: "doc", aud: [STAFF_AUD] }), "/auth/access/staff");
@@ -280,7 +304,9 @@ describe("logout", () => {
     const headers = { Cookie: `__Host-evade_session=${tokenFrom(session)}` };
     expect((await call("GET", "/auth/logout", headers)).status).toBe(405);
     expect((await call("POST", "/auth/logout", { ...headers, Origin: "https://untrusted.example" })).status).toBe(403);
-    expect((await call("POST", "/auth/logout", { ...headers, Origin: "https://evade.health" })).status).toBe(204);
+    const logout = await call("POST", "/auth/logout", { ...headers, Origin: "https://evade.health" });
+    expect(logout.status).toBe(200);
+    expect(await logout.json()).toEqual({ logout_url: `https://${env.ACCESS_TEAM_DOMAIN}/cdn-cgi/access/logout` });
     expect((await call("GET", "/auth/me", headers)).status).toBe(401);
   });
 });
