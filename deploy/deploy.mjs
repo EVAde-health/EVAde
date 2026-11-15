@@ -6,7 +6,7 @@
 //
 // Env overrides:
 //   WEB_DIR     web app folder to build (default: EVAde, i.e. this checkout)
-//   WORKER_REF  git ref for the Worker (default: origin/feature/twilio-grok-voice-agent)
+//   WORKER_REF  git ref for the Worker (default: origin/main)
 //
 // Needs: git, Node 20+, and `npx wrangler login` with access to the "EVAde" Cloudflare account.
 import { execSync } from "node:child_process";
@@ -21,7 +21,7 @@ const sh = (cmd, cwd) => {
 
 const root = execSync("git rev-parse --show-toplevel").toString().trim();
 const webDir = resolve(root, process.env.WEB_DIR || "EVAde");
-const workerRef = process.env.WORKER_REF || "origin/feature/twilio-grok-voice-agent";
+const workerRef = process.env.WORKER_REF || "origin/main";
 const stage = join(root, ".deploy");
 const workerSrc = join(stage, "worker-src");
 const site = join(stage, "site");
@@ -29,7 +29,7 @@ const config = join(root, "deploy", "wrangler.jsonc");
 
 mkdirSync(stage, { recursive: true });
 
-// 1. Check out the Worker branch into .deploy/worker-src (a detached git worktree).
+// 1. Check out the Worker ref (WORKER_REF, default origin/main) into .deploy/worker-src (a detached git worktree).
 sh("git fetch origin", root);
 if (!existsSync(join(workerSrc, ".git"))) {
   sh("git worktree prune", root);

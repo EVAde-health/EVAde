@@ -3,10 +3,10 @@
   // Used by deploy/deploy.mjs. Do not run directly: it expects the build output
   // and the voice Worker source that deploy.mjs stages under ../.deploy/.
   //
-  // Combines two branches into one Worker:
-  //   - features/web-app            -> React SPA (EVAde/dist) served at /, /dashboard, /journal, ...
-  //   - feature/twilio-grok-voice-agent -> Worker code (worker/src)
-  // Mirrors worker/wrangler.jsonc on the voice branch; the only differences are
+  // Combines into one Worker:
+  //   - this checkout's EVAde/      -> React SPA (EVAde/dist) served at /, /dashboard, /journal, ...
+  //   - WORKER_REF (default origin/main) -> Worker code (worker/src)
+  // Mirrors worker/wrangler.jsonc at WORKER_REF; the only differences are
   // the paths, SPA fallback, and "/" being served from assets instead of the Worker.
   "name": "evade",
   "account_id": "2e5df567f3580c5af313ebb51e1920fa",

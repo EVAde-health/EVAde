@@ -54,7 +54,7 @@ node deploy/deploy.mjs             # build and deploy to https://evade.health
 ```
 
 The script:
-1. checks out `origin/feature/twilio-grok-voice-agent` into `.deploy/worker-src` (a git worktree; override with `WORKER_REF=<ref>`),
+1. checks out `origin/main` into `.deploy/worker-src` (a git worktree; override with `WORKER_REF=<ref>`),
 2. runs `npm ci && npm run build` in `EVAde/`,
 3. assembles `.deploy/site` = `EVAde/dist`,
 4. runs `wrangler deploy -c deploy/wrangler.jsonc` using the Worker's own Wrangler.
