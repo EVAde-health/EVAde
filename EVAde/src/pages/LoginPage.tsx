@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
 import { Grid } from '@astryxdesign/core/Grid';
+import { Link } from '@astryxdesign/core/Link';
 import { Heading, Text } from '@astryxdesign/core/Text';
 import { HStack, Stack, VStack } from '@astryxdesign/core/Stack';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core/SegmentedControl';
@@ -19,10 +20,9 @@ import './css/LoginPage.css';
 type AuthMode = 'signin' | 'signup';
 
 const MAX_ERROR_LENGTH = 160;
+const STAFF_SIGN_IN_URL = 'https://api.evade.health/auth/access/staff?redirect=https%3A%2F%2Fevade.health%2Fadmin';
 
-// Sign in / sign up screen; both go through Cloudflare Access (passkey or emailed code). Astronauts and flight
-// surgeons share the sign-in; the account's role decides which app opens. Locally, /auth/access opens the
-// Worker's stand-in for the Access page, and the seeded test accounts are listed under the sign-in button.
+// Astronaut sign-in and signup use the crew Cloudflare Access app. Staff use the separate staff Access app.
 export default function LoginPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [config, setConfig] = useState<AuthProviders>();
@@ -47,6 +47,12 @@ export default function LoginPage() {
   const hasDev = config?.providers.includes('dev') ?? false;
   const hasDemo = config?.providers.includes('demo') ?? false;
   const serverError = searchParams.get('error')?.slice(0, MAX_ERROR_LENGTH);
+  const staffError = /^Staff accounts sign in at \/auth\/access\/staff\.?$/i.test(serverError?.trim() ?? '');
+  const staffLink = (
+    <Link href={STAFF_SIGN_IN_URL} type="supporting" hasUnderline>
+      Staff sign-in (flight surgeons, therapists, admins)
+    </Link>
+  );
 
   // Swaps between sign in and sign up, keeping it in the URL.
   function changeMode(next: string) {
@@ -76,13 +82,20 @@ export default function LoginPage() {
 
           <Card padding={6} className="login__card">
             <VStack gap={4}>
-              {serverError && <Text role="alert">{serverError}</Text>}
+              {serverError && (
+                <Text role="alert">
+                  {staffError ? (
+                    <>Staff accounts use <Link href={STAFF_SIGN_IN_URL} type="inherit" hasUnderline>staff sign-in</Link>.</>
+                  ) : serverError}
+                </Text>
+              )}
               {failed && <Text role="alert">Sign-in options could not load. Refresh to try again.</Text>}
               {!config && !failed && <Text role="status">Checking sign-in options…</Text>}
               {config && !hasAccess && !hasDemo && <Text>Sign-in is currently unavailable. Please try again later.</Text>}
               {hasAccess && (
                 <VStack gap={2}>
                   <Button variant="primary" size="lg" width="100%" label={isSignUp ? 'Create astronaut account' : 'Sign in'} href={accessLoginUrl()} />
+                  {!isSignUp && staffLink}
                   <Text type="supporting">
                     {isSignUp
                       ? 'Cloudflare Access emails you a one-time code; your crew account is created on first sign-in.'
@@ -95,6 +108,7 @@ export default function LoginPage() {
                   )}
                 </VStack>
               )}
+              {!hasAccess && !isSignUp && staffLink}
               {hasDemo && <Button variant="ghost" width="100%" label="Try the demo" href={demoLoginUrl()} />}
             </VStack>
           </Card>
