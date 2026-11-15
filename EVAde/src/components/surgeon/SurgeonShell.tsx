@@ -1,5 +1,5 @@
 import { Suspense, useMemo, useState } from 'react';
-import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { AppShell } from '@astryxdesign/core/AppShell';
 import { Badge } from '@astryxdesign/core/Badge';
 import { Divider } from '@astryxdesign/core/Divider';
@@ -47,8 +47,9 @@ function selected(href: string, pathname: string) {
 }
 
 // Flight-surgeon app: side navigation with live badges, the emergency drop-down, and the routed page.
-export default function SurgeonShell({ user, onSignOut }: { user: SessionUser; onSignOut: () => void }) {
+export default function SurgeonShell({ user }: { user: SessionUser }) {
   const pathname = useLocation().pathname;
+  const navigate = useNavigate();
   const [signingOut, setSigningOut] = useState(false);
   const showToast = useToast();
   // Every surgeon page polls once here (~5 s); pages read it from context.
@@ -59,15 +60,18 @@ export default function SurgeonShell({ user, onSignOut }: { user: SessionUser; o
   );
   if (!pathname.startsWith('/admin')) return <Navigate to="/admin" replace />;
 
+  // Signs out, then goes to the home screen (replace). A failed logout stays here with a toast.
   async function handleSignOut() {
     if (signingOut) return;
     setSigningOut(true);
     try {
-      if (!(await signOut())) onSignOut();
+      await signOut({ redirect: false });
     } catch {
       showToast({ body: 'Sign-out failed. Please try again.' });
       setSigningOut(false);
+      return;
     }
+    navigate('/', { replace: true });
   }
 
   const active = (notes.data?.open_count ?? 0) + (notes.data?.acknowledged_count ?? 0);

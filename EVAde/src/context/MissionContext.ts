@@ -36,6 +36,8 @@ export interface MissionActions {
   removeMeal: (id: string) => Promise<void>;
   completeTutorial: (id: string) => Promise<number>;
   logMood: (score: number) => Promise<void>;
+  /** Re-reads today's tasks, points and streak (after the Worker completed tasks on its own). */
+  refreshToday: () => Promise<void>;
   reload: () => void;
 }
 

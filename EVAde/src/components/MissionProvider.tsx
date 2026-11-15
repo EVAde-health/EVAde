@@ -144,14 +144,19 @@ export default function MissionProvider({ user, children }: { user: SessionUser;
     return result.points_awarded;
   }, []);
 
-  // Saves a mood check-in, then refreshes tasks the Worker auto-completed.
-  const logMood = useCallback(async (score: number) => {
-    await postSelfReport({ mood: score });
+  // Re-reads tasks the Worker auto-completed, with points and streak.
+  const refreshToday = useCallback(async () => {
     const today = await fetchToday(user.user_id);
     setTasks(today.tasks);
     setPoints(today.points);
     setStreak(today.streak_days);
   }, [user.user_id]);
+
+  // Saves a mood check-in, then refreshes tasks the Worker auto-completed.
+  const logMood = useCallback(async (score: number) => {
+    await postSelfReport({ mood: score });
+    await refreshToday();
+  }, [refreshToday]);
 
   const value = useMemo<MissionContextValue>(() => {
     // The Worker resolves goals into settings: the latest flight-surgeon (or own) goal, then saved settings, then defaults.
@@ -164,10 +169,10 @@ export default function MissionProvider({ user, children }: { user: SessionUser;
       goals,
       waterGoalMl: prefs.water_goal_ml,
       waterStepMl: prefs.water_step_ml, loading, loadError,
-      toggleTask, completeTaskByKey, addWater, addMeal, removeMeal, completeTutorial, logMood, reload,
+      toggleTask, completeTaskByKey, addWater, addMeal, removeMeal, completeTutorial, logMood, refreshToday, reload,
     };
   }, [user, points, streak, tasks, meals, waterMl, watchedTutorials, settings, loading, loadError,
-    toggleTask, completeTaskByKey, addWater, addMeal, removeMeal, completeTutorial, logMood, reload]);
+    toggleTask, completeTaskByKey, addWater, addMeal, removeMeal, completeTutorial, logMood, refreshToday, reload]);
 
   return <MissionContext.Provider value={value}>{children}</MissionContext.Provider>;
 }
