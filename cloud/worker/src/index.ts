@@ -14,7 +14,7 @@ import {
 import {
   AuthEnv, clearSessionCookie, getSessionPrincipal, handleAuth, linkIdentity, Principal, sessionCookie, sessionReference, sha256hex, STAFF_ACCESS_PROVIDER, STAFF_ROLES, trustedOrigin,
 } from "./auth";
-import { analyzeJournal, dailyBriefing, transcribe, TEXT_MODEL } from "./ai";
+import { aiConfigured, analyzeJournal, dailyBriefing, transcribe, type AiEnv } from "./ai";
 import { registerCompanion } from "./companion";
 import type { LiveEvent } from "./live";
 import {
@@ -29,10 +29,8 @@ import { registerMessaging } from "./messages";
 import { awardDaily, materializeTasks, registerWebAppRoutes, type WebAppEnv } from "./webapp";
 export { CrewFeed } from "./live";
 
-export interface Env extends AuthEnv, ModelEnv, WebAppEnv {
+export interface Env extends AuthEnv, ModelEnv, WebAppEnv, AiEnv {
   DB: D1Database;
-  AI?: Ai; // Workers AI
-  AI_GATEWAY?: string; // optional AI Gateway id
   MEDIA?: R2Bucket; // R2 bucket evade-media
   LIVE?: DurableObjectNamespace; // CrewFeed Durable Object
   EVADE_API_KEY?: string;
@@ -325,7 +323,7 @@ function publish(env: Env, ctx: ExecutionContext, ev: LiveEvent & { staff_only?:
 }
 const isStaff = (who: Principal) => who.kind === "service" || STAFF_ROLES.has(who.role ?? "");
 
-// ---------- Journal analysis (Workers AI) ----------
+// ---------- Journal analysis (xAI Grok) ----------
 async function processJournal(env: Env, ctx: ExecutionContext, id: number, userId: string, content: string) {
   const a = await analyzeJournal(env, content);
   const ts = now();
@@ -554,7 +552,7 @@ route("POST", "/journal", async (req, env, _p, url, ctx) => {
     `UPDATE tasks SET completed_at=? WHERE id=(SELECT id FROM tasks WHERE user_id=? AND title LIKE 'Journal%' AND completed_at IS NULL ORDER BY due_at LIMIT 1)`
   ).bind(now(), b.user_id).run();
   if (!r?.id) return json({ id: null, duplicate: true }, 200);
-  // Workers AI analysis runs after the response; ?analyze=sync waits for it (handy for demos)
+  // Grok analysis runs after the response; ?analyze=sync waits for it (handy for demos)
   if (url.searchParams.get("analyze") === "sync") {
     const a = await processJournal(env, ctx, r.id, b.user_id, String(b.content));
     return json({ id: r.id, analysis: { summary: a.summary, mood_label: a.mood_label, sentiment: a.sentiment, themes: a.themes, model: a.model } }, 201);
@@ -563,11 +561,12 @@ route("POST", "/journal", async (req, env, _p, url, ctx) => {
   return json({ id: r.id, analysis: "queued" }, 201);
 });
 
-// Voice journal: audio -> R2 (if enabled) -> Whisper transcript -> journal entry -> AI analysis
+// Voice journal: audio -> R2 (if enabled) -> xAI speech-to-text transcript -> journal entry -> AI analysis
 route("POST", "/journal/voice", async (req, env, _p, url, ctx, who) => {
   const userId = targetUser(who, url);
   await requireUser(env, userId);
-  if (!env.AI) throw new HttpError(503, "Workers AI not configured");
+  if (!aiConfigured(env)) throw new HttpError(503, "Speech-to-text is not configured (XAI_API_KEY)");
+  const audioType = req.headers.get("Content-Type")?.split(";")[0].trim() || "application/octet-stream";
   let audio: ArrayBuffer;
   let mediaId: string | null = null;
   if (env.MEDIA) {
@@ -580,9 +579,9 @@ route("POST", "/journal/voice", async (req, env, _p, url, ctx, who) => {
   }
   let text: string;
   try {
-    ({ text } = await transcribe(env, audio));
+    ({ text } = await transcribe(env, audio, audioType));
   } catch (e) {
-    console.error("transcribe", e);
+    console.error("transcribe", e instanceof Error ? e.message : "Error");
     throw new HttpError(502, mediaId ? `Transcription failed; the recording was saved as media ${mediaId}` : "Transcription failed, try again");
   }
   if (!text) throw new HttpError(422, "No speech recognised in the recording");
@@ -659,7 +658,7 @@ route("GET", "/users/:id/risk", async (_r, env, p, url, ctx, who) => {
   return json(risk);
 });
 
-// Plain-language daily briefing (Workers AI), cached in KV for 30 minutes
+// Plain-language daily briefing (xAI Grok), cached in KV for 30 minutes
 route("GET", "/users/:id/briefing", async (_r, env, p, url, _c, who) => {
   const user = await requireUser(env, p.id);
   const cacheKey = `brief:${p.id}`;
@@ -680,12 +679,13 @@ route("GET", "/users/:id/briefing", async (_r, env, p, url, _c, who) => {
       action: l.level !== "green" ? defs.get(l.metric)?.what_to_do : undefined })),
     overrides: risk.overrides, space_weather: sw,
   };
-  const text = who.demo ? null : await dailyBriefing(env, facts);
+  const brief = who.demo ? null : await dailyBriefing(env, facts);
+  const text = brief?.text ?? null;
   const flagged = facts.readings.filter((r) => r.level !== "green");
   const fallback = [`Overall status: ${risk.band}. ${risk.action}`,
     ...flagged.map((r) => `${r.label} is ${r.value} ${r.unit} (${r.level}). ${r.action ?? ""}`.trim()),
     flagged.some((r) => r.level === "red") ? "A reading is red: contact the flight surgeon." : ""].filter(Boolean).join(" ");
-  const out = { briefing: text ?? fallback, generated_by: text ? TEXT_MODEL : "rules", generated_at: now(),
+  const out = { briefing: text ?? fallback, generated_by: brief ? brief.model : "rules", generated_at: now(),
     note: "Generated from your readings for information only; it is not a diagnosis." };
   if (text) await env.SESSIONS?.put(cacheKey, JSON.stringify(out), { expirationTtl: 1800 });
   return json(out);

@@ -15,6 +15,28 @@ const OTHER = "22222222-2222-4222-8222-222222222222";
 const SURGEON = "33333333-3333-4333-8333-333333333333";
 
 // ---------- fakes ----------
+// Fake xAI REST API: chat completions answer through `chat`, speech-to-text returns `stt`. Records every request.
+const XAI_KEY = "test-xai-key";
+type XaiRequest = { url: string; auth: string | null; body: any };
+function stubGrok(chat: (body: any) => string | Promise<string>, stt = "") {
+  const requests: XaiRequest[] = [];
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input);
+    const auth = new Headers(init?.headers).get("Authorization");
+    if (url === "https://api.x.ai/v1/stt") {
+      const form = init?.body as FormData;
+      requests.push({ url, auth, body: [...form.keys()].map((k) => k === "model" ? "model=" + form.get(k) : k) });
+      return Response.json({ text: stt, language: "en", duration: 2.5 });
+    }
+    if (url !== "https://api.x.ai/v1/chat/completions") throw new Error("unexpected fetch " + url);
+    const body = JSON.parse(String(init?.body));
+    requests.push({ url, auth, body });
+    const content = await chat(body);
+    return Response.json({ choices: [{ message: { role: "assistant", content } }] });
+  });
+  return requests;
+}
+
 function fakeD1() {
   const db = new DatabaseSync(":memory:");
   const dir = join(__dirname, "..", "migrations");
@@ -103,14 +125,18 @@ describe("AI companion routes", () => {
     return "companion-staff";
   }
 
-  it("uses the configured model, persists only the user's private turns and handles retries and deletion", async () => {
-    const run = vi.fn(async () => ({ response: '{"crisis":false,"tone":1,"next":0}' }));
-    Object.assign(env, { AI: { run }, COMPANION_MODEL: "test-instruct-model" });
+  it("uses the configured Grok model, persists only the user's private turns and handles retries and deletion", async () => {
+    const requests = stubGrok(() => '{"crisis":false,"tone":1,"next":0}');
+    Object.assign(env, { XAI_API_KEY: XAI_KEY, XAI_TEXT_MODEL: "grok-test-model" });
     const body = { id: crypto.randomUUID(), message: "It was a long day." };
     const created = await call("POST", "/journal/chat", { body });
     expect(created.status).toBe(201);
     expect(created.data.reply.content).toContain("How much did you sleep");
-    expect(run).toHaveBeenCalledWith("test-instruct-model", expect.objectContaining({ max_tokens: 64 }));
+    expect(requests).toHaveLength(1);
+    expect(requests[0].auth).toBe("Bearer " + XAI_KEY);
+    expect(requests[0].body).toMatchObject({ model: "grok-test-model", max_completion_tokens: 64, temperature: 0.1 });
+    expect(requests[0].body.response_format).toMatchObject({ type: "json_schema", json_schema: { name: "companion_decision", strict: true } });
+    expect(requests[0].body).not.toHaveProperty("reasoning_effort");
     expect((await call("POST", "/journal/chat", { body })).data.reply).toEqual(created.data.reply);
     const path = "/users/" + ASTRONAUT + "/journal/messages";
     expect((await call("GET", path)).data).toHaveLength(2);
@@ -129,15 +155,15 @@ describe("AI companion routes", () => {
   });
 
   it("sends crisis guidance, skips the model, and records one staff emergency without copying the text", async () => {
-    const run = vi.fn();
-    env.AI = { run };
+    const requests = stubGrok(() => '{"crisis":false,"tone":0,"next":0}');
+    env.XAI_API_KEY = XAI_KEY;
     const marker = "private-companion-test-marker";
     for (let attempt = 0; attempt < 2; attempt++) {
       const result = await call("POST", "/journal/chat", { body: { message: "I want to die and I can't stay safe. " + marker } });
       expect(result.status).toBe(201);
       expect(result.data.reply.content).toContain("call or text 988");
     }
-    expect(run).not.toHaveBeenCalled();
+    expect(requests).toEqual([]);
     const alerts = env.DB.raw.prepare("SELECT level,message FROM alerts WHERE user_id=? AND metric='emergency'").all(ASTRONAUT);
     expect(alerts).toHaveLength(1);
     expect(alerts[0]).toMatchObject({ level: "red" });
@@ -166,7 +192,8 @@ describe("AI companion routes", () => {
       env.AUTH_RATE_LIMITER = { limit };
       let modelStarted!: () => void;
       const started = new Promise<void>(resolve => { modelStarted = resolve; });
-      env.AI = { run: () => { modelStarted(); return new Promise(() => {}); } };
+      env.XAI_API_KEY = XAI_KEY;
+      stubGrok(() => { modelStarted(); return new Promise<string>(() => {}); });
       const request = call("POST", "/journal/chat", { body: { message: "Good morning" } });
       await started;
       await vi.advanceTimersByTimeAsync(15_000);
@@ -179,7 +206,7 @@ describe("AI companion routes", () => {
     }
   });
 
-  it("restricts summaries to staff and sends only scoped, structured data to Workers AI", async () => {
+  it("restricts summaries to staff and sends only scoped, structured data to Grok", async () => {
     const raw: DatabaseSync = env.DB.raw;
     const ts = new Date().toISOString();
     const insert = raw.prepare("INSERT INTO observations (user_id,metric,value,unit,ts) VALUES (?,'heart_rate',?,?,?)");
@@ -188,19 +215,87 @@ describe("AI companion routes", () => {
     raw.prepare("INSERT INTO journal_entries (user_id,ts,content,sentiment) VALUES (?,?,?,?)")
       .run(ASTRONAUT, ts, "private journal content", 0.25);
     expect((await call("POST", "/journal/chat", { body: { message: "private companion content" } })).status).toBe(201);
-    const run = vi.fn(async () => ({ response: '{"bullets":["Vitals recorded.","No alerts.","Mood score recorded."]}' }));
-    env.AI = { run };
+    env.XAI_API_KEY = XAI_KEY;
+    const requests = stubGrok(() => '{"bullets":["Vitals recorded.","No alerts.","Mood score recorded."]}');
     const path = "/admin/astronauts/" + ASTRONAUT + "/summary";
     expect((await call("GET", path)).status).toBe(403);
     const result = await call("GET", path, { token: await staffSession() });
     expect(result.status).toBe(200);
     expect(result.data.label).toBe("AI summary, verify against the data, not a diagnosis");
-    expect(result.data.bullets).toHaveLength(3);
-    const modelInput = JSON.stringify(run.mock.calls);
+    expect(result.data.bullets).toEqual(["Vitals recorded.", "No alerts.", "Mood score recorded."]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].body.model).toBe("grok-4.20-0309-non-reasoning");
+    expect(requests[0].body.response_format.json_schema).toMatchObject({ name: "staff_summary", strict: true });
+    const modelInput = JSON.stringify(requests.map((r) => r.body.messages));
     expect(modelInput).toContain("journal_samples");
     for (const excluded of ["example.test", "9876", "private journal content", "private companion content", ASTRONAUT, OTHER]) {
       expect(modelInput).not.toContain(excluded);
     }
+  });
+});
+
+describe("xAI Grok", () => {
+  it("falls back to the second Grok model and only ever calls Grok models", async () => {
+    env.XAI_API_KEY = XAI_KEY;
+    const requests = stubGrok((b) => {
+      if (b.model === "grok-4.20-0309-non-reasoning") throw new Error("model down");
+      return '{"crisis":false,"tone":2,"next":1}';
+    });
+    const res = await call("POST", "/journal/chat", { body: { message: "Feeling good today." } });
+    expect(res.status).toBe(201);
+    expect(res.data.reply.content).toBe("I'm glad you took a moment to check in. How are your mood and stress today?");
+    expect(requests.map((r) => r.body.model)).toEqual(["grok-4.20-0309-non-reasoning", "grok-4.3"]);
+    const { textModels } = await import("../src/ai");
+    expect(textModels({})).toEqual(["grok-4.20-0309-non-reasoning", "grok-4.3"]);
+    expect(textModels({ XAI_TEXT_MODEL: "grok-4.7", XAI_FALLBACK_TEXT_MODEL: "" })).toEqual(["grok-4.7"]);
+  });
+
+  it("makes no model call without XAI_API_KEY and keeps the rule-based replies and the safety net", async () => {
+    const requests = stubGrok(() => "{}");
+    const chat = await call("POST", "/journal/chat", { body: { message: "Long day." } });
+    expect(chat.status).toBe(201);
+    expect(chat.data.reply.content).toContain("contact your flight surgeon or therapist");
+    await env.SESSIONS.put("sess:" + await sha256("nokey-staff"), JSON.stringify({ user_id: SURGEON, role: "flight_surgeon", provider: "cloudflare_access_staff", audience: "staff" }));
+    Object.assign(env, { ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com", ACCESS_AUD: "crew", ACCESS_STAFF_AUD: "staff" });
+    const summary = await call("GET", "/admin/astronauts/" + ASTRONAUT + "/summary", { token: "nokey-staff" });
+    expect(summary.status).toBe(200);
+    expect(summary.data.bullets).toEqual(["No vitals recorded.", "No alerts recorded.", "No journal mood score recorded."]);
+    const { analyzeJournal, dailyBriefing } = await import("../src/ai");
+    expect(await analyzeJournal({}, "I don't want to wake up anymore.")).toMatchObject({ model: null, concern_level: "high", needs_human_review: true });
+    expect(await dailyBriefing({}, { overall: "green" })).toBeNull();
+    const voice = await worker.fetch(new Request(API + "/journal/voice", {
+      method: "POST", body: new Uint8Array([1, 2, 3]),
+      headers: { Origin: FRONTEND, Cookie: "__Host-evade_session=astro", "Content-Type": "audio/webm" },
+    }), env, ctx);
+    expect(voice.status).toBe(503);
+    expect(requests).toEqual([]);
+  });
+
+  it("analyzes a journal entry with a strict schema", async () => {
+    env.XAI_API_KEY = XAI_KEY;
+    const requests = stubGrok(() => JSON.stringify({
+      summary: "A calm day.", sentiment: 0.4, mood_label: "Calm", concern_level: "none", needs_human_review: false, themes: ["sleep"],
+    }));
+    const res = await call("POST", "/journal?analyze=sync", { body: { user_id: ASTRONAUT, content: "Slept well, calm day." } });
+    expect(res.status).toBe(201);
+    expect(res.data.analysis).toMatchObject({ summary: "A calm day.", mood_label: "calm", model: "grok-4.20-0309-non-reasoning" });
+    expect(requests[0].body.response_format.json_schema).toMatchObject({ name: "journal_analysis", strict: true });
+    expect(env.DB.raw.prepare("SELECT analysis_model FROM journal_entries WHERE user_id=?").get(ASTRONAUT)).toEqual({ analysis_model: "grok-4.20-0309-non-reasoning" });
+  });
+
+  it("transcribes voice journals with xAI speech-to-text", async () => {
+    env.XAI_API_KEY = XAI_KEY;
+    const transcript = "Slept about six hours. Mood is a three.";
+    const requests = stubGrok(() => "{}", transcript);
+    const res = await worker.fetch(new Request(API + "/journal/voice", {
+      method: "POST", body: new Uint8Array([26, 69, 223, 163, 1, 2, 3]),
+      headers: { Origin: FRONTEND, Cookie: "__Host-evade_session=astro", "Content-Type": "audio/webm" },
+    }), env, ctx);
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ transcript });
+    const stt = requests.find((r) => r.url.endsWith("/v1/stt"))!;
+    expect(stt).toMatchObject({ auth: "Bearer " + XAI_KEY, body: ["model=grok-voice-transcribe-2.0", "file"] }); // file last
+    expect(env.DB.raw.prepare("SELECT source, content FROM journal_entries WHERE user_id=?").all(ASTRONAUT)).toEqual([{ source: "voice", content: transcript }]);
   });
 });
 
