@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { matchRoutes, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { Button } from '@astryxdesign/core/Button';
+import { Banner } from '@astryxdesign/core/Banner';
 import { Text } from '@astryxdesign/core/Text';
 import { useToast } from '@astryxdesign/core/Toast';
 import { AppShell } from '@astryxdesign/core/AppShell';
@@ -182,6 +183,7 @@ function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
         }>
         <Suspense fallback={<PageLoader />}>
           <VStack className="app-frame__page" key={pathname}>
+            {user.demo && <Banner status="info" title="Read-only demo" description="You can try meals and hydration here. These changes reset when you reload." />}
             <Outlet />
           </VStack>
         </Suspense>

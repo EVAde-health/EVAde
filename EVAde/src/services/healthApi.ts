@@ -177,7 +177,6 @@ export interface ApiFood {
 export interface AuthProviders {
   providers: string[];
   default_provider: string | null;
-  turnstile_site_key: string | null;
 }
 
 type Signal = { signal?: AbortSignal };
@@ -199,7 +198,7 @@ export function localDayWindow(date = new Date()) {
 // Current signed-in user, or throws ApiError 401.
 export const fetchSession = ({ signal }: Signal = {}) => api<{ user: SessionUser | null; demo?: boolean }>('/auth/me', { signal });
 
-// Login methods the Worker has enabled, plus the public Turnstile site key.
+// Login methods the Worker has enabled.
 export const fetchAuthProviders = ({ signal }: Signal = {}) => api<AuthProviders>('/auth/providers', { signal });
 
 // End the EVAde session before navigating to the Access logout on the configured API host.

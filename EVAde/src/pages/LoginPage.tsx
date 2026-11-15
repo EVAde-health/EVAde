@@ -43,6 +43,8 @@ export default function LoginPage() {
   const mode: AuthMode = searchParams.get('mode') === 'signup' ? 'signup' : 'signin';
   const isSignUp = mode === 'signup';
   const hasAccess = config?.providers.includes('cloudflare_access') ?? false;
+  const hasStaffAccess = config?.providers.includes('cloudflare_access_staff') ?? false;
+  const hasDemo = config?.providers.includes('demo') ?? false;
   const serverError = searchParams.get('error')?.slice(0, MAX_ERROR_LENGTH);
 
   // Swaps between sign in and sign up, keeping it in the URL.
@@ -89,7 +91,7 @@ export default function LoginPage() {
               {switchError && <Text role="alert">Could not sign out. Try again before switching accounts.</Text>}
               {failed && <Text role="alert">Sign-in options could not load. Refresh to try again.</Text>}
               {!config && !failed && <Text role="status">Checking sign-in options…</Text>}
-              {config && !hasAccess && <Text>Sign-in is currently unavailable. Please try again later.</Text>}
+              {config && !hasAccess && !hasStaffAccess && !hasDemo && <Text>Sign-in is currently unavailable. Please try again later.</Text>}
               {hasAccess && (
                 <VStack gap={2}>
                   <Button variant="primary" size="lg" width="100%" label={isSignUp ? 'Create astronaut account' : 'Astronaut sign-in'} href={accessLoginUrl()} />
@@ -98,11 +100,11 @@ export default function LoginPage() {
                       ? 'Cloudflare Access emails you a one-time code; your crew account is created on first sign-in.'
                       : 'Cloudflare Access emails you a one-time code to confirm it’s you.'}
                   </Text>
-                  <Button variant="secondary" size="lg" width="100%" label="Staff sign-in" href={staffLoginUrl()} />
-                  <Button variant="ghost" width="100%" label="Use a different email" onClick={switchAccount} isDisabled={switching} />
                 </VStack>
               )}
-              <Button variant="ghost" width="100%" label="Try the demo" href={demoLoginUrl()} />
+              {hasStaffAccess && <Button variant="secondary" size="lg" width="100%" label="Flight surgeon sign-in" href={staffLoginUrl()} />}
+              {(hasAccess || hasStaffAccess) && <Button variant="ghost" width="100%" label="Use a different email" onClick={switchAccount} isDisabled={switching} />}
+              {hasDemo && <Button variant="ghost" width="100%" label="Try the demo" href={demoLoginUrl()} />}
               <Button
                 variant="secondary"
                 width="100%"

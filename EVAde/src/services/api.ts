@@ -57,7 +57,7 @@ async function send(path: string, { method = 'GET', body, raw, signal }: Request
     headers,
     body: raw ?? (body === undefined ? undefined : JSON.stringify(body)),
   });
-  if (response.status === 401) window.dispatchEvent(new Event(SIGN_IN_REQUIRED));
+  if (response.status === 401 && !signal?.aborted) window.dispatchEvent(new Event(SIGN_IN_REQUIRED));
   if (!response.ok) {
     const detail = await response.json().then((data: { error?: string }) => data.error, () => undefined);
     throw new ApiError(response.status, detail);
