@@ -2,6 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "evade-api",
   "main": "src/index.ts",
+  "services": [{ "binding": "MODELS", "service": "evade-gateway" }],
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
