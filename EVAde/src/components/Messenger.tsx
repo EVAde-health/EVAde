@@ -22,7 +22,7 @@ export default function Messenger({ selfId, basePath, otherId, readOnly = false,
   selfId: string; basePath: string; otherId?: string; readOnly?: boolean; onRead?: () => void;
 }) {
   const navigate = useNavigate();
-  const contacts = usePoll<Contact[]>('/messages/contacts', 5000);
+  const contacts = usePoll<Contact[]>(readOnly ? null : '/messages/contacts', 5000);
   const [query, setQuery] = useState('');
   const people = useMemo(() => responseRows(contacts.data).filter(contact => typeof contact.user_id === 'string' && contact.user_id), [contacts.data]);
   const visible = useMemo(() => {
@@ -82,7 +82,7 @@ export default function Messenger({ selfId, basePath, otherId, readOnly = false,
 function ThreadView({ otherId, selfId, fallbackName, readOnly, onRead }: {
   otherId: string; selfId: string; fallbackName?: string; readOnly: boolean; onRead: () => void;
 }) {
-  const thread = usePoll<Thread>(`/messages/with/${encodeURIComponent(otherId)}`, 3000);
+  const thread = usePoll<Thread>(readOnly ? null : `/messages/with/${encodeURIComponent(otherId)}`, 3000);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const showToast = useToast();

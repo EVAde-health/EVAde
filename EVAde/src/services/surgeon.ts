@@ -136,9 +136,9 @@ export interface GoalHistoryRow {
 export interface JournalData {
   checkins: {
     id: number; ts: string; mood: number | null; stress: number | null; fatigue: number | null; sleep_quality: number | null;
-    note: string | null; source: string; sleep_hours: number | null; symptoms: string[]; checkin_level: Level;
+    source: string; sleep_hours: number | null; symptoms: string[]; checkin_level: Level;
   }[];
-  journal: { id: number; ts: string; source: string; mood_label: string | null; concern_level: string | null; ai_summary: string | null; content: string }[];
+  journal: { ts: string; source: string; mood_label: string | null; concern_level: string | null; ai_summary: string | null }[];
 }
 
 export interface TasksData {

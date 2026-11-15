@@ -22,6 +22,7 @@ import { useToast } from '@astryxdesign/core/Toast';
 import ChartTooltip from '../../components/ChartTooltip';
 import SectionTitle from '../../components/SectionTitle';
 import StatusBadge from '../../components/StatusBadge';
+import { useSurgeon } from '../../context/SurgeonContext';
 import { AXIS_TICK, BAR_CURSOR, CHART_MARGIN, GRID_STROKE, SERIES, Y_AXIS_WIDTH } from '../../components/chartConfig';
 import { useResource } from '../../services/useResource';
 import {
@@ -150,6 +151,7 @@ function SleepChart({ data, error }: { data?: SleepData; error: string | null })
 
 // Recent raw readings with the correction action, plus the audit trail.
 function Readings({ id }: { id: string }) {
+  const canCorrect = useSurgeon().user.role === 'flight_surgeon';
   const [metric, setMetric] = useState('heart_rate');
   const readings = useResource<Observation[]>(`/admin/astronauts/${id}/observations?metric=${metric}&days=7`);
   const audit = useResource<Correction[]>(`/admin/astronauts/${id}/corrections`);
@@ -164,7 +166,7 @@ function Readings({ id }: { id: string }) {
       <Card padding={4}>
         <VStack gap={3}>
           <HStack hAlign="between" vAlign="center" gap={3} wrap="wrap">
-            <SectionTitle title="Recent readings" caption="Last 7 days. Correct a vital only when the recorded value is wrong." />
+            <SectionTitle title="Recent readings" caption={canCorrect ? 'Last 7 days. Correct a vital only when the recorded value is wrong.' : 'Last 7 days.'} />
             <div style={{ minInlineSize: '12rem' }}>
               <Selector label="Vital" isLabelHidden size="sm" value={metric} onChange={value => value && setMetric(value)}
                 options={CORRECTABLE.map(value => ({ value, label: value.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) }))} />
@@ -187,7 +189,7 @@ function Readings({ id }: { id: string }) {
                   }
                   description={hasTimestamp(row.ts) ? <Timestamp value={row.ts} format="auto" type="supporting" /> : 'Time unavailable'}
                   startContent={row.level ? <StatusBadge status={levelStatus(row.level)} label={row.level} /> : undefined}
-                  endContent={audit.data && !audit.error && Number.isInteger(row.id) && Number.isFinite(row.value)
+                  endContent={canCorrect && audit.data && !audit.error && Number.isInteger(row.id) && Number.isFinite(row.value)
                     ? <Button label="Correct" size="sm" variant="ghost" onClick={() => setEditing(row)} /> : undefined}
                 />
               ))}
@@ -219,7 +221,7 @@ function Readings({ id }: { id: string }) {
           </List>
         </VStack>
       </Card>
-      {editing && <CorrectionDialog row={editing} onClose={() => setEditing(null)} onSaved={reload} />}
+      {canCorrect && editing && <CorrectionDialog row={editing} onClose={() => setEditing(null)} onSaved={reload} />}
     </Grid>
   );
 }
@@ -311,7 +313,6 @@ export function JournalSection({ id }: { id: string }) {
                     label={[row.mood != null && `Mood ${row.mood}/5`, row.stress != null && `stress ${row.stress}/5`, row.sleep_hours != null && `${row.sleep_hours} h sleep`].filter(Boolean).join(' · ')}
                     description={
                       <VStack gap={1}>
-                        {row.note && <Text type="supporting">“{row.note}”</Text>}
                         {Array.isArray(row.symptoms) && !!row.symptoms.length && <HStack gap={1} wrap="wrap">{row.symptoms.filter(s => typeof s === 'string').map(s => <Badge key={s} variant="warning" label={s} />)}</HStack>}
                         {hasTimestamp(row.ts) && <Timestamp value={row.ts} format="auto" type="supporting" />}
                       </VStack>
@@ -324,12 +325,12 @@ export function JournalSection({ id }: { id: string }) {
         </Card>
         <Card padding={4}>
           <VStack gap={3}>
-            <SectionTitle title="Journal" caption="Full entries with the assistant’s summary." />
-            {!journal.length && <Text type="supporting">No journal entries available.</Text>}
+            <SectionTitle title="Journal summaries" caption="Mood, concerns and assistant summaries." />
+            {!journal.length && <Text type="supporting">No journal summaries available.</Text>}
             <div style={{ maxBlockSize: '32rem', overflowY: 'auto' }}>
               <VStack gap={3}>
-                {journal.map(entry => (
-                  <VStack key={entry.id} gap={1}>
+                {journal.map((entry, index) => (
+                  <VStack key={`${entry.ts}:${entry.source}:${index}`} gap={1}>
                     <HStack gap={2} wrap="wrap" vAlign="center">
                       {hasTimestamp(entry.ts) && <Timestamp value={entry.ts} format="auto" type="label" />}
                       {entry.mood_label && <Badge variant="purple" label={entry.mood_label} />}
@@ -338,7 +339,6 @@ export function JournalSection({ id }: { id: string }) {
                       )}
                       {entry.source && <Badge variant="neutral" label={entry.source} />}
                     </HStack>
-                    <Text>{entry.content}</Text>
                     {entry.ai_summary && <Text type="supporting">Summary: {entry.ai_summary}</Text>}
                   </VStack>
                 ))}
