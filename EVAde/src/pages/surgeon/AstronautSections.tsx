@@ -25,6 +25,7 @@ import StatusBadge from '../../components/StatusBadge';
 import { useSurgeon } from '../../context/SurgeonContext';
 import { AXIS_TICK, BAR_CURSOR, CHART_MARGIN, GRID_STROKE, SERIES, Y_AXIS_WIDTH } from '../../components/chartConfig';
 import { useResource } from '../../services/useResource';
+import DeepModelResults, { type DeepModelCatalog, type StaffDeepModelResults } from './DeepModelResults';
 import {
   correctObservation, formatValue, hasTimestamp, levelStatus, responseRows, setGoals,
   type AstronautDetail, type Correction, type GoalHistoryRow, type GoalType, type GoalTypeInfo, type JournalData, type JournalOverview,
@@ -53,6 +54,8 @@ export function VitalsSection({ id, latest }: { id: string; latest: AstronautDet
   const [days, setDays] = useState('30');
   const series = useResource<{ metrics: SeriesMetric[] }>(group === 'sleep' ? null : `/admin/astronauts/${id}/series?group=${group}&days=${days}`);
   const sleep = useResource<SleepData>(group === 'sleep' ? `/admin/astronauts/${id}/sleep?days=${Math.min(Number(days), 30)}` : null);
+  const models = useResource<StaffDeepModelResults>(`/admin/astronauts/${encodeURIComponent(id)}/deep-model-results`);
+  const catalog = useResource<DeepModelCatalog>(models.data && Object.values(models.data).some(row => !row) ? '/models' : null);
   const charted = responseRows(series.data?.metrics).filter(metric => Array.isArray(metric.points) && metric.points.length);
   const reds = responseRows(latest).filter(item => item.level === 'red');
 
@@ -83,6 +86,9 @@ export function VitalsSection({ id, latest }: { id: string; latest: AstronautDet
           </Grid>
         </>
       )}
+      {models.loading && <Loading height={180} />}
+      {models.error && <Text role="alert">Deep model results could not load.</Text>}
+      {models.data && <DeepModelResults results={models.data} catalog={catalog.data} />}
       <Readings id={id} />
     </VStack>
   );

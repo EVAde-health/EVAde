@@ -19,12 +19,13 @@ import { registerCompanion } from "./companion";
 import { predict, WINDOW_DAYS, type PredictionEnv } from "./prediction";
 import type { LiveEvent } from "./live";
 import {
-  callModelApi, deleteModelUser, isMock, ModelApiError, ModelEnv, modelsConfigured, modelUserId, PREDICT_KINDS, PredictKind,
+  callModelApi, deleteModelUser, isMock, latestDeepModelResults, ModelApiError, ModelEnv, modelsConfigured, modelUserId, PREDICT_KINDS, PredictKind,
   REVIEW_NOTE, riskRow, summarize,
 } from "./models";
 import { deleteUserStatements } from "./deleteUser";
 import { HttpError } from "./http";
 import { refreshSimulation, type SimulationPrediction } from "./simulation";
+import { simulatedEcgDeep, simulatedSleepDeep } from "./simulationSignals";
 import { crewOverview, registerOps } from "./ops";
 import { registerMessaging } from "./messages";
 import { awardDaily, voiceSavedReply, materializeTasks, registerWebAppRoutes, type WebAppEnv } from "./webapp";
@@ -1211,6 +1212,10 @@ route("POST", "/model-results", async (req, env) => {
 });
 route("GET", "/users/:id/model-results", async (_r, env, p) =>
   json((await env.DB.prepare("SELECT * FROM model_results WHERE user_id=? ORDER BY ts DESC LIMIT 100").bind(p.id).all()).results));
+route("GET", "/admin/astronauts/:id/deep-model-results", async (_r, env, p) => {
+  await requireUser(env, p.id);
+  return json(await latestDeepModelResults(env.DB, p.id));
+});
 
 // Model predictions: frontend -> this Worker -> evade-gateway -> Michael's FastAPI container (/v1/predict/<kind>).
 // Only real model results are stored (model_results, and risk_scores for /risk). Placeholders ("source": "mock")
@@ -1277,26 +1282,29 @@ function simulationPredictor(env: Env, manual: boolean): SimulationPrediction {
       .bind(id, ts, risk.r, risk.band, risk.mdtr, JSON.stringify(risk.domains), JSON.stringify(risk.top_domains), JSON.stringify(risk.overrides)).run();
     if (!modelsConfigured(env) || (!manual && new Date(ts).getUTCMinutes() !== 0)) return;
     const simulation = { ts, modelUserId: await modelUserId(env, id) };
+    const seed = id + ":" + ts;
 
     const requests = [
-      ["risk", {
+      ["risk", () => ({
         domain_inputs: Object.fromEntries(Object.entries(risk.domains)
           .filter(([key, value]) => ["cardiac", "behavioral", "neuro", "radiation", "bone"].includes(key) && typeof value === "number")
           .map(([key, value]) => [key, { s: value }])),
         cumulative_dose_msv: point.cumulative,
         dose_rate_msv_day: point.dailyDose,
-      }],
-      ["radiation-risk", {
+      })],
+      ["radiation-risk", () => ({
         t_utc: ts, cumulative_dose_msv: point.cumulative, dose_equivalent_rate_msv_per_day: point.dailyDose,
         rate_ratio_to_7d_median: point.dailyDose / 0.42, spe_active: point.radiation,
         spe_dose_msv: point.radiation ? point.dailyDose : 0,
-      }],
+      })],
+      ["ecg-deep", () => simulatedEcgDeep(seed, point.readings.heart_rate)],
+      ["sleep-deep", () => simulatedSleepDeep(seed, point.readings.sleep_hours < 6)],
     ] as const;
-    const results = await Promise.allSettled(requests.map(async ([kind, data]) => {
+    const results = await Promise.allSettled(requests.map(async ([kind, payload]) => {
       const prior = await env.DB.prepare("SELECT 1 FROM model_results WHERE user_id=? AND endpoint=? AND ts=? AND source='simulated'")
         .bind(id, "/v1/predict/" + kind, ts).first();
       if (prior) return;
-      const response = await predictFor(env, kind, id, data, simulation);
+      const response = await predictFor(env, kind, id, payload(), simulation);
       if (!response.ok) throw new Error("Simulation model request failed");
     }));
     if (results.some(result => result.status === "rejected")) throw new Error("Simulation model request failed");

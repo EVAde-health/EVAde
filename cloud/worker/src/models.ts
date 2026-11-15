@@ -19,6 +19,9 @@ export const PREDICT_KINDS = [
   "ecg", "ecg-deep", "eeg", "sleep-deep", "seizure-deep", "radiation-risk", "space-weather", "risk",
 ] as const;
 export type PredictKind = (typeof PREDICT_KINDS)[number];
+export const STAFF_DEEP_MODELS = ["ecg-deep", "sleep-deep"] as const;
+type StaffDeepModel = (typeof STAFF_DEEP_MODELS)[number];
+const SLEEP_STAGES = ["W", "N1", "N2", "N3", "REM"] as const;
 
 export const REVIEW_NOTE = "Flag for human review, not a diagnosis.";
 
@@ -79,6 +82,21 @@ export async function deleteModelUser(env: ModelEnv, userId: string): Promise<"d
 
 export const isMock = (out: any) => out?.source === "mock" || out?.data?.source === "mock";
 
+function probability(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function deepConfidence(kind: PredictKind, data: any) {
+  if (kind === "ecg-deep") {
+    const values = Object.values(data.probabilities ?? {}).filter(probability);
+    return values.length ? values.reduce((max, value) => Math.max(max, value), 0).toFixed(3) : undefined;
+  }
+  if (kind === "sleep-deep" && Array.isArray(data.epochs)) {
+    const values: number[] = data.epochs.map((epoch: any) => epoch?.probabilities?.[epoch.stage]).filter(probability);
+    return values.length ? (values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(3) : undefined;
+  }
+}
+
 /** Short flag + confidence for the model_results row, following Michael's mapping on PR #3. */
 export function summarize(kind: PredictKind, out: any): { model_id: string | null; flag: string | null; confidence: string | null } {
   const d = out?.data ?? {};
@@ -88,14 +106,52 @@ export function summarize(kind: PredictKind, out: any): { model_id: string | nul
     return null;
   };
   let flag: string | null;
-  if (kind === "ecg" || kind === "ecg-deep") flag = pick(d.rhythm?.flag, d.flag, d.label);
+  if (kind === "ecg-deep") {
+    const classes = d.threshold_source === "manifest" && Array.isArray(d.top_classes)
+      ? d.top_classes.map((item: any) => item?.class).filter((label: unknown) => ["MI", "STTC", "CD", "HYP"].includes(String(label)))
+      : [];
+    // Default thresholds are not operating points and must not create class flags.
+    flag = pick(d.rhythm?.flag, d.flag, d.label, classes.join(", "),
+      d.threshold_source === "default" ? "No calibrated flag" : null);
+  }
+  else if (kind === "ecg") flag = pick(d.rhythm?.flag, d.flag, d.label);
   else if (kind === "eeg" || kind === "seizure-deep") flag = pick(d.seizure?.flag, d.flag);
   else if (kind === "space-weather") flag = pick(d.nowcast?.level, d.level, d.flag);
   else if (kind === "radiation-risk") flag = pick(d.radiation?.level, d.domains?.radiation?.level, d.level, d.flag);
   else if (kind === "risk") flag = pick(d.risk?.band, d.band);
   else flag = pick(d.flag, d.stage, d.label);
-  const conf = pick(d.comparison?.confidence, d.confidence, typeof d.probability === "number" ? d.probability.toFixed(3) : undefined);
+  const conf = pick(d.comparison?.confidence, d.confidence, typeof d.probability === "number" ? d.probability.toFixed(3) : undefined,
+    deepConfidence(kind, d));
   return { model_id: modelId, flag: flag ? flag.slice(0, 64) : null, confidence: conf ? conf.slice(0, 32) : null };
+}
+
+/** Return the most recent row for each staff model without exposing raw model responses. */
+export async function latestDeepModelResults(db: D1Database, userId: string) {
+  const entries = await Promise.all(STAFF_DEEP_MODELS.map(async (kind: StaffDeepModel) => {
+    const row = await db.prepare(
+      "SELECT model_id, flag, confidence, ts, source, output FROM model_results WHERE user_id=? AND endpoint=? ORDER BY ts DESC, id DESC LIMIT 1"
+    ).bind(userId, "/v1/predict/" + kind).first<{
+      model_id: string | null; flag: string | null; confidence: string | null; ts: string; source: string; output: string;
+    }>();
+    if (!row) return [kind, null] as const;
+
+    let out;
+    try { out = JSON.parse(row.output); } catch { out = null; }
+    if (row.source === "mock" || isMock(out) || out?.placeholder === true) {
+      return [kind, { status: "placeholder" }] as const;
+    }
+    const summary = summarize(kind, out);
+    const stages = kind === "sleep-deep" ? out?.data?.summary?.minutes_per_stage : null;
+    const minutes = stages ? Object.fromEntries(SLEEP_STAGES.map(stage => {
+      const value = stages[stage];
+      return [stage, typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null];
+    })) : null;
+    return [kind, {
+      status: "result", model_id: row.model_id ?? summary.model_id, flag: row.flag ?? summary.flag,
+      confidence: row.confidence ?? summary.confidence, ts: row.ts, source: row.source, minutes_per_stage: minutes,
+    }] as const;
+  }));
+  return Object.fromEntries(entries);
 }
 
 /** risk_scores row from POST /v1/predict/risk (5 bands stored as-is). */
