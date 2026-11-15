@@ -1,16 +1,11 @@
 {
   // Deploy config for evade.health (Cloudflare Worker "evade", account "EVAde").
-  // Used by deploy/deploy.mjs. Do not run directly: it expects the build output
-  // and the voice Worker source that deploy.mjs stages under ../.deploy/.
+  // Used by deploy/deploy.mjs. It expects the site staged under ../.deploy/site.
   //
-  // Combines two branches into one Worker:
-  //   - features/web-app            -> React SPA (EVAde/dist) served at /, /dashboard, /journal, ...
-  //   - feature/twilio-grok-voice-agent -> Worker code (worker/src)
-  // Mirrors worker/wrangler.jsonc on the voice branch; the only differences are
-  // the paths, SPA fallback, and "/" being served from assets instead of the Worker.
+  // Serves the EVAde SPA and voice Worker from the same main checkout.
   "name": "evade",
   "account_id": "2e5df567f3580c5af313ebb51e1920fa",
-  "main": "../.deploy/worker-src/worker/src/index.ts",
+  "main": "../worker/src/index.ts",
   "compatibility_date": "2026-11-14",
   "compatibility_flags": ["nodejs_compat"],
 
@@ -39,7 +34,7 @@
       "binding": "DB",
       "database_name": "evade",
       "database_id": "85855cd2-6a51-48b7-8142-6351ccede1d1",
-      "migrations_dir": "../.deploy/worker-src/worker/migrations"
+      "migrations_dir": "../worker/migrations"
     }
   ],
 

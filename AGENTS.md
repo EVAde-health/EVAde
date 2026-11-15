@@ -17,15 +17,14 @@ Web app conventions (Astryx design system, component rules) are in [`EVAde/AGENT
 | https://evade.health | Cloudflare Worker `evade`: the React web app (this branch) plus the voice agent |
 | https://evade.health/journal | Journal tab: browser voice check-in with EVAde (web app, calls `/api/voice/*`) |
 | https://evade.health/api/... , `/health`, `/voice/incoming` | Voice/API routes and the Twilio phone line (+1 908 663 1285) in the `evade` Worker |
-| https://api.evade.health | Separate Worker `evade-api`, not touched by this deploy |
+| https://api.evade.health | API Worker `evade-api`, backed by the private `evade-gateway` model service |
 
 Both domains are Cloudflare Workers custom domains in the **EVAde** Cloudflare account (`2e5df567f3580c5af313ebb51e1920fa`), zone `evade.health`.
 
 ## Branches
 
-- `features/web-app`: the web app (Vite + React 19 + react-router `BrowserRouter`, Astryx UI) in `EVAde/`. Pages: `/`, `/login`, `/dashboard`, `/tutorials`, `/tasks`, `/journal`, `/selfies`.
-- `feature/twilio-grok-voice-agent`: the voice agent. `worker/` is the Cloudflare Worker (TypeScript) and `api/` is the original Python version. (The old `frontend/voice/` page was removed; the Journal tab replaces it.) API reference: `worker/API.md`.
-- `main`: default branch.
+- `main` is the only production deployment branch. It contains the website (`EVAde/`), voice Worker (`worker/`), API (`cloud/worker/`), and model gateway (`cloud/model-gateway/`).
+- `ExpoApp` contains the mobile app.
 
 ## Hard rules
 
@@ -41,7 +40,7 @@ One Worker (`evade`) serves everything on `evade.health`:
 2. Everything else is a static asset: the web app build (`EVAde/dist`).
 3. Unknown page paths (such as `/journal` on refresh, or the retired `/voice/`) fall back to the SPA's `index.html` (`not_found_handling: single-page-application`).
 
-Config: [`deploy/wrangler.jsonc`](deploy/wrangler.jsonc). It mirrors `worker/wrangler.jsonc` on the voice branch, except for paths, the SPA fallback, and `/` being served from assets instead of the Worker's old landing page.
+Config: [`deploy/wrangler.jsonc`](deploy/wrangler.jsonc). It combines the site assets and voice Worker from the same checkout.
 
 ### Voice API for web clients (same origin, no CORS needed)
 
@@ -53,45 +52,22 @@ Config: [`deploy/wrangler.jsonc`](deploy/wrangler.jsonc). It mirrors `worker/wra
 
 ## Deploying
 
+Follow [DEPLOY.md](DEPLOY.md) for the API, gateway, and site deploy sequence from clean `main`.
+
 Prereqs: git, Node 20+, and a Wrangler login with access to the EVAde Cloudflare account (`npx wrangler login`, check with `npx wrangler whoami`).
 
-Deploy only from the repository root on merged `main` in PowerShell, on Daniel's PC (see the deployment rule above).
+Deploy only from the repository root on merged `main` in PowerShell, on Daniel's PC (see the deployment rule above). `deploy/deploy.mjs` checks for a clean `main` at the latest remote tip before each target:
 
 ```powershell
-$env:WORKER_REF = (git rev-parse HEAD); node deploy/deploy.mjs
+node deploy/deploy.mjs --api
+node deploy/deploy.mjs --gateway
 ```
-
 **Do not run `npx wrangler deploy` from `worker/`.** It would replace the live site with the voice Worker alone and leave `/`, `/journal`, and `/admin` returning 404.
-
-For build and config validation without uploading, use the same `WORKER_REF` and add `--dry-run` to the script command.
-
-The script:
-1. checks out the commit pinned by `WORKER_REF` into `.deploy/worker-src`,
-2. runs `npm ci && npm run build` in `EVAde/`,
-3. assembles `.deploy/site` = `EVAde/dist`,
-4. runs `wrangler deploy -c deploy/wrangler.jsonc` using the Worker's own Wrangler.
-
-`.deploy/` is gitignored.
-
-After deploying, open [the Journal](https://evade.health/journal), start a voice check-in, and confirm it connects. PR #11 removed the standalone `/voice/` page.
-
-Additional smoke checks:
-
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" https://evade.health/          # 200, web app
-curl -s -o /dev/null -w "%{http_code}\n" https://evade.health/journal   # 200, SPA fallback
-curl -s https://evade.health/health                                      # {"status":"ok"}
-curl -s -o /dev/null -w "%{http_code}\n" -X POST https://evade.health/voice/incoming  # 403 (unsigned Twilio request is rejected, as it should be)
-```
-
-Rollback: `npx wrangler rollback -c deploy/wrangler.jsonc` (run from `.deploy/worker-src/worker`), or pick an earlier version under Workers > `evade` > Deployments in the Cloudflare dashboard.
-
-Logs: `npx wrangler tail evade` (observability and persistent logs are on).
 
 ## Local development
 
 - Web app: `cd EVAde && npm install && npm run dev`. Optional `VITE_USDA_API_KEY` in `EVAde/.env` (see `.env.example`).
-- Worker: on the voice branch, `cd worker && npm install && npx wrangler dev` (copy `.dev.vars.example` to `.dev.vars`). Tests: `npm test`.
+- Voice Worker: `cd worker && npm install && npx wrangler dev` (copy `.dev.vars.example` to `.dev.vars`). Tests: `npm test`.
 
 ## Deploy history
 

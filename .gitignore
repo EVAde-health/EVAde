@@ -1,4 +1,4 @@
-# Staging area for deploy/deploy.mjs (build output + Worker checkout)
+# Staging area for the site assets produced by deploy/deploy.mjs
 .deploy/
 .env
 data/

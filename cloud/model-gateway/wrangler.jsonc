@@ -13,8 +13,8 @@
     {
       "class_name": "EvadeApi",
       "scheduling_policy": "durable_object",
-      // Path to Michael's repo checkout (branch api-models-storage) with Dockerfile.cloudflare copied into it.
-      "images": { "api": { "dockerfile": "../../../EVAde-backend-models/Dockerfile.cloudflare" } }
+      // The repository's backend-models submodule pins the image source and build context.
+      "images": { "api": { "dockerfile": "../../backend-models/Dockerfile.cloudflare" } }
     }
   ],
   "durable_objects": { "bindings": [{ "name": "EVADE_API", "class_name": "EvadeApi" }] },

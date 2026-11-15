@@ -14,6 +14,8 @@
 
 This repo is our **data collection**: every dataset, published value and live feed we gathered to build EVAde, with sources and an evidence label on each number.
 
+For production releases, follow [DEPLOY.md](DEPLOY.md) from `main`.
+
 ---
 
 ## Contents
