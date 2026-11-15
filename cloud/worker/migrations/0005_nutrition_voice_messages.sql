@@ -115,6 +115,6 @@ CREATE TABLE IF NOT EXISTS phone_numbers (
 );
 CREATE INDEX IF NOT EXISTS idx_phone_user ON phone_numbers(user_id);
 
--- Indexes for the per-user delete (queries/delete_user.sql) on tables that lacked one.
-CREATE INDEX IF NOT EXISTS idx_instruments_user ON instruments(user_id);
+-- user_id + timestamp indexes for dashboard queries and the per-user delete, on tables that lacked one.
+CREATE INDEX IF NOT EXISTS idx_instruments_user_ts ON instruments(user_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_action_log_user ON action_log(user_id);
