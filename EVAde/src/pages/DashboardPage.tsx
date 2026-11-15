@@ -24,6 +24,7 @@ import RadiationPanel from '../components/RadiationPanel';
 import ScoreRing from '../components/ScoreRing';
 import SectionTitle from '../components/SectionTitle';
 import SleepPanel from '../components/SleepPanel';
+import SpaceWeatherPanel from '../components/SpaceWeatherPanel';
 import StatusBadge from '../components/StatusBadge';
 import VitalTile from '../components/VitalTile';
 import { useHealthData } from '../context/HealthDataContext';
@@ -255,6 +256,7 @@ function DashboardContent() {
         <SectionTitle title="Long-term risks" caption="Slow-moving threats of spaceflight, tracked across the mission" />
         <Grid columns={{ minWidth: 380, max: 2 }} gap={4}>
           <RadiationPanel />
+          <SpaceWeatherPanel />
           <BonePanel />
           <CardioPanel />
           <NutritionPanel />
