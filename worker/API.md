@@ -1,8 +1,8 @@
 # EVAde API (for the React Native app and other clients)
 
 Base URL: `https://evade.health`. JSON everywhere. CORS is enabled for `/api/*`, `/voice/api/*`,
-`/voice/alert` and `/health` (`Access-Control-Allow-Origin` from `CORS_ALLOW_ORIGINS`, default `*`),
-and `OPTIONS` preflights return `204`.
+`/voice/alert` and `/health`. The deployed `CORS_ALLOW_ORIGINS` allows only exact matches for
+`https://evade.health` and `https://www.evade.health`. `OPTIONS` preflights return `204`.
 
 ## Auth
 
@@ -26,11 +26,11 @@ Errors use FastAPI's shape: `{"detail": "..."}` (`403` bad/missing token, `401` 
 These apply to the web page and React Native voice socket, not to the concurrency cap for
 Twilio phone calls (phone calls still end after 600 s).
 
-| Guard | Default | What happens |
+| Guard | Deployed value | What happens |
 | --- | --- | --- |
 | Max session length (`MAX_SESSION_SECONDS`) | 300 s (phone: 600 s) | Server sends `{"type":"notice","message":"session limit reached"}` and `{"type":"status","state":"ended","reason":"session limit reached"}`, then closes with code `1000` and that reason. |
 | No client audio | 60 s | Same close pattern, with message / reason `time-up`. |
-| Concurrent sessions (`MAX_CONCURRENT_SESSIONS`) | 5 | `POST /api/voice/start` returns `429 {"detail":"too many people talking"}`. A WebSocket upgrade is accepted only long enough to send a notice / error with that message, then closes with code `1000`. Phone calls are not counted. |
+| Concurrent sessions (`MAX_CONCURRENT_SESSIONS`) | 2 | `POST /api/voice/start` returns `429 {"detail":"too many people talking"}`. A WebSocket upgrade is accepted only long enough to send a notice / error with that message, then closes with code `1000`. Phone calls are not counted. |
 
 ## REST endpoints
 

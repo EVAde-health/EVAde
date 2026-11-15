@@ -42,7 +42,8 @@ Config: [`deploy/wrangler.jsonc`](deploy/wrangler.jsonc). It mirrors `worker/wra
 - `POST /api/voice/start` returns a one-time WebSocket ticket.
 - `WS /api/voice/ws` is the voice socket (24 kHz PCM16 audio; see `EVAde/src/services/voiceAgent.ts` and `micWorklet.ts` for a working client).
 - `GET /api/checkins/latest`, `GET /api/downlink` return crew data.
-- `DEMO_OPEN=true` (hackathon demo) means no access key is needed for voice or read APIs. Limits: 5 concurrent browser sessions, 300 s each.
+- Both Wrangler configs set `CORS_ALLOW_ORIGINS` to `https://evade.health,https://www.evade.health`. Browser API responses grant CORS only to those exact origins.
+- `DEMO_OPEN=true` (hackathon demo) means no access key is needed for voice or read APIs. Limits: 2 concurrent browser sessions, 300 s each.
 
 ## Deploying
 

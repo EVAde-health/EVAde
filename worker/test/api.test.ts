@@ -55,21 +55,32 @@ describe("app/browser REST API (api/voice_browser.py + React Native)", () => {
     expect((await call(new Request("https://evade.health/voice/api/downlink"), env)).status).toBe(403);
   });
 
-  it("CORS headers and OPTIONS preflight for the React Native / web app", async () => {
-    const pre = await call(new Request("https://evade.health/api/downlink", { method: "OPTIONS", headers: { Origin: "http://localhost:8081", "Access-Control-Request-Method": "GET" } }));
-    expect(pre.status).toBe(204);
-    expect(pre.headers.get("Access-Control-Allow-Origin")).toBe("*");
-    expect(pre.headers.get("Access-Control-Allow-Headers")).toContain("Authorization");
-    const get = await call(new Request("https://evade.health/api/downlink", { headers: auth }));
-    expect(get.headers.get("Access-Control-Allow-Origin")).toBe("*");
-    const denied = await call(new Request("https://evade.health/api/downlink"));
-    expect(denied.headers.get("Access-Control-Allow-Origin")).toBe("*"); // so the app can read the 403
-    const listed = await call(new Request("https://evade.health/api/downlink", { headers: { ...auth, Origin: "https://app.evade.health" } }),
-      makeEnv({ CORS_ALLOW_ORIGINS: "https://app.evade.health" }));
-    expect(listed.headers.get("Access-Control-Allow-Origin")).toBe("https://app.evade.health");
-    const other = await call(new Request("https://evade.health/api/downlink", { headers: { ...auth, Origin: "https://x.example" } }),
-      makeEnv({ CORS_ALLOW_ORIGINS: "https://app.evade.health" }));
-    expect(other.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  it.each([
+    ["https://evade.health", "https://evade.health"],
+    ["https://www.evade.health", "https://www.evade.health"],
+    ["https://evil.example", null],
+    ["https://evade.health.evil.example", null],
+    ["https://preview.evade.health", null],
+  ])("sets CORS headers for %s according to the Wrangler allowlist", async (origin, allowed) => {
+    const url = "https://evade.health/api/downlink";
+    const preflight = await call(new Request(url, {
+      method: "OPTIONS",
+      headers: { Origin: origin, "Access-Control-Request-Method": "GET" },
+    }));
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe(allowed);
+    expect(preflight.headers.get("Access-Control-Allow-Headers")).toContain("Authorization");
+
+    const response = await call(new Request(url, { headers: { ...auth, Origin: origin } }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe(allowed);
+    if (allowed) expect(response.headers.get("Vary")).toBe("Origin");
+  });
+
+  it("serves API requests without an Origin header", async () => {
+    const response = await call(new Request("https://evade.health/api/downlink", { headers: auth }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
   });
 
   it("POST /api/voice/start returns a one-time WebSocket ticket", async () => {
