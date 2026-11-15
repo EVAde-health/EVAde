@@ -1,0 +1,12 @@
+{
+  "name": "quick",
+  "duration_s": 600,
+  "time_scale": 4.0,
+  "seed": 11,
+  "baseline": {"fast": true},
+  "events": [
+    {"type": "tachycardia", "start_s": 120, "end_s": 200, "hr": 145},
+    {"type": "seizure", "start_s": 260, "end_s": 320},
+    {"type": "spe", "start_s": 400, "end_s": 600, "peak_pfu": 500}
+  ]
+}
