@@ -22,6 +22,7 @@ FLIGHT_SURGEON_EMAILS=
 
 # "true" enables GET /auth/demo (the seeded fake astronaut). Never a real user.
 DEMO_LOGIN=true
-# "true" shows a loopback-only test login with an Astronaut / Flight surgeon choice. Keep false except on localhost.
+# "true" (loopback hosts only) makes /auth/access open a local stand-in for the Cloudflare Access page:
+# sign in or sign up with a passkey or an on-screen email code. The D1 role decides astronaut vs flight surgeon.
 # Seeded demo accounts (migration 0011): vega@demo.evade.local (astronaut), ortiz@demo.evade.local, okafor@demo.evade.local (surgeons).
 DEV_LOGIN=false

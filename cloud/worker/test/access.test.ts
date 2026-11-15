@@ -283,36 +283,169 @@ describe("account linking by verified email", () => {
   });
 });
 
-describe("localhost dev login", () => {
+describe("localhost dev sign-in", () => {
   const LOCAL = "http://localhost:8787";
-  async function devLogin(email: string, role?: string) {
+  const localEnv = () => ({ ...env, DEV_LOGIN: "true", ALLOWED_ORIGINS: "http://localhost:5180", FRONTEND_URL: "http://localhost:5180" });
+  async function local(method: string, path: string, opts: { cookie?: string; body?: unknown; origin?: string | null; host?: string } = {}) {
+    const url = new URL((opts.host ?? LOCAL) + path);
+    const headers: Record<string, string> = {};
+    if (opts.cookie) headers.Cookie = opts.cookie;
+    if (opts.body !== undefined) headers["Content-Type"] = "application/json";
+    if (opts.origin !== null && method === "POST") headers.Origin = opts.origin ?? LOCAL;
+    const res = await handleAuth(new Request(url, { method, headers, body: opts.body === undefined ? undefined : JSON.stringify(opts.body) }), env, url, seedTasks);
+    return res!;
+  }
+  const cookieOf = (res: Response, name: string) => new RegExp(`evade_${name}=([^;]*)`).exec(res.headers.get("Set-Cookie") ?? "")?.[1] ?? "";
+  async function me(res: Response) {
+    const session = cookieOf(res, "session");
+    expect(session).not.toBe("");
+    return (await local("GET", "/auth/me", { cookie: `evade_session=${session}` })).json<any>();
+  }
+  async function openPage() {
+    const page = await local("GET", "/auth/local-access?redirect=http://localhost:5180/dashboard");
+    expect(page.status).toBe(200);
+    return { html: await page.text(), cookie: `evade_lac=${cookieOf(page, "lac")}` };
+  }
+  async function emailSignIn(email: string) {
+    const { cookie } = await openPage();
+    const sent = await local("POST", "/auth/local-access/code", { cookie, body: { email } });
+    expect(sent.status).toBe(200);
+    const { dev_code } = await sent.json<any>();
+    const res = await local("POST", "/auth/local-access/verify", { cookie, body: { code: dev_code } });
+    expect(res.status).toBe(200);
+    expect(await res.clone().json()).toEqual({ redirect: "http://localhost:5180/dashboard" });
+    return me(res);
+  }
+  async function devStart(email: string, role?: string) {
     const form = new URLSearchParams({ provider: "dev", dev_email: email, redirect: "http://localhost:5180/" });
     if (role) form.set("dev_role", role);
     const startUrl = new URL(`${LOCAL}/auth/start`);
     const start = await handleAuth(new Request(startUrl, {
       method: "POST", body: form, headers: { Origin: "http://localhost:5180", "Content-Type": "application/x-www-form-urlencoded" },
     }), env, startUrl, seedTasks);
-    expect(start!.status).toBe(303);
-    const oauth = /evade_oauth=([^;]*)/.exec(start!.headers.get("Set-Cookie") ?? "")![1];
     const cbUrl = new URL(start!.headers.get("Location")!);
-    const cb = await handleAuth(new Request(cbUrl, { headers: { Cookie: `evade_oauth=${oauth}` } }), env, cbUrl, seedTasks);
-    expect(cb!.status).toBe(302);
-    const session = /evade_session=([^;]*)/.exec(cb!.headers.get("Set-Cookie") ?? "")![1];
-    const meUrl = new URL(`${LOCAL}/auth/me`);
-    return (await handleAuth(new Request(meUrl, { headers: { Cookie: `evade_session=${session}` } }), env, meUrl, seedTasks))!.json<any>();
+    const cb = await handleAuth(new Request(cbUrl, { headers: { Cookie: `evade_oauth=${cookieOf(start!, "oauth")}` } }), env, cbUrl, seedTasks);
+    return me(cb!);
   }
 
-  it("can sign in as an astronaut or a flight surgeon on localhost only", async () => {
-    env = { ...env, DEV_LOGIN: "true", ALLOWED_ORIGINS: "http://localhost:5180", FRONTEND_URL: "http://localhost:5180" };
-    expect((await devLogin("astro@test.local")).role).toBe("astronaut");
-    expect((await devLogin("doc@test.local", "flight_surgeon")).role).toBe("flight_surgeon");
+  // A software authenticator: ES256 key, WebAuthn-shaped clientDataJSON/authenticatorData, DER signatures.
+  const enc = new TextEncoder();
+  const sha = async (s: string | Uint8Array) => new Uint8Array(await crypto.subtle.digest("SHA-256", typeof s === "string" ? enc.encode(s) : s));
+  async function authData(counter: number) {
+    const out = new Uint8Array(37);
+    out.set(await sha("localhost"));
+    out[32] = 0x05; // user present + verified
+    new DataView(out.buffer).setUint32(33, counter);
+    return out;
+  }
+  function rawToDer(raw: Uint8Array) {
+    const int = (v: Uint8Array) => {
+      let i = 0;
+      while (i < v.length - 1 && v[i] === 0) i++;
+      v = v.slice(i);
+      return v[0] & 0x80 ? Uint8Array.from([0, ...v]) : v;
+    };
+    const r = int(raw.slice(0, 32)), s = int(raw.slice(32));
+    return Uint8Array.from([0x30, r.length + s.length + 4, 0x02, r.length, ...r, 0x02, s.length, ...s]);
+  }
+  const clientData = (type: string, challenge: string, origin = LOCAL) => enc.encode(JSON.stringify({ type, challenge, origin, crossOrigin: false }));
+
+  beforeEach(() => { env = localEnv(); });
+
+  it("is only offered on localhost with DEV_LOGIN, and sends /auth/access there instead of failing", async () => {
     expect(enabledProviders(env, new URL("https://api.evade.health"))).not.toContain("dev");
     expect(enabledProviders(env, new URL(LOCAL))).toContain("dev");
-    const page = await (await handleAuth(new Request(`${LOCAL}/login`), env, new URL(`${LOCAL}/login`), seedTasks))!.text();
-    expect(page).toContain('name="dev_role"');
+    const access = await local("GET", "/auth/access?redirect=http://localhost:5180/dashboard");
+    expect(access.status).toBe(302);
+    expect(access.headers.get("Location")).toBe(`${LOCAL}/auth/local-access?redirect=${encodeURIComponent("http://localhost:5180/dashboard")}`);
+    expect((await local("GET", "/auth/local-access", { host: "https://api.evade.health" })).status).toBe(404);
+    expect((await local("GET", "/auth/access", { host: "https://api.evade.health" })).status).toBe(401);
+    env = { ...env, DEV_LOGIN: "false" };
+    expect((await local("GET", "/auth/local-access")).status).toBe(404);
+    expect((await local("GET", "/auth/access")).status).toBe(401);
+  });
+
+  it("offers the passkey or emailed-code choice, and the worker login page has no role picker", async () => {
+    const { html } = await openPage();
+    expect(html).toContain("Sign in with a passkey");
+    expect(html).toContain("Send login code");
+    expect(html).toContain("Don&#39;t have a passkey? Set one up".replace("&#39;", "'"));
+    const login = await (await local("GET", "/login")).text();
+    expect(login).not.toContain("dev_role");
+    expect(login).not.toContain("Flight surgeon");
+    expect(login).toContain("/auth/access?redirect=");
+  });
+
+  it("signs the seeded test accounts in with their D1 roles through the emailed code", async () => {
+    expect((await emailSignIn("vega@demo.evade.local")).user.user_id).toBe("00000000-0000-4000-8000-00000000d001");
+    expect((await emailSignIn("VEGA@demo.evade.local ")).role).toBe("astronaut");
+    const ortiz = await emailSignIn("ortiz@demo.evade.local");
+    expect(ortiz.role).toBe("flight_surgeon");
+    expect(ortiz.user.user_id).toBe("00000000-0000-4000-8000-00000000d002");
+    const fresh = await emailSignIn("new.astro@test.local");
+    expect(fresh.role).toBe("astronaut");
+    expect(seeded).toContain(fresh.user.user_id);
+  });
+
+  it("rejects wrong codes, too many attempts, cross-origin posts and missing page state", async () => {
+    const { cookie } = await openPage();
+    expect((await local("POST", "/auth/local-access/verify", { cookie, body: { code: "123456" } })).status).toBe(400);
+    expect((await local("POST", "/auth/local-access/code", { cookie, body: { email: "not-an-email" } })).status).toBe(422);
+    const { dev_code } = await (await local("POST", "/auth/local-access/code", { cookie, body: { email: "a@test.local" } })).json<any>();
+    const wrong = dev_code === "000000" ? "111111" : "000000";
+    for (let i = 0; i < 5; i++) expect((await local("POST", "/auth/local-access/verify", { cookie, body: { code: wrong } })).status).toBe(401);
+    expect((await local("POST", "/auth/local-access/verify", { cookie, body: { code: dev_code } })).status).toBe(429);
+    expect((await local("POST", "/auth/local-access/code", { cookie, body: { email: "a@test.local" }, origin: "http://localhost:5180" })).status).toBe(403);
+    expect((await local("POST", "/auth/local-access/code", { body: { email: "a@test.local" } })).status).toBe(401);
+  });
+
+  it("creates an account with a new passkey, then signs in with it (and rejects forged or replayed assertions)", async () => {
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]) as CryptoKeyPair;
+    const spki = new Uint8Array(await crypto.subtle.exportKey("spki", keys.publicKey));
+    const credId = b64url(crypto.getRandomValues(new Uint8Array(32)));
+
+    let { cookie } = await openPage();
+    const opts = await (await local("POST", "/auth/local-access/passkey/options", { cookie, body: { mode: "register", email: "pk.astro@test.local" } })).json<any>();
+    expect(opts.rp.id).toBe("localhost");
+    const registered = await local("POST", "/auth/local-access/passkey/register", { cookie, body: {
+      id: credId, clientDataJSON: b64url(clientData("webauthn.create", opts.challenge)), authenticatorData: b64url(await authData(0)),
+      publicKey: b64url(spki), publicKeyAlgorithm: -7,
+    } });
+    expect(registered.status).toBe(200);
+    const created = await me(registered);
+    expect(created.role).toBe("astronaut");
+
+    async function assertion(counter: number, tamper = false, origin = LOCAL) {
+      ({ cookie } = await openPage());
+      const o = await (await local("POST", "/auth/local-access/passkey/options", { cookie, body: { mode: "login" } })).json<any>();
+      const cd = clientData("webauthn.get", o.challenge, origin);
+      const ad = await authData(counter);
+      const signed = new Uint8Array([...ad, ...await sha(cd)]);
+      const raw = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, keys.privateKey, signed));
+      if (tamper) raw[5] ^= 0xff;
+      const body = { id: credId, clientDataJSON: b64url(cd), authenticatorData: b64url(ad), signature: b64url(rawToDer(raw)) };
+      return { res: await local("POST", "/auth/local-access/passkey/login", { cookie, body }), body };
+    }
+    const ok = await assertion(1);
+    expect(ok.res.status).toBe(200);
+    expect((await me(ok.res)).user.user_id).toBe(created.user.user_id);
+    expect((await assertion(2, true)).res.status).toBe(401);
+    expect((await assertion(1)).res.status).toBe(401); // counter must increase
+    expect((await assertion(5, false, "http://evil.test")).res.status).toBe(401);
+    // A captured assertion can't be replayed: the challenge is single-use.
+    const good = await assertion(6);
+    expect(good.res.status).toBe(200);
+    expect((await local("POST", "/auth/local-access/passkey/login", { cookie, body: good.body })).status).toBe(401);
+  });
+
+  it("the dev form login ignores any role request; the D1 role decides", async () => {
+    expect((await devStart("astro@test.local")).role).toBe("astronaut");
+    expect((await devStart("doc@test.local", "flight_surgeon")).role).toBe("astronaut");
+    expect((await devStart("ortiz@demo.evade.local")).role).toBe("flight_surgeon");
+    env = { ...env, FLIGHT_SURGEON_EMAILS: "surgeon@test.local" };
+    expect((await devStart("surgeon@test.local")).role).toBe("flight_surgeon");
   });
 });
-
 describe("logout", () => {
   it("rejects GET and untrusted POST and revokes the session on a trusted POST", async () => {
     const session = await login(await sign({}));

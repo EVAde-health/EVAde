@@ -2,6 +2,7 @@
 // Turnstile, browser-bound state and PKCE. KV stores hashed session tokens.
 
 import { accessAssertion, accessConfigured, accessLogoutUrl, staffAudience, verifyAccessJwt, type AccessEnv } from "./access";
+import { handleLocalAccess } from "./localAccess";
 
 export interface AuthEnv extends AccessEnv {
   DB: D1Database;
@@ -80,9 +81,11 @@ const oauthProviders = (env: AuthEnv, url: URL): Provider[] => {
   const out: Provider[] = [];
   if (hasTurnstile(env) && env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) out.push("google");
   if (hasTurnstile(env) && env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET) out.push("github");
-  if (env.DEV_LOGIN === "true" && isLoopback(url)) out.push("dev");
+  if (localAccessEnabled(env, url)) out.push("dev");
   return out;
 };
+/** Local development only: DEV_LOGIN=true on a loopback host (never true for api.evade.health). */
+const localAccessEnabled = (env: AuthEnv, url: URL) => env.DEV_LOGIN === "true" && isLoopback(url);
 
 export function enabledProviders(env: AuthEnv, url: URL) {
   const providers: string[] = [];
@@ -187,8 +190,6 @@ export interface IdentityIn {
   user_id?: string;
   /** True when the provider verified `email`; only then may the login join an existing account with that email. */
   email_verified?: boolean;
-  /** Local dev login only: sign in as a flight surgeon for testing. */
-  dev_role?: string | null;
 }
 
 /** Find or create the astronaut behind a login. `seedTasks` gives new astronauts today's routine. */
@@ -232,9 +233,9 @@ export async function linkIdentity(env: AuthEnv, id: IdentityIn, seedTasks: (use
   let user = batch.at(-1)?.results[0];
   if (!user) throw new Error("Identity provisioning failed");
   if (!id.user_id && batch[0].meta.changes && user.role === "astronaut") await seedTasks(user.user_id);
-  // FLIGHT_SURGEON_EMAILS promotes a verified email (never demotes). The dev login (loopback only) may ask for the role.
-  const promote = (id.email_verified && email && surgeonEmails(env).has(email)) ||
-    (id.provider === "dev" && (id.dev_role === "flight_surgeon" || (email && surgeonEmails(env).has(email))));
+  // FLIGHT_SURGEON_EMAILS promotes a verified email (never demotes); the loopback-only dev login honours it too.
+  // Otherwise the D1 role decides, e.g. the seeded ortiz@demo.evade.local test account is already a flight surgeon.
+  const promote = email && surgeonEmails(env).has(email) && (id.email_verified || id.provider === "dev");
   if (promote && user.role === "astronaut") {
     await env.DB.prepare("UPDATE users SET role='flight_surgeon' WHERE user_id=?").bind(user.user_id).run();
     user = { ...user, role: "flight_surgeon" };
@@ -303,16 +304,11 @@ function loginPage(env: AuthEnv, url: URL, redirect: string, error?: string, sta
   const providers = oauthProviders(env, url);
   const nonce = randomToken();
   const label: Record<string, string> = { google: "Continue with Google", github: "Continue with GitHub", dev: "Test login (dev only)" };
-  const buttons = providers.length
-    ? providers.map((p) => `<button name="provider" value="${p}" class="btn ${p}">${label[p]}</button>`).join("")
-    : accessConfigured(env) ? "" : `<p class="err">No login provider is configured yet.</p>`;
-  const accessLink = accessConfigured(env)
+  const buttons = providers.some((p) => p !== "dev")
+    ? providers.filter((p) => p !== "dev").map((p) => `<button name="provider" value="${p}" class="btn ${p}">${label[p]}</button>`).join("")
+    : accessConfigured(env) || localAccessEnabled(env, url) ? "" : `<p class="err">No login provider is configured yet.</p>`;
+  const accessLink = accessConfigured(env) || localAccessEnabled(env, url)
     ? `<a class="btn" href="/auth/access?redirect=${encodeURIComponent(redirect)}">Sign in or create account</a>`
-    : "";
-  // Flight surgeons use the same sign-in; their D1 role decides which console they land in.
-  const devField = providers.includes("dev")
-    ? `<input name="dev_email" placeholder="test email (dev login)" />
-       <select name="dev_role"><option value="astronaut">Astronaut</option><option value="flight_surgeon">Flight surgeon</option></select>`
     : "";
   const ts = providers.some((p) => p !== "dev") && env.TURNSTILE_SITE_KEY
     ? `<div class="cf-turnstile" data-sitekey="${esc(env.TURNSTILE_SITE_KEY)}" data-action="login" data-theme="dark"></div>
@@ -334,7 +330,7 @@ function loginPage(env: AuthEnv, url: URL, redirect: string, error?: string, sta
 ${error ? `<p class="err">${esc(error)}</p>` : ""}
 ${accessLink}
 <form method="post" action="/auth/start">
-  <input type="hidden" name="redirect" value="${esc(redirect)}">${devField}${ts}${buttons}
+  <input type="hidden" name="redirect" value="${esc(redirect)}">${ts}${buttons}
 </form>
 
 </main></body></html>`;
@@ -386,8 +382,7 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     const state = randomToken(24);
     const browser = randomToken();
     const verifier = randomToken(48);
-    const devRole = provider === "dev" && form.get("dev_role") === "flight_surgeon" ? "flight_surgeon" : null;
-    await env.SESSIONS.put(`oauth:${state}`, JSON.stringify({ provider, verifier, redirect, browser: await sha256(browser), dev_email: form.get("dev_email"), dev_role: devRole }), {
+    await env.SESSIONS.put(`oauth:${state}`, JSON.stringify({ provider, verifier, redirect, browser: await sha256(browser), dev_email: form.get("dev_email") }), {
       expirationTtl: OAUTH_TTL,
     });
     const redirectUri = `${url.origin}/auth/callback/${provider}`;
@@ -414,7 +409,7 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     const browser = readCookie(req, cookieName(url, "oauth"));
     if (!state || !/^[\w-]{32}$/.test(state) || !code || !browser) return fail("Sign-in expired, please try again.");
     const saved = await env.SESSIONS.get<{
-      provider: Provider; verifier: string; redirect: string; browser: string; dev_email: string | null; dev_role?: string | null;
+      provider: Provider; verifier: string; redirect: string; browser: string; dev_email: string | null;
     }>(`oauth:${state}`, "json");
     if (!saved || saved.provider !== provider || saved.browser !== await sha256(browser)) return fail("Sign-in expired, please try again.");
     await env.SESSIONS.delete(`oauth:${state}`); // one-time use
@@ -425,7 +420,7 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
       const user = await linkIdentity(env, {
         provider, subject: profile.subject, email: profile.email, display_name: profile.name,
         // Google only returns a verified email and GitHub only its primary verified one; the dev login is never verified.
-        email_verified: provider !== "dev" && !!profile.email, dev_role: provider === "dev" ? saved.dev_role ?? null : null,
+        email_verified: provider !== "dev" && !!profile.email,
       }, seedTasks);
       const token = await createSession(env, user, profile.email, provider);
       await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, provider).run();
@@ -439,8 +434,28 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     }
   }
 
+  // Local development: nothing sits in front of `wrangler dev`, so the Access sign-in (passkey or emailed code)
+  // is served by a local stand-in. Only on a loopback host with DEV_LOGIN=true.
+  if (path === "/auth/local-access" || path.startsWith("/auth/local-access/")) {
+    if (!localAccessEnabled(env, url)) return Response.json({ error: "Not found" }, { status: 404 });
+    return handleLocalAccess(req, path, {
+      env, url,
+      redirectFrom: (target) => safeRedirect(env, target, url),
+      cookie: (name, value, maxAge) => cookieHeader(url, name, value, maxAge),
+      readCookie: (name) => readCookie(req, cookieName(url, name)),
+      finish: async (email, method) => {
+        const user = await linkIdentity(env, { provider: "dev", subject: `dev:${email}`, email, display_name: email.split("@")[0] }, seedTasks);
+        await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, `local_access:${method}`).run();
+        return cookieHeader(url, "session", await createSession(env, user, email, "dev"), SESSION_TTL);
+      },
+    });
+  }
+
   if (accessPath && req.method === "GET") {
     const redirect = safeRedirect(env, url.searchParams.get("redirect"), url);
+    if (localAccessEnabled(env, url) && !accessAssertion(req)) {
+      return Response.redirect(`${url.origin}/auth/local-access?redirect=${encodeURIComponent(redirect)}`, 302);
+    }
     const fail = (msg: string, status = 401) => loginPage(env, url, redirect, msg, status);
     const staff = path.endsWith("/staff");
     const audience = staff ? staffAudience(env) : env.ACCESS_AUD;
@@ -507,7 +522,8 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
       await env.SESSIONS.delete(reference);
     }
     const headers = { "Set-Cookie": clearSessionCookie(url) };
-    const logoutUrl = provider === "demo" ? null : accessLogoutUrl(env);
+    // Only Cloudflare Access sessions have an Access cookie to clear; local dev and demo sessions don't.
+    const logoutUrl = provider === "cloudflare_access" || provider === "cloudflare_access_staff" ? accessLogoutUrl(env) : null;
     return logoutUrl ? Response.json({ logout_url: logoutUrl }, { headers }) : new Response(null, { status: 204, headers });
   }
 
