@@ -29,6 +29,7 @@ import {
 } from '@heroicons/react/24/solid';
 import { AccountStorageContext } from '../context/AccountStorageContext';
 import { useMission } from '../context/MissionContext';
+import { hasSimulatedData } from '../services/simulation';
 import { ApiError, SIGN_IN_REQUIRED, STAFF_ROLES } from '../services/api';
 import { fetchSession, signOut, type SessionUser } from '../services/healthApi';
 import AmbientBackdrop from './AmbientBackdrop';
@@ -200,6 +201,7 @@ function SignedInFrame() {
         <Suspense fallback={<PageLoader />}>
           <VStack className="app-frame__page" key={pathname.split('/').slice(0, 2).join('/')}>
             <AstronautNotices readOnly={!!user.demo} />
+            {hasSimulatedData(user) && <HStack><Badge variant="purple" label="Simulated data" /></HStack>}
             {user.demo && <Banner status="info" title="Read-only demo" description="You can try meals and hydration here. These changes reset when you reload." />}
             <Outlet />
           </VStack>

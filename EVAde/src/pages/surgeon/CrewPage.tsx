@@ -16,6 +16,7 @@ import PageHeader from '../../components/PageHeader';
 import StatusBadge from '../../components/StatusBadge';
 import { usePoll } from '../../hooks/usePoll';
 import { ago, personName, responseRows, type CrewRow, type CrewStatus } from '../../services/surgeon';
+import { hasSimulatedData } from '../../services/simulation';
 
 type Filter = 'all' | 'attention' | 'unread';
 const STATUS_ORDER = { critical: 0, caution: 1, nominal: 2 } as const;
@@ -119,6 +120,7 @@ function CrewCard({ row, status, index }: { row: CrewRow; status: CrewStatus | n
               </div>
             </HStack>
             <HStack gap={1.5} wrap="wrap">
+              {hasSimulatedData(row) && <Badge variant="purple" label="Simulated data" />}
               {row.emergency
                 ? <Badge variant={row.emergency.status === 'open' ? 'error' : 'warning'}
                     label={row.emergency.status === 'open' ? 'Emergency open' : `Handled by ${row.emergency.acknowledged_by_name ?? 'surgeon'}`} />

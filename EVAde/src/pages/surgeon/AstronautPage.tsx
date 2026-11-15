@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Avatar } from '@astryxdesign/core/Avatar';
 import { Badge } from '@astryxdesign/core/Badge';
@@ -15,6 +16,8 @@ import StatusBadge from '../../components/StatusBadge';
 import { useSurgeon } from '../../context/SurgeonContext';
 import { bandStatus } from '../../services/clinic';
 import { ago, formatValue, missionDayOf, personName, responseRows, type AstronautDetail } from '../../services/surgeon';
+import { api } from '../../services/api';
+import { hasSimulatedData } from '../../services/simulation';
 import { usePoll } from '../../hooks/usePoll';
 import { GoalsSection, JournalSection, TasksSection, VitalsSection } from './AstronautSections';
 
@@ -81,6 +84,7 @@ function Record({ id, section, onSection }: { id: string; section: Section; onSe
             </VStack>
           </StackItem>
           <HStack gap={2} wrap="wrap" vAlign="center">
+            {hasSimulatedData(user) && <Badge variant="purple" label="Simulated data" />}
             {emergency && <Badge variant={emergency.status === 'open' ? 'error' : 'warning'} label={emergency.status === 'open' ? 'Emergency open' : `Emergency · ${emergency.acknowledged_by_name ?? 'handled'}`} />}
             {data?.risk && <StatusBadge status={bandStatus(data.risk.band)} label={`Risk ${data.risk.band}`} />}
             {!!data?.open_alerts && <Badge variant="warning" label={`${data.open_alerts} open alert${data.open_alerts > 1 ? 's' : ''}`} />}
@@ -97,6 +101,7 @@ function Record({ id, section, onSection }: { id: string; section: Section; onSe
           </Grid>
         )}
       </Card>
+      <SummaryCard id={id} simulated={hasSimulatedData(user)} />
       <TabList value={section} onChange={value => onSection(value as Section)} hasDivider>
         {SECTIONS.map(item => <Tab key={item.value} value={item.value} label={item.label} />)}
       </TabList>
@@ -107,6 +112,42 @@ function Record({ id, section, onSection }: { id: string; section: Section; onSe
         {section === 'goals' && <GoalsSection id={id} name={user ? personName(user) : 'this astronaut'} />}
       </VStack>
     </VStack>
+  );
+}
+
+function SummaryCard({ id, simulated }: { id: string; simulated: boolean }) {
+  const [bullets, setBullets] = useState<string[]>();
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    setFailed(false);
+    try {
+      const result = await api<{ bullets: string[] }>('/admin/astronauts/' + encodeURIComponent(id) + '/summary');
+      setBullets(result.bullets);
+    } catch {
+      setFailed(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Card padding={5}>
+      <VStack gap={3}>
+        <HStack gap={3} wrap="wrap" vAlign="center">
+          <Text weight="semibold">AI summary, verify against the data, not a diagnosis</Text>
+          {simulated && <Badge variant="purple" label="Simulated data" />}
+        </HStack>
+        {loading && <Text role="status">Preparing the last 24 hours…</Text>}
+        {failed && <Text role="alert">The summary could not load. Try again.</Text>}
+        {bullets && <ul>{bullets.map((bullet, index) => <li key={index}><Text>{bullet}</Text></li>)}</ul>}
+        <HStack>
+          <Button variant="secondary" label={bullets ? 'Refresh summary' : 'Summarize the last 24 hours'} onClick={load} isDisabled={loading} />
+        </HStack>
+      </VStack>
+    </Card>
   );
 }
 

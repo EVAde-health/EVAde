@@ -25,6 +25,7 @@ export interface Emergency {
 
 export interface CrewRow {
   user_id: string;
+  synthetic?: number;
   display_name: string;
   full_name: string | null;
   crew_role: string | null;
@@ -58,6 +59,7 @@ export interface AstronautOption {
 export interface AstronautDetail {
   user: {
     user_id: string; display_name: string; full_name: string | null; crew_role: string | null; mission_name: string | null;
+    synthetic?: number;
     mission_start: string | null; mission_length_days: number | null; points: number; streak_days: number; last_active: string | null;
   };
   risk: { band: string; r: number; mdtr: string | null; ts: string } | null;
