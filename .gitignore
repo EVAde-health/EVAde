@@ -1,2 +1,9 @@
 # Staging area for deploy/deploy.mjs (build output + Worker checkout)
 .deploy/
+.env
+data/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
