@@ -37,13 +37,14 @@
     // service binding below (no public URL). Fallback only: set MODEL_API_URL to the gateway's HTTPS URL.
     // Until either is set, /predict/* and /models return 503.
     "MODEL_API_URL": "",
-    // "true" enables GET /auth/demo: a 2-hour session as the seeded fake astronaut Cmdr. Vega (demo). Never a real user.
+    // "true" enables GET /auth/demo: a 2-hour shared session as the seeded fake astronaut Cmdr. Vega, or (?as=surgeon) the
+    // fake flight surgeon Dr. Ortiz. It reads and writes only the demo crew; POST /demo/reset restores it. Never a real user.
     "DEMO_LOGIN": "true",
     // Where users land after signing in if no redirect was requested.
     "FRONTEND_URL": "https://evade.health",
     // Comma-separated emails promoted to flight_surgeon when they sign in with a verified email (Cloudflare Access,
     // Google, GitHub). Promotion only; it never demotes. Otherwise the users.role column in D1 decides.
-    "FLIGHT_SURGEON_EMAILS": "",
+    "FLIGHT_SURGEON_EMAILS": "ryana.bergmanamazon@gmail.com",
     // Everyone (astronauts and flight surgeons) signs in through this one Access application.
     "ACCESS_TEAM_DOMAIN": "evade-health.cloudflareaccess.com",
     "ACCESS_AUD": "ecbeabe1fc1a7bca3ebee00b3aef522ecd96ac431b0f9dd9b0d8ae3d06dc093b",

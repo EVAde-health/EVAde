@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generates migrations/0011_seed_surgeon_demo.sql: FAKE demo crew data for every astronaut and surgeon screen.
 
-Run from cloud/worker:  python3 scripts/gen_demo_seed.py
+Run from cloud/worker:  python3 scripts/gen_demo_seed.py   (then python3 scripts/gen_demo_reset.py for POST /demo/reset)
 Deterministic (fixed random seed). All timestamps are relative to strftime('now') at apply time, so the
 dashboards look current whenever the migration is applied. Every row uses the fixed demo UUIDs
 (00000000-0000-4000-8000-00000000d0xx) or a 'demo-' client id, so queries/delete_user.sql removes it.

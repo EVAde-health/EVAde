@@ -1,7 +1,6 @@
 import { Suspense, useEffect, useState } from 'react';
 import { matchRoutes, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@astryxdesign/core/Button';
-import { Banner } from '@astryxdesign/core/Banner';
 import { Text } from '@astryxdesign/core/Text';
 import { useToast } from '../context/ToastCenterContext';
 import { AppShell } from '@astryxdesign/core/AppShell';
@@ -39,6 +38,7 @@ import SurgeonShell from './surgeon/SurgeonShell';
 import AstronautNotices from './AstronautNotices';
 import { usePoll } from '../hooks/usePoll';
 import BrandMark from './BrandMark';
+import DemoBar from './DemoBar';
 import EmergencyButton from './EmergencyButton';
 import LevelMeter from './LevelMeter';
 import MotionToggle from './MotionToggle';
@@ -105,7 +105,7 @@ export default function AppFrame() {
     );
   }
 
-  if (STAFF_ROLES.has(session.role) && !session.demo) {
+  if (STAFF_ROLES.has(session.role)) {
     return <SurgeonShell key={session.user_id} user={session} />;
   }
   if (matchRoutes([{ path: '/admin/*' }], location)) {
@@ -130,7 +130,7 @@ function SignedInFrame() {
   const showToast = useToast();
   const remaining = tasks.length - completed.length;
   // Unread 1:1 messages from flight surgeons, polled every few seconds for the nav badge.
-  const unread = usePoll<{ unread: number }>(user.demo ? null : '/messages/unread', 5000);
+  const unread = usePoll<{ unread: number }>('/messages/unread', 5000);
   const reloadUnread = unread.reload;
   useEffect(() => {
     window.addEventListener('evade:messages-read', reloadUnread);
@@ -174,7 +174,7 @@ function SignedInFrame() {
             footer={
               <VStack gap={2}>
                 <LevelMeter />
-                {!user.demo && <EmergencyButton />}
+                <EmergencyButton />
                 <Divider />
                 <HStack gap={1} vAlign="center" hAlign="between">
                   <SideNavItem label="Sign out" icon={ArrowLeftStartOnRectangleIcon} onClick={handleSignOut} isDisabled={signingOut} />
@@ -203,9 +203,9 @@ function SignedInFrame() {
         }>
         <Suspense fallback={<PageLoader />}>
           <VStack className="app-frame__page" key={pathname.split('/').slice(0, 2).join('/')}>
-            <AstronautNotices readOnly={!!user.demo} />
+            {user.demo && <DemoBar persona="astronaut" />}
+            <AstronautNotices />
             {hasSimulatedData(user) && <HStack><Badge variant="purple" label="Simulated data" /></HStack>}
-            {user.demo && <Banner status="info" title="Read-only demo" description="You can try meals and hydration here. These changes reset when you reload." />}
             <Outlet />
           </VStack>
         </Suspense>

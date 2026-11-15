@@ -486,12 +486,10 @@ describe("astronaut health reads", () => {
 });
 
 describe("staff session enforcement", () => {
-  it("keeps the shared demo nutrition rows read-only", async () => {
+  it("rejects a demo session that points at a real account", async () => {
     const demo = await session(NOVA, "astronaut", "demo");
-    expect((await call("GET", `/users/${NOVA}/meals`, demo)).status).toBe(200);
-    expect((await call("POST", "/meals", demo, {})).status).toBe(403);
-    expect((await call("DELETE", `/meals/${KEPLER}`, demo)).status).toBe(403);
-    expect((await call("POST", "/hydration", demo, {})).status).toBe(403);
+    expect((await call("GET", `/users/${NOVA}/meals`, demo)).status).toBe(401);
+    expect((await call("POST", "/meals", demo, {})).status).toBe(401);
   });
 
   it("keeps the staff enrollment provider reserved for Access login", async () => {
@@ -502,11 +500,10 @@ describe("staff session enforcement", () => {
     expect(response.status).toBe(403);
   });
 
-  it("denies demo and service credentials on staff routes", async () => {
+  it("denies demo sessions on real accounts and service credentials on staff routes", async () => {
     const demo = await session(NOVA, "admin", "demo");
-    expect((await call("GET", "/admin/crew", demo)).status).toBe(403);
-    expect((await call("GET", "/chat/threads", demo)).status).toBe(403);
-    expect((await call("POST", "/emergencies", demo, {})).status).toBe(403);
+    expect((await call("GET", "/admin/crew", demo)).status).toBe(401);
+    expect((await call("GET", "/chat/threads", demo)).status).toBe(401);
     const fixtureKey = crypto.randomUUID();
     env.EVADE_API_KEY = fixtureKey;
     const response = await worker.fetch(new Request(API + "/admin/crew", { headers: { "X-EVAde-Key": fixtureKey } }), env, ctx);

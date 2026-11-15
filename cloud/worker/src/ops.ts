@@ -3,6 +3,7 @@
 // Callers are already authenticated. These handlers still check the role before reading another person.
 import { triageUrgent, type AiEnv } from "./ai";
 import { Principal, STAFF_ROLES } from "./auth";
+import { DEMO_ID_PREFIX, sameCrewSql } from "./demo";
 import { HttpError } from "./http";
 import { levelFromThresholds, type MetricDef } from "./health";
 import { limitMessageSend, recordMessage } from "./messages";
@@ -47,7 +48,10 @@ export async function deliverSurgeonRequest(db: D1Database, userId: string, requ
   const label = request.source === "voice" ? "Voice assistant" : "Journal assistant";
   const bodyText = `${label} · ${urgent ? "URGENT" : "request"}: ${request.message}`.slice(0, 2000);
 
-  const { results: surgeons } = await db.prepare("SELECT user_id FROM users WHERE role='flight_surgeon'").all<{ user_id: string }>();
+  // Demo astronauts reach the demo surgeons only, and real astronauts never reach the (shared) demo surgeons.
+  const crew = sameCrewSql("user_id", userId);
+  const { results: surgeons } = await db.prepare(`SELECT user_id FROM users WHERE role='flight_surgeon' AND ${crew.sql}`)
+    .bind(...crew.params).all<{ user_id: string }>();
   const statements: D1PreparedStatement[] = [];
   for (const s of surgeons) {
     statements.push(
@@ -436,7 +440,7 @@ async function seriesFor(env: OpsDb, userId: string, group: string | null, metri
 }
 
 async function threadFor(env: OpsDb, who: Principal, threadId: number) {
-  if (who.kind !== "user" || !who.user_id || who.demo) throw new HttpError(403, "Use your own account to open a conversation");
+  if (who.kind !== "user" || !who.user_id) throw new HttpError(403, "Use your own account to open a conversation");
   const thread = await env.DB.prepare(
     `SELECT t.id, t.astronaut_id, t.surgeon_id AS staff_id, t.created_at, t.updated_at,
             au.display_name AS astronaut_name, su.display_name AS staff_name, su.role AS staff_role
@@ -778,7 +782,7 @@ export function registerOps(route: (method: string, path: string, handler: Handl
   });
 
   route("POST", "/emergencies", async (req, env, _p, _u, _c, who) => {
-    if (who.kind !== "user" || who.role !== "astronaut" || who.demo) {
+    if (who.kind !== "user" || who.role !== "astronaut") {
       throw new HttpError(403, "Use your own astronaut account to raise an emergency");
     }
     const input = await body(req);
@@ -792,7 +796,7 @@ export function registerOps(route: (method: string, path: string, handler: Handl
   // open an emergency, which raises the console alert. Urgency is decided here too, never only by the caller.
   // Idempotent per client_id, so a retried request is not delivered twice.
   route("POST", "/surgeon-requests", async (req, env, _p, _u, _c, who) => {
-    if (who.kind !== "user" || who.role !== "astronaut" || who.demo) {
+    if (who.kind !== "user" || who.role !== "astronaut") {
       throw new HttpError(403, "Use your own astronaut account to contact the flight surgeon");
     }
     const input = await body(req);
@@ -837,7 +841,7 @@ export function registerOps(route: (method: string, path: string, handler: Handl
   });
 
   route("GET", "/emergencies/mine", async (_r, env, _p, _u, _c, who) => {
-    if (!who.user_id || who.demo) throw new HttpError(403, "Use your own account to see your emergencies");
+    if (!who.user_id) throw new HttpError(403, "Use your own account to see your emergencies");
     const { results } = await env.DB.prepare(
       "SELECT * FROM emergencies WHERE user_id=? ORDER BY created_at DESC LIMIT 20"
     ).bind(who.user_id).all();
@@ -910,8 +914,8 @@ export function registerOps(route: (method: string, path: string, handler: Handl
         `SELECT e.*, u.display_name, u.full_name, ack.display_name AS acknowledged_by_name
          FROM emergencies e JOIN users u ON u.user_id=e.user_id
          LEFT JOIN users ack ON ack.user_id=e.acknowledged_by
-         WHERE e.status!='resolved' ORDER BY e.created_at DESC LIMIT 20`
-      ).all<ActiveEmergency>(),
+         WHERE e.status!='resolved' AND (? = 0 OR e.user_id LIKE ?) ORDER BY e.created_at DESC LIMIT 20`
+      ).bind(who.demo ? 1 : 0, `${DEMO_ID_PREFIX}%`).all<ActiveEmergency>(),
       who.user_id
         ? env.DB.prepare(
           `SELECT COUNT(*) AS n FROM conversation_messages m JOIN conversations t ON t.id=m.conversation_id
@@ -929,10 +933,13 @@ export function registerOps(route: (method: string, path: string, handler: Handl
   });
 
   route("GET", "/staff", async (_r, env, _p, _u, _c, who) => {
-    if (who.demo || who.kind !== "user") throw new HttpError(403, "Use your own account to see the staff directory");
+    if (who.kind !== "user") throw new HttpError(403, "Use your own account to see the staff directory");
+    // Astronauts and the shared demo see only the staff of their own crew (demo or real).
+    const crew = staffPerson(who) && !who.demo ? { sql: "1=1", params: [] as string[] } : sameCrewSql("u.user_id", who.user_id);
     const { results } = await env.DB.prepare(
-      "SELECT u.* FROM users u WHERE u.role IN ('flight_surgeon','therapist','admin') AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id) ORDER BY u.role, u.display_name"
-    ).all<CrewProfile>();
+      `SELECT u.* FROM users u WHERE u.role IN ('flight_surgeon','therapist','admin') AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id)
+       AND ${crew.sql} ORDER BY u.role, u.display_name`
+    ).bind(...crew.params).all<CrewProfile>();
     return json(results.map((row) => ({ ...displayProfile(row), role: row.role })));
   });
 
@@ -942,7 +949,7 @@ export function registerOps(route: (method: string, path: string, handler: Handl
 
   // Keep the original numeric thread API as an alias for the migrated conversations.
   route("GET", "/chat/threads", async (_r, env, _p, _u, _c, who) => {
-    if (who.kind !== "user" || !who.user_id || who.demo) throw new HttpError(403, "Use your own account to see conversations");
+    if (who.kind !== "user" || !who.user_id) throw new HttpError(403, "Use your own account to see conversations");
     const [column, peer] = staffPerson(who) ? ["t.surgeon_id", "t.astronaut_id"] : ["t.astronaut_id", "t.surgeon_id"];
     const { results } = await env.DB.prepare(
       `SELECT t.id, t.astronaut_id, t.surgeon_id AS staff_id, t.updated_at,
@@ -960,7 +967,7 @@ export function registerOps(route: (method: string, path: string, handler: Handl
   });
 
   route("POST", "/chat/threads", async (req, env, _p, _u, _c, who) => {
-    if (who.kind !== "user" || !who.user_id || who.demo) throw new HttpError(403, "Sign in to start a conversation");
+    if (who.kind !== "user" || !who.user_id) throw new HttpError(403, "Sign in to start a conversation");
     const input = await body(req);
     const first = text(input?.body, "body", 2000, false);
     let astronautId: string;
@@ -973,9 +980,10 @@ export function registerOps(route: (method: string, path: string, handler: Handl
       if (who.role !== "astronaut") throw new HttpError(403, "Only an astronaut can message staff this way");
       staffId = text(input?.staff_id, "staff_id", 80, true)!;
       astronautId = who.user_id;
+      const crew = sameCrewSql("u.user_id", astronautId);
       const staff = await env.DB.prepare(
-        "SELECT u.role FROM users u WHERE u.user_id=? AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id)"
-      ).bind(staffId).first<{ role: string }>();
+        `SELECT u.role FROM users u WHERE u.user_id=? AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id) AND ${crew.sql}`
+      ).bind(staffId, ...crew.params).first<{ role: string }>();
       if (!staff || !STAFF_ROLES.has(staff.role)) throw new HttpError(422, "Choose a flight surgeon, therapist, or admin");
     }
     const ts = now();

@@ -46,12 +46,17 @@ it("applies every migration in the order the live evade-db applied them", () => 
     "0001_init.sql", "0002_seed_metrics.sql", "0003_auth_and_admin.sql", "0004_media_ai.sql", "0005_meals_hydration.sql",
     "0006_frontend_gaps.sql", "0006_voice_messages_phone.sql", "0007_seed_demo_astronaut.sql", "0009_staff_console.sql",
     "0008_remove_demo_data.sql", "0010_surgeon_console.sql", "0011_seed_surgeon_demo.sql", "0011_simulated_data.sql",
+    "0012_demo_logins_and_roles.sql",
   ];
   expect([...order].sort()).toEqual(readdirSync(path).filter(name => name.endsWith(".sql")).sort());
   const db = new DatabaseSync(":memory:");
   try {
     for (const name of order) db.exec(readFileSync(join(path, name), "utf8"));
     expect(db.prepare("SELECT role FROM users WHERE user_id='00000000-0000-4000-8000-00000000d001'").get()).toEqual({ role: "astronaut" });
+    expect(db.prepare("SELECT subject, user_id FROM auth_identities WHERE provider='demo' ORDER BY subject").all()).toEqual([
+      { subject: "ortiz", user_id: "00000000-0000-4000-8000-00000000d002" },
+      { subject: "vega", user_id: "00000000-0000-4000-8000-00000000d001" },
+    ]);
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   } finally {
     db.close();

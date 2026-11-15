@@ -11,7 +11,7 @@ export default function MessagesPage() {
   return (
     <VStack gap={5} padding={6} className="page">
       <PageHeader eyebrow="Ground link" title="Messages" description="Private 1:1 messages with your flight surgeons." />
-      <Messenger selfId={user.user_id} basePath="/messages" otherId={id} readOnly={user.demo} onRead={() => window.dispatchEvent(new Event('evade:messages-read'))} />
+      <Messenger selfId={user.user_id} basePath="/messages" otherId={id} onRead={() => window.dispatchEvent(new Event('evade:messages-read'))} />
     </VStack>
   );
 }

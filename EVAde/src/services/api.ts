@@ -93,4 +93,7 @@ export function accessLoginUrl() {
   return loginUrl('/auth/access', '/dashboard');
 }
 
-export const demoLoginUrl = () => loginUrl('/auth/demo', '/dashboard');
+// "Try the demo" as the seeded astronaut, or the seeded flight surgeon; replaces any demo session.
+export function demoLoginUrl(persona: 'astronaut' | 'surgeon' = 'astronaut') {
+  return persona === 'surgeon' ? loginUrl('/auth/demo?as=surgeon', '/admin') : loginUrl('/auth/demo', '/dashboard');
+}

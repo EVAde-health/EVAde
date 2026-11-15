@@ -23,6 +23,7 @@ import {
   REVIEW_NOTE, riskRow, summarize,
 } from "./models";
 import { deleteUserStatements } from "./deleteUser";
+import { assertDemoScope, resetDemo, scrubDemoResponse } from "./demo";
 import { HttpError } from "./http";
 import { refreshSimulation, type SimulationPrediction } from "./simulation";
 import { crewOverview, registerOps } from "./ops";
@@ -832,7 +833,7 @@ route("POST", "/space-weather", async (req, env) => {
 // Risk score + maximum days to return
 route("GET", "/users/:id/risk", async (_r, env, p, url, ctx, who) => {
   await requireUser(env, p.id);
-  const store = !who.demo && url.searchParams.get("store") !== "false";
+  const store = url.searchParams.get("store") !== "false";
   const risk = await riskFor(env, p.id, store);
   if (store) publish(env, ctx, { type: "risk", user_id: p.id, data: { r: risk.r, band: risk.band, mdtr: risk.mdtr, top_domains: risk.top_domains } });
   return json(risk);
@@ -859,7 +860,7 @@ route("GET", "/users/:id/briefing", async (_r, env, p, url, _c, who) => {
       action: l.level !== "green" ? defs.get(l.metric)?.what_to_do : undefined })),
     overrides: risk.overrides, space_weather: sw,
   };
-  const brief = who.demo ? null : await dailyBriefing(env, facts);
+  const brief = await dailyBriefing(env, facts);
   const text = brief?.text ?? null;
   const flagged = facts.readings.filter((r) => r.level !== "green");
   const fallback = [`Overall status: ${risk.band}. ${risk.action}`,
@@ -897,7 +898,7 @@ route("GET", "/users/:id/prediction", async (_r, env, p, url, _c, who) => {
   const start = user.mission_start ? Date.parse(user.mission_start) : NaN;
   const scheduledDaysLeft = Number.isFinite(start) && user.mission_length_days
     ? Math.max(0, Math.round(start / 864e5 + user.mission_length_days - Date.now() / 864e5)) : null;
-  const out = await predict(who.demo ? { ...env, XAI_API_KEY: undefined } : env, p.id, {
+  const out = await predict(env, p.id, {
     defs, observations, doses, radiationLimitMsv: user.radiation_limit_msv ?? 600,
     riskMdtrDays: observations.length ? risk.mdtr_days : null, scheduledDaysLeft,
   });
@@ -1312,6 +1313,7 @@ route("POST", "/admin/simulate", async (_req, env, _p, _url, _ctx, who) => {
 // Order: R2 objects, the model service's copy, then every D1 row in one batch, then this session.
 route("DELETE", "/me", async (req, env, _p, _u, _c, who) => {
   if (who.kind !== "user" || !who.user_id) throw new HttpError(403, "Sign in to delete your own account");
+  if (who.demo) throw new HttpError(403, "The shared demo account can't be deleted");
   const b = await body<{ confirm?: string }>(req).catch(() => ({} as { confirm?: string }));
   if (b.confirm !== "DELETE") throw new HttpError(400, 'Send {"confirm":"DELETE"} to delete your account and all its data');
   const uid = who.user_id;
@@ -1330,6 +1332,15 @@ route("DELETE", "/me", async (req, env, _p, _u, _c, who) => {
   const token = sessionCookie(req);
   if (token) await env.SESSIONS.delete(`sess:${await sha256hex(token)}`);
   return json({ deleted: true, model_service: models }, 200, { "Set-Cookie": clearSessionCookie(new URL(req.url)) });
+});
+
+// "Reset demo data": puts the shared demo crew back to its seeded state. Demo sessions only; the session stays valid.
+route("POST", "/demo/reset", async (_r, env, _p, _u, _c, who) => {
+  if (who.kind !== "user" || !who.demo || !who.user_id) throw new HttpError(403, "Only the demo can be reset");
+  const { success } = await env.AUTH_RATE_LIMITER.limit({ key: "demo-reset" });
+  if (!success) throw new HttpError(429, "The demo was just reset. Try again in a minute.");
+  await resetDemo(env);
+  return json({ reset: true, reset_at: now() });
 });
 
 // Offline-first sync: the frontend queues records in IndexedDB and flushes them here when a link is up.
@@ -1400,12 +1411,8 @@ async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Reque
     if ((origin || sessionCookie(req, url)) && !trustedOrigin(env, url, origin))
       throw new HttpError(403, "Cross-origin request blocked");
   }
-  if (session.demo) {
-    if (req.method !== "GET") throw new HttpError(403, "Use a personal account to save changes");
-    if (path === "/leaderboard" || path === "/live") {
-      throw new HttpError(403, "Use a personal account to view crew activity");
-    }
-  }
+  // The shared demo reads and writes freely, but only inside the demo crew (demo.ts).
+  if (session.demo) await assertDemoScope(env.DB, req, path);
   const staff = STAFF_ROLES.has(session.role ?? "");
   if (STAFF_ONLY.some(([m, re]) => (m === "*" || m === req.method) && re.test(path)) && !staff)
     throw new HttpError(403, "Flight surgeon / admin access only");
@@ -1465,7 +1472,7 @@ export default {
         const match = url.pathname.match(re);
         if (match && m === req.method) {
           const res = await handler(req, env, (match.groups ?? {}) as Record<string, string>, url, ctx, who);
-          return withHeaders(res);
+          return withHeaders(who.demo ? await scrubDemoResponse(res) : res);
         }
       }
       throw new HttpError(404, `No route ${req.method} ${url.pathname}`);

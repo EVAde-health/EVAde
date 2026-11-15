@@ -252,7 +252,6 @@ export default function JournalPage() {
 
   const composer = (
     <VStack ref={mobile ? mobileComposerRef : undefined} gap={1} className="journal__composer">
-      {user.demo && <Text type="supporting">Demo: messages aren't saved.</Text>}
       <ChatComposer
         value={draft}
         onChange={value => setDraft(value.slice(0, 2000))}
