@@ -13,7 +13,7 @@ import { useToast } from '@astryxdesign/core/Toast';
 import { ChatBubbleLeftRightIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import { Icon } from '@astryxdesign/core/Icon';
 import { usePoll } from '../hooks/usePoll';
-import { ago, markThreadRead, personName, sendMessage, type Contact, type Thread } from '../services/surgeon';
+import { ago, hasTimestamp, markThreadRead, personName, responseRows, sendMessage, type Contact, type Thread } from '../services/surgeon';
 import './surgeon/surgeon.css';
 
 // 1:1 messages for both roles. Astronauts see flight surgeons; surgeons see astronauts.
@@ -24,11 +24,12 @@ export default function Messenger({ selfId, basePath, otherId, readOnly = false,
   const navigate = useNavigate();
   const contacts = usePoll<Contact[]>('/messages/contacts', 5000);
   const [query, setQuery] = useState('');
+  const people = useMemo(() => responseRows(contacts.data).filter(contact => typeof contact.user_id === 'string' && contact.user_id), [contacts.data]);
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return (contacts.data ?? []).filter(c => !q || [c.display_name, c.full_name, c.crew_role].some(v => v?.toLowerCase().includes(q)));
-  }, [contacts.data, query]);
-  const active = contacts.data?.find(c => c.user_id === otherId);
+    return people.filter(c => !q || [c.display_name, c.full_name, c.crew_role].some(v => typeof v === 'string' && v.toLowerCase().includes(q)));
+  }, [people, query]);
+  const active = people.find(c => c.user_id === otherId);
 
   return (
     <div className="messenger">
@@ -36,8 +37,8 @@ export default function Messenger({ selfId, basePath, otherId, readOnly = false,
         <VStack gap={3}>
           <TextInput label="Search people" isLabelHidden placeholder="Search by name" startIcon={MagnifyingGlassIcon} value={query} onChange={setQuery} hasClear />
           {contacts.error && <Text role="alert">{contacts.error}</Text>}
-          {contacts.data && !contacts.data.length && <Text type="supporting">Nobody to message yet.</Text>}
-          {contacts.data && !!contacts.data.length && !visible.length && <Text type="supporting">No one matches “{query}”.</Text>}
+          {contacts.data && !people.length && <Text type="supporting">Nobody to message yet.</Text>}
+          {!!people.length && !visible.length && <Text type="supporting">No one matches “{query}”.</Text>}
           <nav className="messenger__contacts" aria-label="Conversations">
             {visible.map((contact, index) => (
               <button
@@ -46,7 +47,7 @@ export default function Messenger({ selfId, basePath, otherId, readOnly = false,
                 className="messenger__contact"
                 aria-current={contact.user_id === otherId}
                 style={{ '--i': index } as CSSProperties}
-                onClick={() => navigate(`${basePath}/${contact.user_id}`)}
+                onClick={() => navigate(`${basePath}/${encodeURIComponent(contact.user_id)}`)}
               >
                 <Avatar name={personName(contact)} />
                 <StackItem size="fill">
@@ -86,7 +87,7 @@ function ThreadView({ otherId, selfId, fallbackName, readOnly, onRead }: {
   const [sending, setSending] = useState(false);
   const showToast = useToast();
   const bottom = useRef<HTMLDivElement>(null);
-  const messages = thread.data?.messages ?? [];
+  const messages = responseRows(thread.data?.messages).filter(message => typeof message.sender_id === 'string' && typeof message.body === 'string');
   const lastId = messages.at(-1)?.id;
   const unreadFromOther = messages.filter(m => m.sender_id !== selfId && !m.read_at).length;
 
@@ -116,14 +117,15 @@ function ThreadView({ otherId, selfId, fallbackName, readOnly, onRead }: {
     }
   }
 
-  const name = thread.data ? personName(thread.data.contact) : fallbackName ?? '…';
+  const contact = thread.data?.contact;
+  const name = contact ? personName(contact) : fallbackName ?? '…';
   return (
     <div className="messenger__thread">
       <HStack gap={3} vAlign="center">
         <Avatar name={name} />
         <VStack gap={0.5}>
           <Heading level={2}>{name}</Heading>
-          {thread.data && <Text type="supporting">{thread.data.contact.crew_role ?? (thread.data.contact.role === 'astronaut' ? 'Astronaut' : 'Flight surgeon')}</Text>}
+          {contact && <Text type="supporting">{contact.crew_role ?? (contact.role === 'astronaut' ? 'Astronaut' : 'Flight surgeon')}</Text>}
         </VStack>
       </HStack>
       {thread.error && <Text role="alert">{thread.error}</Text>}
@@ -137,7 +139,7 @@ function ThreadView({ otherId, selfId, fallbackName, readOnly, onRead }: {
                 <ChatMessage sender={mine ? 'user' : 'assistant'} name={mine ? 'You' : name}>
                   <ChatMessageBubble name={mine ? 'You' : name}>
                     {message.body}
-                    <ChatMessageMetadata timestamp={`${new Date(message.created_at).toLocaleString()}${mine ? (message.read_at ? ' · Read' : ' · Sent') : ''}`} />
+                    {hasTimestamp(message.created_at) && <ChatMessageMetadata timestamp={`${new Date(message.created_at).toLocaleString()}${mine ? (message.read_at ? ' · Read' : ' · Sent') : ''}`} />}
                   </ChatMessageBubble>
                 </ChatMessage>
               </div>

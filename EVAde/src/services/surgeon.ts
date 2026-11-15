@@ -32,16 +32,18 @@ export interface CrewRow {
   points: number;
   streak_days: number;
   last_active: string | null;
-  status: CrewStatus;
-  emergency: Pick<Emergency, 'id' | 'status' | 'message' | 'created_at' | 'acknowledged_at' | 'acknowledged_by_name'> | null;
+  status?: CrewStatus;
+  last_band?: string | null;
+  red_indicators?: number;
+  emergency?: Pick<Emergency, 'id' | 'status' | 'message' | 'created_at' | 'acknowledged_at' | 'acknowledged_by_name'> | null;
   open_alerts: number;
-  red_alerts: number;
-  unread_messages: number;
-  vitals: Partial<Record<'heart_rate' | 'systolic_bp' | 'diastolic_bp' | 'spo2' | 'body_temp' | 'respiration_rate', VitalReading>>;
-  last_checkin: { ts: string; mood: number | null; stress: number | null; source: string; level: Level } | null;
+  red_alerts?: number;
+  unread_messages?: number;
+  vitals?: Partial<Record<'heart_rate' | 'systolic_bp' | 'diastolic_bp' | 'spo2' | 'body_temp' | 'respiration_rate', VitalReading | null>> | null;
+  last_checkin?: { ts: string; mood: number | null; stress: number | null; source: string; level: Level } | null;
   last_journal_at: string | null;
-  progress: { calories: ProgressItem; protein: ProgressItem; water_ml: ProgressItem; tasks: ProgressItem };
-  goal_progress: number | null;
+  progress?: Partial<Record<'calories' | 'protein' | 'water_ml' | 'tasks', ProgressItem | null>> | null;
+  goal_progress?: number | null;
 }
 
 export interface AstronautOption {
@@ -114,7 +116,7 @@ export interface ResolvedGoal {
   label: string;
   unit: string;
   target: number;
-  source: 'surgeon' | 'self' | 'settings' | 'default';
+  source: 'surgeon' | 'set' | 'self' | 'settings' | 'default';
   note: string | null;
   set_by_name: string | null;
   set_at: string | null;
@@ -205,7 +207,17 @@ export interface UserNotification {
   actor_name: string | null;
 }
 
-export const personName = (row: { display_name: string; full_name?: string | null }) => row.full_name || row.display_name;
+export function personName(row: { display_name: string; full_name?: string | null }) {
+  if (typeof row.full_name === 'string' && row.full_name.trim()) return row.full_name;
+  return typeof row.display_name === 'string' && row.display_name.trim() ? row.display_name : 'Name unavailable';
+}
+
+// A partially rolled-out API can omit collections or include empty records.
+export function responseRows<T extends object>(rows: T[] | null | undefined): T[] {
+  return Array.isArray(rows) ? rows.filter(row => row && typeof row === 'object' && !Array.isArray(row)) : [];
+}
+
+export const hasTimestamp = (value: unknown): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value));
 
 export const acknowledgeEmergency = (id: number) =>
   api<{ emergency: Emergency; claimed: boolean }>(`/admin/emergencies/${id}/acknowledge`, { method: 'POST', body: {} });
@@ -235,7 +247,9 @@ export function levelStatus(level: Level | string | undefined): CrewStatus {
 /** "3 min ago", "2 h ago", "Mar 3". */
 export function ago(iso: string | null | undefined, now = Date.now()) {
   if (!iso) return 'never';
-  const minutes = Math.round((now - Date.parse(iso)) / 60000);
+  const time = Date.parse(iso);
+  if (!Number.isFinite(time)) return 'unavailable';
+  const minutes = Math.round((now - time) / 60000);
   if (minutes < 1) return 'just now';
   if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.round(minutes / 60);
@@ -245,11 +259,13 @@ export function ago(iso: string | null | undefined, now = Date.now()) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-export function formatValue(value: number, decimals?: number | null) {
-  return value.toLocaleString(undefined, { maximumFractionDigits: decimals ?? 1 });
+export function formatValue(value: number | null | undefined, decimals?: number | null) {
+  if (value == null || !Number.isFinite(value)) return '—';
+  const precision = decimals != null && Number.isInteger(decimals) && decimals >= 0 && decimals <= 20 ? decimals : 1;
+  return value.toLocaleString(undefined, { maximumFractionDigits: precision });
 }
 
 /** 1-based mission day for a mission start timestamp. */
 export function missionDayOf(start: string | null | undefined, now = Date.now()) {
-  return start ? Math.max(1, Math.floor((now - Date.parse(start)) / 86400000) + 1) : null;
+  return hasTimestamp(start) ? Math.max(1, Math.floor((now - Date.parse(start)) / 86400000) + 1) : null;
 }
