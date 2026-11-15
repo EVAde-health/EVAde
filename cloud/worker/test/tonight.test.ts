@@ -174,8 +174,12 @@ describe("GET /auth/demo", () => {
     const userId = "00000000-0000-4000-8000-00000000d001";
     const today = await call("GET", `/users/${userId}/today`, cookie);
     expect(today.status).toBe(200);
-    expect((await today.json<any>()).tasks).toHaveLength(4);
-    expect(count("tasks", userId)).toBe(4);
+    const tasks = (await today.json<any>()).tasks as { task_key: string; completed_at: string | null }[];
+    expect(tasks.length).toBeGreaterThanOrEqual(14); // seeded daily templates (0011), some already completed
+    expect(tasks.some((t) => t.completed_at)).toBe(true);
+    const rows = count("tasks", userId);
+    await call("GET", `/users/${userId}/today`, cookie);
+    expect(count("tasks", userId)).toBe(rows); // idempotent
     expect((await call("POST", "/journal/messages", { ...cookie, body: {} })).status).toBe(403);
     expect((await call("GET", "/leaderboard", cookie)).status).toBe(403);
     expect((await call("GET", "/live", cookie)).status).toBe(403);
@@ -252,6 +256,18 @@ describe("DELETE /me", () => {
     expect(sql.prepare("SELECT acknowledged_by, resolved_by FROM emergencies WHERE user_id=?").get(other.uid))
       .toMatchObject({ acknowledged_by: null, resolved_by: null });
     expect((await call("GET", "/staff", { cookie: remainingLogin })).status).toBe(401);
+  });
+
+  it("removes every seeded demo account (0011) without foreign-key errors", () => {
+    const demoIds = (db.raw.prepare("SELECT user_id FROM users WHERE user_id LIKE '00000000-0000-4000-8000-00000000d%'").all() as any[]).map((r) => r.user_id);
+    expect(demoIds.length).toBeGreaterThanOrEqual(10);
+    expect(row("SELECT COUNT(*) AS n FROM conversation_messages").n).toBeGreaterThan(0);
+    for (const id of demoIds) for (const statement of DELETE_USER_SQL) db.raw.prepare(statement).run(id);
+    for (const [table, column] of [["users", "user_id"], ["observations", "user_id"], ["user_goals", "user_id"], ["conversations", "astronaut_id"],
+      ["vital_corrections", "user_id"], ["user_notifications", "user_id"], ["emergencies", "user_id"], ["tasks", "user_id"]]) {
+      expect(row(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} LIKE '00000000-0000-4000-8000-00000000d%'`).n, table).toBe(0);
+    }
+    expect(row("SELECT COUNT(*) AS n FROM conversation_messages").n).toBe(0);
   });
 
   it("the generated SQL matches every table that has a user_id column", () => {

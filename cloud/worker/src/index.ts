@@ -22,7 +22,8 @@ import {
 } from "./models";
 import { deleteUserStatements } from "./deleteUser";
 import { HttpError } from "./http";
-import { crewOverview, registerOps } from "./ops";
+import { registerOps } from "./ops";
+import { registerMessaging } from "./messages";
 import { awardDaily, materializeTasks, registerWebAppRoutes, type WebAppEnv } from "./webapp";
 export { CrewFeed } from "./live";
 
@@ -432,7 +433,9 @@ route("POST", "/auth/identities", async (req, env) => {
   if (!b.provider || !b.subject) throw new HttpError(422, "provider and subject are required");
   if (b.provider === STAFF_ACCESS_PROVIDER) throw new HttpError(403, "Staff enrollment requires the staff Access application");
   if (b.user_id) await requireUser(env, b.user_id);
-  return json(await linkIdentity(env, b, (id) => seedTasks(env, id)), 201);
+  // A service link never counts as a verified email and can't pick a role through the dev path.
+  const { email_verified: _verified, dev_role: _devRole, ...identity } = b;
+  return json(await linkIdentity(env, identity, (id) => seedTasks(env, id)), 201);
 });
 route("GET", "/auth/identities/:provider/:subject", async (_r, env, p) => {
   const row = await env.DB.prepare(
@@ -443,7 +446,6 @@ route("GET", "/auth/identities/:provider/:subject", async (_r, env, p) => {
 });
 
 // Admin panel (doctors / therapists)
-route("GET", "/admin/crew", async (_r, env) => json(await crewOverview(env.DB)));
 route("GET", "/admin/escalations", async (_r, env) => json((await env.DB.prepare("SELECT * FROM v_escalations ORDER BY ts DESC").all()).results));
 route("GET", "/admin/therapist-feed", async (_r, env, _p, url) => {
   const uid = url.searchParams.get("user_id");
@@ -1044,6 +1046,7 @@ registerWebAppRoutes<Env>({
   journal: (env, ctx, id, userId, content) => processJournal(env, ctx, id, userId, content),
 });
 registerOps(route, { json, body, now });
+registerMessaging(route, { json, body, now });
 
 // ---------- Access control ----------
 // service  = X-EVAde-Key (Python seeding, Michael's FastAPI, Ryan B's edge functions): integration routes

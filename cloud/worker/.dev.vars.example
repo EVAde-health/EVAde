@@ -15,10 +15,14 @@ USDA_API_KEY=
 # front localhost, so leave these blank locally; scripts can use EVADE_API_KEY instead.
 ACCESS_TEAM_DOMAIN=
 ACCESS_AUD=
-# Staff Access application audience. Blank disables staff sign-in. Not a secret; production value is in wrangler.jsonc.
+# Only used by the old /auth/access/staff link. Blank disables it.
 ACCESS_STAFF_AUD=
+# Comma-separated emails promoted to flight_surgeon at sign-in (verified emails only; the dev login on localhost also honors it).
+FLIGHT_SURGEON_EMAILS=
 
 # "true" enables GET /auth/demo (the seeded fake astronaut). Never a real user.
 DEMO_LOGIN=true
-# "true" shows a loopback-only test login. Keep false except on localhost.
+# "true" (loopback hosts only) makes /auth/access open a local stand-in for the Cloudflare Access page:
+# sign in or sign up with a passkey or an on-screen email code. The D1 role decides astronaut vs flight surgeon.
+# Seeded demo accounts (migration 0011): vega@demo.evade.local (astronaut), ortiz@demo.evade.local, okafor@demo.evade.local (surgeons).
 DEV_LOGIN=false
