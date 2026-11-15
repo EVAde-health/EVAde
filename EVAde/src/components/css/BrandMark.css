@@ -1,0 +1,16 @@
+.brand-mark {
+  display: block;
+  flex: none;
+  inline-size: var(--spacing-6);
+  block-size: var(--spacing-6);
+}
+
+.brand-mark--sm {
+  inline-size: var(--spacing-5);
+  block-size: var(--spacing-5);
+}
+
+.brand-mark--lg {
+  inline-size: var(--spacing-9);
+  block-size: var(--spacing-9);
+}

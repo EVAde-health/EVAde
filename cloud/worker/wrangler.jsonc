@@ -1,0 +1,66 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "evade-api",
+  "main": "src/index.ts",
+  "services": [{ "binding": "MODELS", "service": "evade-gateway" }],
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true, "redact_query_string": true },
+  // Public API address on Daniel's domain (evade.health must be a zone in the EVAde Cloudflare account)
+  "routes": [{ "pattern": "api.evade.health", "custom_domain": true }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "evade-db",
+      "database_id": "7f59200b-d17f-44d8-af6d-a8e51e137d2c",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Workers AI (journal analysis, Whisper voice-to-text, daily briefing)
+  "ai": { "binding": "AI" },
+  // Private uploads, accessed through the authenticated media endpoints.
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "evade-media" }],
+  // Live crew feed over WebSockets
+  "durable_objects": { "bindings": [{ "name": "LIVE", "class_name": "CrewFeed" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CrewFeed"] }],
+  // Sessions + OAuth state (Workers KV)
+  "kv_namespaces": [{ "binding": "SESSIONS", "id": "784305dfc43442a78ccc2aac162e5811" }],
+  "ratelimits": [
+    { "name": "AUTH_RATE_LIMITER", "namespace_id": "11340105", "simple": { "limit": 20, "period": 60 } }
+  ],
+  // Pull NOAA space weather every 15 minutes into the space_weather table
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "vars": {
+    // Exact HTTPS origins allowed to use the browser session. Override locally for local development.
+    "ALLOWED_ORIGINS": "https://evade.health,https://www.evade.health",
+    // Michael's model API sits behind the "evade-gateway" Worker (Cloudflare Container). Preferred: the "MODELS"
+    // service binding below (no public URL). Fallback only: set MODEL_API_URL to the gateway's HTTPS URL.
+    // Until either is set, /predict/* and /models return 503.
+    "MODEL_API_URL": "",
+    // "true" enables GET /auth/demo: a 2-hour read-only session as the seeded fake astronaut Cmdr. Vega (demo).
+    // Off in production (0008 removed its login; 0011 does not re-create it). Local demo data uses the dev login instead.
+    "DEMO_LOGIN": "false",
+    // Where users land after signing in if no redirect was requested.
+    "FRONTEND_URL": "https://evade.health",
+    // Comma-separated emails promoted to flight_surgeon when they sign in with a verified email (Cloudflare Access,
+    // Google, GitHub). Promotion only; it never demotes. Otherwise the users.role column in D1 decides.
+    "FLIGHT_SURGEON_EMAILS": "",
+    // ACCESS_STAFF_AUD only serves the old /auth/access/staff link; everyone now signs in through ACCESS_AUD.
+    "ACCESS_TEAM_DOMAIN": "evade-health.cloudflareaccess.com",
+    "ACCESS_AUD": "ecbeabe1fc1a7bca3ebee00b3aef522ecd96ac431b0f9dd9b0d8ae3d06dc093b",
+    "ACCESS_STAFF_AUD": "ad5b4c4744e160df8c7f926f93e955321d1c7bb8c3e7def993cbdc413070dd5d",
+    // "true" shows a no-OAuth test login. Keep "false" in production.
+    "DEV_LOGIN": "false",
+    // Optional AI Gateway id (create one named "evade" in the dashboard for logs + caching of AI calls)
+    "AI_GATEWAY": ""
+  }
+  // Secrets (set with `npx wrangler secret put <NAME>`):
+  //   EVADE_API_KEY  server-side service key for the X-EVAde-Key header
+  //   MODEL_GATEWAY_KEY  sent as X-Gateway-Key to evade-gateway (same value as the gateway's GATEWAY_CALLER_KEY)
+  //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   Google OAuth client
+  //   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET   GitHub OAuth app
+  //   TURNSTILE_SITE_KEY, TURNSTILE_SECRET     Turnstile widget site key and private secret
+  //   USDA_API_KEY   optional USDA FoodData Central key for /foods/search (never sent to the browser)
+}

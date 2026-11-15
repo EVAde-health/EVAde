@@ -1,0 +1,93 @@
+.space-footer {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  border-block-start: 1px solid color-mix(in oklab, var(--color-text-primary) 10%, transparent);
+  background:
+    radial-gradient(ellipse 60% 50% at 50% 0%, color-mix(in oklab, var(--color-accent) 18%, transparent), transparent 70%),
+    var(--color-background-body);
+}
+
+/* Slow aurora sweep behind the thank-you. */
+.space-footer::before {
+  content: '';
+  position: absolute;
+  inset: -40% -20% auto;
+  block-size: 80%;
+  z-index: -1;
+  background: conic-gradient(from 0deg, transparent, color-mix(in oklab, var(--color-data-categorical-cyan) 18%, transparent), transparent 30%, color-mix(in oklab, var(--color-data-categorical-pink) 16%, transparent), transparent 60%);
+  filter: blur(var(--spacing-12, 3rem));
+  animation: footer-aurora 30s linear infinite;
+}
+
+.space-footer__thanks {
+  text-align: center;
+}
+
+.space-footer__badge {
+  padding: var(--spacing-2) var(--spacing-4);
+  border-radius: var(--radius-full);
+}
+
+.space-footer__title {
+  max-inline-size: 52rem;
+  text-wrap: balance;
+  letter-spacing: -0.03em;
+}
+
+.space-footer__lede {
+  max-inline-size: 42rem;
+  text-wrap: pretty;
+}
+
+.space-footer__caption {
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.space-footer__row {
+  overflow: hidden;
+  padding-block: var(--spacing-1);
+  mask-image: linear-gradient(90deg, transparent, black 18%, black 82%, transparent);
+  -webkit-mask-image: linear-gradient(90deg, transparent, black 18%, black 82%, transparent);
+}
+
+.space-footer__track {
+  inline-size: max-content;
+  padding-inline-end: var(--spacing-3);
+  animation: footer-marquee 60s linear infinite;
+}
+
+.space-footer__track--reverse {
+  animation-direction: reverse;
+  animation-duration: 70s;
+}
+
+.space-footer__chip {
+  padding: var(--spacing-2) var(--spacing-4);
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+  box-shadow: none;
+}
+
+.space-footer__meta {
+  inline-size: 100%;
+}
+
+.space-footer__link {
+  color: var(--color-accent);
+  text-underline-offset: 0.2em;
+}
+
+@keyframes footer-marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes footer-aurora {
+  to {
+    rotate: 360deg;
+  }
+}

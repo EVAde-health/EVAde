@@ -1,0 +1,8 @@
+.cardio-panel__strip {
+  padding: var(--spacing-3);
+  border-radius: var(--radius-element);
+  background:
+    linear-gradient(var(--color-border) 1px, transparent 1px) 0 0 / 100% var(--spacing-3),
+    linear-gradient(90deg, var(--color-border) 1px, transparent 1px) 0 0 / var(--spacing-3) 100%,
+    var(--color-background-muted);
+}

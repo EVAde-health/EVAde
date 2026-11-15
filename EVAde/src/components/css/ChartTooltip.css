@@ -1,0 +1,12 @@
+.chart-tooltip {
+  border-radius: var(--radius-element);
+  min-inline-size: 9rem;
+  pointer-events: none;
+}
+
+.chart-tooltip__key {
+  inline-size: var(--spacing-2);
+  block-size: var(--spacing-2);
+  border-radius: var(--radius-full);
+  flex: none;
+}

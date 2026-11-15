@@ -1,0 +1,11 @@
+# Staging area for deploy/deploy.mjs (build output + Worker checkout)
+.deploy/
+.env
+data/
+# The web app keeps source code in src/data/; only the voice agent's local data/ is ignored.
+!EVAde/src/data/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/

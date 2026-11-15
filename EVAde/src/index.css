@@ -1,0 +1,260 @@
+/* Global EVAde styles: page ground, motion primitives, shared effects. */
+
+html,
+body,
+#root {
+  min-block-size: 100%;
+}
+
+body {
+  background: var(--color-background-body);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--color-accent) 35%, transparent);
+}
+
+:focus-visible {
+  outline-color: var(--focus-outline-color);
+}
+
+/* Route changes cross-fade with a slight lift. */
+::view-transition-old(root) {
+  animation: vt-fade-out 180ms var(--ease-exit, ease-in) both;
+}
+
+::view-transition-new(root) {
+  animation: vt-fade-in 320ms var(--ease-entrance, ease-out) both;
+}
+
+/* Theme switches use a circular reveal instead (see useColorMode). */
+:root[data-theme-switch] ::view-transition-old(root),
+:root[data-theme-switch] ::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+@keyframes vt-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes vt-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--spacing-2));
+  }
+}
+
+/* Frosted panel used over animated backdrops. */
+.glass {
+  background: color-mix(in oklab, var(--color-background-surface) 62%, transparent);
+  border: 1px solid color-mix(in oklab, var(--color-text-primary) 10%, transparent);
+  backdrop-filter: blur(var(--spacing-4)) saturate(1.4);
+  -webkit-backdrop-filter: blur(var(--spacing-4)) saturate(1.4);
+  box-shadow: var(--shadow-med);
+}
+
+/* Animated aurora gradient text. */
+.text-gradient {
+  background: linear-gradient(
+    100deg,
+    var(--color-data-categorical-cyan),
+    var(--color-accent),
+    var(--color-data-categorical-pink),
+    var(--color-data-categorical-cyan)
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: gradient-pan 9s linear infinite;
+}
+
+@keyframes gradient-pan {
+  to {
+    background-position: 300% 0;
+  }
+}
+
+/* Staggered entrance for cards and rows; set --i per child. */
+.rise-in {
+  animation: rise-in 600ms var(--ease-entrance, ease-out) both;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--spacing-4)) scale(0.98);
+  }
+}
+
+/* Scroll-driven reveal where supported (CSS animation-timeline). */
+@supports (animation-timeline: view()) {
+  .reveal-on-scroll {
+    animation: rise-in linear both;
+    animation-timeline: view();
+    animation-range: entry 0% cover 30%;
+  }
+}
+
+/* Lift-on-hover for interactive tiles. */
+.hover-lift {
+  transition:
+    transform var(--duration-medium, 250ms) var(--ease-standard, ease),
+    box-shadow var(--duration-medium, 250ms) var(--ease-standard, ease);
+}
+
+.hover-lift:hover {
+  transform: translateY(calc(var(--spacing-1) * -1));
+  box-shadow: var(--shadow-high);
+}
+
+/* Shared content gutter for app pages. */
+.page {
+  inline-size: 100%;
+  max-inline-size: 90rem;
+  margin-inline: auto;
+}
+
+/* In-app "Reduce motion" (MotionToggle) calms everything down. */
+:root[data-motion='reduced'] *,
+:root[data-motion='reduced'] *::before,
+:root[data-motion='reduced'] *::after,
+:root[data-motion='reduced'] ::backdrop {
+  animation-duration: 1ms !important;
+  animation-iteration-count: 1 !important;
+  animation-delay: 0ms !important;
+  transition-duration: 1ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* ---------- Pop-ups: dialogs, lightbox, popovers, tooltips ---------- */
+
+/* Dialogs bloom in from a soft blur and settle with a slight overshoot. */
+dialog {
+  transition:
+    opacity 320ms var(--ease-entrance, ease-out),
+    scale 420ms cubic-bezier(0.2, 0.9, 0.25, 1.08),
+    translate 420ms cubic-bezier(0.2, 0.9, 0.25, 1.08),
+    filter 320ms ease-out,
+    overlay 420ms allow-discrete,
+    display 420ms allow-discrete;
+}
+
+dialog:not([open]) {
+  opacity: 0;
+  scale: 0.94;
+  translate: 0 var(--spacing-4);
+  filter: blur(var(--spacing-2));
+}
+
+@starting-style {
+  dialog[open] {
+    opacity: 0;
+    scale: 0.9;
+    translate: 0 var(--spacing-6);
+    filter: blur(var(--spacing-3));
+  }
+}
+
+dialog.astryx-dialog[data-variant='standard'] {
+  background: color-mix(in oklab, var(--color-background-surface) 82%, transparent);
+  backdrop-filter: blur(var(--spacing-6)) saturate(1.5);
+  -webkit-backdrop-filter: blur(var(--spacing-6)) saturate(1.5);
+  border: 1px solid color-mix(in oklab, var(--color-text-primary) 12%, transparent);
+  box-shadow: var(--shadow-high), 0 0 0 1px color-mix(in oklab, var(--color-accent) 12%, transparent);
+}
+
+/* Backdrop fades and frosts the page behind any modal. */
+dialog::backdrop {
+  background: color-mix(in oklab, var(--color-background-body) 45%, transparent);
+  backdrop-filter: blur(var(--spacing-2)) saturate(1.2);
+  -webkit-backdrop-filter: blur(var(--spacing-2)) saturate(1.2);
+  transition:
+    opacity 360ms ease-out,
+    overlay 420ms allow-discrete,
+    display 420ms allow-discrete;
+}
+
+dialog:not([open])::backdrop {
+  opacity: 0;
+}
+
+@starting-style {
+  dialog[open]::backdrop {
+    opacity: 0;
+  }
+}
+
+/* Popovers, menus and tooltips (top-layer popovers) scale from their anchor. */
+[popover] {
+  transition:
+    opacity 200ms var(--ease-entrance, ease-out),
+    scale 260ms cubic-bezier(0.2, 0.9, 0.3, 1.15),
+    filter 200ms ease-out,
+    overlay 260ms allow-discrete,
+    display 260ms allow-discrete;
+}
+
+[popover]:not(:popover-open) {
+  opacity: 0;
+  scale: 0.96;
+}
+
+@starting-style {
+  [popover]:popover-open {
+    opacity: 0;
+    scale: 0.92;
+    filter: blur(var(--spacing-1));
+  }
+}
+
+/* ---------- Cursor hygiene ---------- */
+
+/* Decorative text and boxes show the arrow, never a stray I-beam. */
+body {
+  cursor: default;
+}
+
+input,
+textarea,
+[contenteditable='true'],
+[role='textbox'] {
+  cursor: text;
+}
+
+[aria-hidden='true'] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ---------- More glass ---------- */
+
+/* Shimmering sheen that sweeps across glass surfaces on hover. */
+.glass-sheen {
+  position: relative;
+  isolation: isolate;
+}
+
+.glass-sheen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 35%, color-mix(in oklab, white 14%, transparent) 50%, transparent 65%);
+  background-size: 250% 100%;
+  background-position: 120% 0;
+  transition: background-position 900ms var(--ease-standard, ease);
+}
+
+.glass-sheen:hover::after {
+  background-position: -20% 0;
+}

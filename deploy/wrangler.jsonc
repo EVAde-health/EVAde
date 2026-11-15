@@ -1,0 +1,71 @@
+{
+  // Deploy config for evade.health (Cloudflare Worker "evade", account "EVAde").
+  // Used by deploy/deploy.mjs. Do not run directly: it expects the build output
+  // and the voice Worker source that deploy.mjs stages under ../.deploy/.
+  //
+  // Combines two branches into one Worker:
+  //   - features/web-app            -> React SPA (EVAde/dist) served at /, /dashboard, /journal, ...
+  //   - feature/twilio-grok-voice-agent -> Worker code (worker/src)
+  // Mirrors worker/wrangler.jsonc on the voice branch; the only differences are
+  // the paths, SPA fallback, and "/" being served from assets instead of the Worker.
+  "name": "evade",
+  "account_id": "2e5df567f3580c5af313ebb51e1920fa",
+  "main": "../.deploy/worker-src/worker/src/index.ts",
+  "compatibility_date": "2026-11-14",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "workers_dev": false,
+  "routes": [{ "pattern": "evade.health", "custom_domain": true }],
+
+  // ../.deploy/site = EVAde/dist (web app). The old /voice/ page is gone; /voice/ falls back to the SPA.
+  // Unknown navigation paths fall back to the SPA's index.html (react-router BrowserRouter).
+  // API, Twilio and WebSocket paths always hit the Worker first. Keep these /voice/* entries:
+  // /voice/incoming + /voice/stream are the phone line, /voice/alert and /voice/browser are API aliases.
+  "assets": {
+    "directory": "../.deploy/site",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api", "/api/*", "/health", "/voice/incoming", "/voice/stream", "/voice/alert", "/voice/browser", "/voice/api/*"]
+  },
+
+  "durable_objects": {
+    "bindings": [{ "name": "VOICE_SESSION", "class_name": "VoiceSession" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["VoiceSession"] }],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "evade",
+      "database_id": "85855cd2-6a51-48b7-8142-6351ccede1d1",
+      "migrations_dir": "../.deploy/worker-src/worker/migrations"
+    }
+  ],
+
+  "vars": {
+    "PUBLIC_BASE_URL": "https://evade.health",
+    "TWILIO_ACCOUNT_SID": "ACaf8ad78c4d47f613d6fb9c618743dbf8",
+    "TWILIO_PHONE_NUMBER": "+19086631285",
+    "XAI_MODEL": "grok-voice-latest",
+    "XAI_VOICE": "atlas",
+    "EVADE_COMMS_MODE": "online",
+    "TWILIO_VALIDATE_SIGNATURE": "true",
+    "CORS_ALLOW_ORIGINS": "https://evade.health,https://www.evade.health",
+    "DEMO_OPEN": "true",
+    "MAX_SESSION_SECONDS": "300",
+    "MAX_CONCURRENT_SESSIONS": "4"
+  },
+
+  // Secrets already live on the Worker and survive deploys. Set/rotate with
+  // `npx wrangler secret put <NAME> -c deploy/wrangler.jsonc`. Never commit values.
+  "secrets": {
+    "required": ["XAI_API_KEY", "TWILIO_AUTH_TOKEN", "EVADE_BROWSER_TOKEN", "EVADE_ALERT_TOKEN"]
+  },
+
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "traces": { "enabled": true }
+  }
+}

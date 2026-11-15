@@ -1,0 +1,5 @@
+.sleep-panel__swatch {
+  inline-size: var(--spacing-3);
+  block-size: var(--spacing-3);
+  border-radius: var(--radius-inner);
+}

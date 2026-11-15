@@ -1,0 +1,23 @@
+{
+  // evade-gateway: runs Michael's FastAPI model API in ONE Cloudflare Container.
+  // Only the evade-api Worker calls it, through a service binding (no public URL: workers_dev false, no routes).
+  // Follows EVAde-backend-models/docs/cloudflare-containers-setup.md. Requires Workers Paid and Docker running for deploy.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "evade-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-11-17",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "containers": [
+    {
+      "class_name": "EvadeApi",
+      "scheduling_policy": "durable_object",
+      // Path to Michael's repo checkout (branch api-models-storage) with Dockerfile.cloudflare copied into it.
+      "images": { "api": { "dockerfile": "../../../EVAde-backend-models/Dockerfile.cloudflare" } }
+    }
+  ],
+  "durable_objects": { "bindings": [{ "name": "EVADE_API", "class_name": "EvadeApi" }] },
+  "exports": { "EvadeApi": { "type": "durable-object", "storage": "sqlite" } },
+  "ratelimits": [{ "name": "LIMITER", "namespace_id": "1001", "simple": { "limit": 120, "period": 60 } }]
+}
