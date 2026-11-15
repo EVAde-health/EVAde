@@ -64,9 +64,12 @@ const sha256 = async (s: string) =>
   btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
-// Fake Workers AI: the parser prompt gets `extraction`, the journal analysis prompt gets `analysis`.
+// Fake Workers AI: the parser prompt gets `extraction`, the journal analysis prompt gets `analysis`, and the EVA
+// companion (the text version of the voice agent) gets `companion` as plain text.
 let extraction: any;
 let analysis: any;
+let companion: string;
+let companionInputs: any[];
 let aiFails: boolean;
 let aiCalls: number;
 const AI = {
@@ -74,16 +77,23 @@ const AI = {
     aiCalls++;
     if (aiFails) throw new Error("AI down");
     const system = String(input?.messages?.[0]?.content ?? "");
+    if (system.startsWith("# Role\nYou are EVAde")) { companionInputs.push(input); return { response: companion }; }
     return { response: system.startsWith("You extract health data") ? extraction : analysis };
   },
 };
 
 let env: any;
-const ctx = { waitUntil: () => {}, passThroughOnException: () => {} } as unknown as ExecutionContext;
+// Background work (journal analysis + parser after a chat reply) is collected so tests can wait for it.
+let pending: Promise<unknown>[] = [];
+const settle = async () => { while (pending.length) await Promise.allSettled(pending.splice(0)); };
+const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p), passThroughOnException: () => {} } as unknown as ExecutionContext;
 
 beforeEach(async () => {
   extraction = {};
   analysis = { summary: "A calm day.", sentiment: 0.4, mood_label: "calm", concern_level: "none", needs_human_review: false, themes: ["sleep"] };
+  companion = "Thanks for telling me. How many hours did you sleep last night?";
+  companionInputs = [];
+  pending = [];
   aiFails = false;
   aiCalls = 0;
   env = { DB: fakeD1(), SESSIONS: fakeKV(), AI, AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) }, ALLOWED_ORIGINS: FRONTEND };
@@ -209,7 +219,7 @@ describe("POST /journal/voice-sessions", () => {
     expect(first.status).toBe(201);
     expect(first.data.duplicate).toBe(false);
     expect(first.data.messages).toHaveLength(4);
-    expect(first.data.reply.content).toContain("A calm day.");
+    expect(first.data.reply.content).toBe("Your voice check-in is saved to your journal."); // no summary shown
     expect(first.data.extracted.ai).toBe(true);
 
     const [entry] = rows("SELECT * FROM journal_entries WHERE user_id=?", ASTRONAUT);
@@ -243,7 +253,7 @@ describe("POST /journal/voice-sessions", () => {
     aiFails = true;
     const res = await call("POST", "/journal/voice-sessions", { body: { session_id: "sess-ai-down", turns: TURNS, checkin: CHECKIN } });
     expect(res.status).toBe(201);
-    expect(res.data.reply.content).toBe("Saved to your journal.");
+    expect(res.data.reply.content).toBe("Your voice check-in is saved to your journal.");
     expect(res.data.extracted.ai).toBe(false);
     expect(count("journal_entries")).toBe(1);
     expect(rows("SELECT stress, mood FROM self_reports WHERE user_id=?", ASTRONAUT)).toEqual([{ stress: null, mood: 3 }]);
@@ -284,6 +294,7 @@ describe("typed journal entries", () => {
     const sent = await call("POST", "/journal/messages", { body: { id, content: "Completely exhausted today. Fasting glucose was 5.5 mmol." } });
     expect(sent.status).toBe(201);
     expect(Object.keys(sent.data).sort()).toEqual(["message", "reply"]); // response shape unchanged
+    await settle();
     expect(rows("SELECT client_id, fatigue, mood, source FROM self_reports WHERE user_id=?", ASTRONAUT))
       .toEqual([{ client_id: `msg:${id}:sr`, fatigue: 5, mood: null, source: "app" }]);
     expect(rows("SELECT client_id, metric, value, unit, source FROM observations WHERE user_id=?", ASTRONAUT))
@@ -309,9 +320,136 @@ describe("typed journal entries", () => {
 
   it("writes nothing extra for an entry with no stated values", async () => {
     await call("POST", "/journal/messages", { body: { id: crypto.randomUUID(), content: "Quiet day on station." } });
+    await settle();
     expect(count("self_reports")).toBe(0);
     expect(count("observations")).toBe(0);
     expect(count("journal_entries")).toBe(1);
+  });
+});
+
+// ---------- EVA companion (text version of the voice agent) ----------
+describe("EVA companion chat", () => {
+  const C = () => import("../src/companion");
+
+  it("replies conversationally from the thread history and never shows the analysis", async () => {
+    const id1 = crypto.randomUUID();
+    const first = await call("POST", "/journal/messages", { body: { id: id1, content: "Hi, ready for the check-in." } });
+    expect(first.status).toBe(201);
+    expect(first.data.reply.content).toBe(companion);
+    expect(first.data.reply.content).not.toContain("A calm day.");
+    companion = "Got it. On a scale of 1 to 5, how is your mood today?";
+    const second = await call("POST", "/journal/messages", { body: { id: crypto.randomUUID(), content: "About 7 hours." } });
+    expect(second.data.reply.content).toBe(companion);
+    // The model saw the persona and the whole conversation, alternating user / assistant, ending with the new message.
+    const input = companionInputs[1];
+    expect(input.messages[0].content).toContain("# Check-in");
+    expect(input.messages.slice(1)).toEqual([
+      { role: "user", content: "Hi, ready for the check-in." },
+      { role: "assistant", content: "Thanks for telling me. How many hours did you sleep last night?" },
+      { role: "user", content: "About 7 hours." },
+    ]);
+    const stored = rows("SELECT sender, content, model FROM journal_messages WHERE user_id=? AND sender='assistant' ORDER BY ts", ASTRONAUT);
+    expect(stored.map((m) => m.model)).toEqual(["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"]);
+    // The analyzer still ran behind the scenes, on each message.
+    await settle();
+    expect(rows("SELECT ai_summary, mood_label FROM journal_entries WHERE user_id=? ORDER BY id", ASTRONAUT))
+      .toEqual([{ ai_summary: "A calm day.", mood_label: "calm" }, { ai_summary: "A calm day.", mood_label: "calm" }]);
+  });
+
+  it("parses a short answer with the companion's question, once, and never re-parses earlier messages", async () => {
+    extraction = { mood: { value: 4, scale_max: 5, quote: "mood is a 4" } };
+    const id1 = crypto.randomUUID();
+    await call("POST", "/journal/messages", { body: { id: id1, content: "Morning. My mood is a 4." } });
+    await settle();
+    // The model repeats the earlier mood and adds the sleep answer: only the new message's value is kept.
+    extraction = { mood: { value: 4, scale_max: 5, quote: "mood is a 4" }, sleep_duration: { value: 7, unit: "hours", quote: "About 7" } };
+    const id2 = crypto.randomUUID();
+    await call("POST", "/journal/messages", { body: { id: id2, content: "About 7" } });
+    await settle();
+    expect(rows("SELECT client_id, metric, value, source, device FROM observations WHERE user_id=? ORDER BY client_id", ASTRONAUT).sort((a, b) => a.client_id.localeCompare(b.client_id))).toEqual([
+      { client_id: `msg:${id1}:mood`, metric: "mood", value: 4, source: "model", device: "journal_parser" },
+      { client_id: `msg:${id2}:sleep_hours`, metric: "sleep_hours", value: 7, source: "model", device: "journal_parser" },
+    ].sort((a, b) => a.client_id.localeCompare(b.client_id)));
+    expect(count("self_reports")).toBe(2);
+
+    // Re-sending the same message (a retry) returns the stored reply and writes nothing.
+    const before = { m: count("journal_messages"), s: count("self_reports"), o: count("observations"), e: count("journal_entries") };
+    const again = await call("POST", "/journal/messages", { body: { id: id2, content: "About 7" } });
+    await settle();
+    expect(again.data.duplicate).toBe(true);
+    expect(again.data.reply.content).toBe(companion);
+    expect({ m: count("journal_messages"), s: count("self_reports"), o: count("observations"), e: count("journal_entries") }).toEqual(before);
+  });
+
+  it("saves the message with a fallback reply when the model is down", async () => {
+    aiFails = true;
+    const res = await call("POST", "/journal/messages", { body: { id: crypto.randomUUID(), content: "Long day." } });
+    await settle();
+    expect(res.status).toBe(201);
+    expect(res.data.reply.content).toBe((await C()).FALLBACK_REPLY);
+    expect(rows("SELECT model FROM journal_messages WHERE sender='assistant'")).toEqual([{ model: "rules" }]);
+    expect(count("journal_entries")).toBe(1);
+  });
+
+  it("always adds the support line and alerts staff for safety language", async () => {
+    analysis = { ...analysis, concern_level: "low", needs_human_review: false };
+    companion = "I'm really glad you told me.";
+    const res = await call("POST", "/journal/messages", { body: { id: crypto.randomUUID(), content: "Some days I don't want to wake up." } });
+    await settle();
+    expect(res.data.reply.content).toContain((await C()).SUPPORT_LINE);
+    expect(rows("SELECT level, metric, escalate FROM alerts WHERE user_id=?", ASTRONAUT)).toEqual([{ level: "red", metric: "journal", escalate: 1 }]);
+  });
+
+  it("keeps the voice agent's safety rules word for word", async () => {
+    const voice = readFileSync(join(__dirname, "..", "..", "..", "worker", "src", "agent.ts"), "utf8").replace(/\r\n/g, "\n");
+    const section = (t: string) => t.slice(t.indexOf("# Safety"), t.indexOf("\n\n", t.indexOf("# Safety")) === -1 ? undefined : t.indexOf("\n\n", t.indexOf("# Safety"))).replace(/`;[\s\S]*$/, "").trim();
+    expect(section((await C()).COMPANION_INSTRUCTIONS)).toBe(section(voice));
+    expect((await C()).COMPANION_INSTRUCTIONS).toContain("Ask how many hours they slept.");
+  });
+
+  it("reads a bare rating that answers the companion's scale question", () => {
+    const q = "EVAde: Now, how is your mood, on a scale from 1, which is very low, to 5, which is very good?";
+    expect(P.answeredRatings(`${q}\nMe: I'd say a 3. Bit flat today.`)).toEqual({ mood: 3 });
+    expect(P.answeredRatings(`${q}\nMe: 4`)).toEqual({ mood: 4 });
+    expect(P.answeredRatings("EVAde: How stressed are you from 1 to 10?\nMe: Maybe a 7.")).toEqual({ stress: 4 });
+    expect(P.answeredRatings(`${q}\nMe: 3 hours of sleep, honestly.`)).toEqual({});
+    expect(P.answeredRatings("EVAde: How is your mood today?\nMe: 3")).toEqual({}); // no scale in the question
+    expect(P.answeredRatings("EVAde: Rate your mood and stress from 1 to 5.\nMe: 3")).toEqual({}); // which one?
+    expect(P.answeredRatings(`Me: mood?\n${q}`)).toEqual({});
+  });
+
+  it("keeps stated symptoms and drops denied or unquoted ones", () => {
+    const text = "EVAde: Any symptoms, like a headache or nausea?\nMe: A bit of a headache since this morning, no nausea.";
+    const raw = { symptoms: [
+      { name: "headache", quote: "A bit of a headache since this morning" },
+      { name: "nausea", quote: "no nausea" },
+      { name: "rash", quote: "a rash" },
+      { name: "headache", quote: "headache" },
+    ] };
+    expect(P.validateAi(raw, text).symptoms).toEqual(["headache"]);
+  });
+
+  it("writes chat symptoms and a bare mood answer to the self-report", async () => {
+    companion = "On a scale from 1 to 5, how is your mood? And any symptoms, like a headache?";
+    await call("POST", "/journal/messages", { body: { id: crypto.randomUUID(), content: "Ready for the check-in." } });
+    await settle();
+    extraction = { symptoms: [{ name: "headache", quote: "headache since this morning" }] };
+    const id = crypto.randomUUID();
+    await call("POST", "/journal/messages", { body: { id, content: "A 3. And a headache since this morning." } });
+    await settle();
+    const [sr] = rows("SELECT client_id, mood, symptoms, source FROM self_reports WHERE user_id=?", ASTRONAUT);
+    expect(sr).toEqual({ client_id: `msg:${id}:sr`, mood: 3, symptoms: JSON.stringify(["headache"]), source: "app" });
+  });
+
+  it("drops old summary replies and starts the thread with the user", async () => {
+    const { companionMessages } = await C();
+    const m = companionMessages([
+      { sender: "assistant", content: "Saved to your journal." },
+      { sender: "user", content: "hello" },
+      { sender: "assistant", content: "The astronaut had a calm day.\n\nMood: calm" },
+      { sender: "user", content: "slept 6 hours" },
+    ]);
+    expect(m.slice(1)).toEqual([{ role: "user", content: "hello\nslept 6 hours" }]);
   });
 });
 

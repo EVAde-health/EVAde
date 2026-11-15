@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("cloudflare:workers", () => ({ DurableObject: class {} }));
 const { default: worker } = await import("../src/index");
-const { streakFrom, trackingDay, weekStart, settingsPatch, journalReply } = await import("../src/webapp");
+const { streakFrom, trackingDay, weekStart, settingsPatch, voiceSavedReply } = await import("../src/webapp");
 
 const API = "https://api.evade.health";
 const FRONTEND = "https://evade.health";
@@ -117,10 +117,11 @@ describe("pure helpers", () => {
     expect(() => settingsPatch({ is_admin: true })).toThrow();
     expect(settingsPatch({ water_goal_ml: 3000.4, reduced_motion: true })).toEqual([["water_goal_ml", 3000], ["reduced_motion", 1]]);
   });
-  it("never shows concern scores in the journal reply", () => {
-    const reply = journalReply({ summary: "A hard day.", mood_label: "low", needs_human_review: true });
+  it("never shows a summary or concern scores after a voice check-in", () => {
+    const reply = voiceSavedReply(true);
     expect(reply).toContain("crew support team");
-    expect(reply).not.toMatch(/concern|high|score/i);
+    expect(reply).not.toMatch(/concern|high|score|mood/i);
+    expect(voiceSavedReply(false)).toBe("Your voice check-in is saved to your journal.");
   });
 });
 

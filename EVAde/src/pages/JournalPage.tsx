@@ -81,7 +81,7 @@ function TypingDots() {
   );
 }
 
-// Private journal saved to D1, with mood check-in and the companion's replies.
+// Private journal saved to D1, with mood check-in and the EVA companion (the text version of the voice agent).
 export default function JournalPage() {
   const [messages, setMessages] = useState<JournalMessage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -199,7 +199,7 @@ export default function JournalPage() {
       <PageHeader
         eyebrow="Private journal"
         title="How are you, really?"
-        description="Entries are saved privately to your EVAde account. Your companion replies with a short summary."
+        description="Entries are saved privately to your EVAde account. Chat with your companion by text or voice: it runs the same daily check-in as the voice agent."
         actions={<Token label="AI companion · preview" color="purple" icon={<Icon icon={SparklesIcon} size="sm" />} />}
       />
       {historyError && <Text role="alert">Journal history could not load.</Text>}

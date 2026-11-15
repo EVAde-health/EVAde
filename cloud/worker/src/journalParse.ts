@@ -184,6 +184,30 @@ export function explicitRatings(crewText: string): Partial<Record<Rating, number
   return out;
 }
 
+/**
+ * A bare number answering EVAde's rating question, e.g. EVAde: "...your mood, on a scale from 1 to 5?" then
+ * "I'd say a 3". Only when the question names exactly one rating and a 1-5 / 1-10 scale. Real chat output showed the
+ * model sometimes skips these short answers.
+ */
+export function answeredRatings(text: string): Partial<Record<Rating, number>> {
+  const lines = text.split(/\r?\n/);
+  const out: Partial<Record<Rating, number>> = {};
+  for (let i = 1; i < lines.length; i++) {
+    const q = lines[i - 1];
+    if (!/^\s*(evade|assistant|agent)\s*:/i.test(q) || /^\s*(evade|assistant|agent)\s*:/i.test(lines[i])) continue;
+    const asked = ([["mood", /\bmood\b/i], ["stress", /\bstress\w*/i], ["fatigue", /\b(fatigue|tired\w*|energy)\b/i], ["sleep_quality", /\bsleep quality\b/i]] as const)
+      .filter(([, re]) => re.test(q)).map(([k]) => k as Rating);
+    const scale = q.match(/\b1\b[^?.!]{0,40}?\b(5|10)\b/);
+    if (asked.length !== 1 || !scale) continue;
+    const a = lines[i].replace(/^\s*(crew|me|user|astronaut)\s*:\s*/i, "")
+      .match(/^\s*(?:(?:i['’]?d say|i would say|i['’]?d go with|maybe|probably|about|around|honestly|it['’]?s|i['’]?m|mood is|feeling)\s*,?\s*)*(?:a|an)?\s*(\d{1,2})(?:\s*(?:\/|out of)\s*(5|10))?\b(?![.,]\d)(?!\s*(?:hours?|hrs?|h\b|minutes?|mins?|%|percent|degrees?|bpm|beats|mg|mmol|over\b))/i);
+    if (!a) continue;
+    const v = toRating(Number(a[1]), Number(a[2] ?? scale[1]));
+    if (v !== null && out[asked[0]] === undefined) out[asked[0]] = v;
+  }
+  return out;
+}
+
 /** The crew member's own words: drops lines spoken by the EVAde agent / assistant. */
 export function crewWords(text: string) {
   return text
@@ -232,6 +256,7 @@ const SCHEMA = {
     blood_sugar: quoted({ value: { type: "number" }, unit: { type: "string", enum: ["mg/dL", "mmol/L", "unknown"] } }),
     heart_rate: quoted({ value: { type: "number" } }),
     spo2: quoted({ value: { type: "number" } }),
+    symptoms: { type: "array", items: quoted({ name: { type: "string" } }) },
   },
 };
 
@@ -248,7 +273,9 @@ For every field, "quote" must be the astronaut's exact words (copied verbatim, a
 - blood_pressure: systolic and diastolic as stated (for example "120 over 80").
 - temperature: body temperature with unit C or F if stated, else unknown.
 - blood_sugar: blood glucose with unit mg/dL or mmol/L if stated, else unknown.
-- heart_rate: beats per minute. spo2: blood oxygen percent.`;
+- heart_rate: beats per minute. spo2: blood oxygen percent.
+- symptoms: physical symptoms the astronaut says they have now (for example headache, nausea, congestion, pain, rash),
+  each with name (1-3 lowercase words) and quote. Leave out symptoms they deny ("no headache") or only ask about.`;
 
 const runOpts = (env: AiEnv) => (env.AI_GATEWAY ? { gateway: { id: env.AI_GATEWAY } } : undefined);
 
@@ -259,7 +286,8 @@ const runOpts = (env: AiEnv) => (env.AI_GATEWAY ? { gateway: { id: env.AI_GATEWA
 export function validateAi(out: any, text: string) {
   const ratings: Partial<Record<Rating, number>> = {};
   const values: Partial<Record<ValueMetric, number>> = {};
-  if (!out || typeof out !== "object") return { ratings, values };
+  const symptoms: string[] = [];
+  if (!out || typeof out !== "object") return { ratings, values, symptoms };
   const crewText = crewWords(text);
   const field = (k: string) => (out[k] && typeof out[k] === "object" ? out[k] : null);
   const about = (f: any, metric: Rating | ValueMetric) => {
@@ -301,7 +329,14 @@ export function validateAi(out: any, text: string) {
     const v = f ? inRange(finite(f.value), RANGES[metric]) : null;
     if (v !== null && supported(crewText, f.quote, v) && about(f, metric)) values[metric] = Math.round(v);
   }
-  return { ratings, values };
+  // Symptoms: the quote must be the crew member's words and must not deny it ("no headache", "not nauseous").
+  for (const f of Array.isArray(out.symptoms) ? out.symptoms.slice(0, 10) : []) {
+    const name = typeof f?.name === "string" ? f.name.trim().toLowerCase().replace(/\s+/g, " ") : "";
+    if (!name || name.length > 40 || !/^[a-z][a-z -]*$/.test(name) || symptoms.includes(name)) continue;
+    if (!supported(crewText, f.quote) || /\b(no|not|none|never|without|nothing|denies?)\b|n't\b/i.test(String(f.quote))) continue;
+    if (symptoms.length < 5) symptoms.push(name);
+  }
+  return { ratings, values, symptoms };
 }
 
 /** Runs Workers AI with a strict JSON schema; null when AI is unavailable or every model failed. */
@@ -334,13 +369,15 @@ export async function extractHealth(env: AiEnv, text: string, checkin?: CheckinI
     ratings: {}, values: {}, origin: {}, symptoms: c.symptoms, note: c.note, checkin_level: c.level,
     reasons: c.reasons, actions: c.actions, model: null, ai_ok: false,
   };
-  let ai: ReturnType<typeof validateAi> = { ratings: {}, values: {} };
+  let ai: ReturnType<typeof validateAi> = { ratings: {}, values: {}, symptoms: [] };
   try {
     const r = await aiExtract(env, text);
     if (r) {
       ai = validateAi(r.out, text);
       // Explicit "X out of 5 / X/10" ratings the model skipped (seen with real output: "Stress is a 4 out of 5").
       for (const [k, v] of Object.entries(explicitRatings(crewWords(text)))) if (ai.ratings[k as Rating] === undefined) ai.ratings[k as Rating] = v;
+      // A bare number answering EVAde's rating question (seen in real chat output: "I'd say a 3" to a mood question).
+      for (const [k, v] of Object.entries(answeredRatings(text))) if (ai.ratings[k as Rating] === undefined) ai.ratings[k as Rating] = v;
       result.model = r.model;
       result.ai_ok = true;
     }
@@ -356,6 +393,7 @@ export async function extractHealth(env: AiEnv, text: string, checkin?: CheckinI
   }
   for (const [k, v] of Object.entries(c.ratings)) { result.ratings[k as Rating] = v; result.origin[k as Rating] = "checkin"; }
   for (const [k, v] of Object.entries(c.values)) { result.values[k as ValueMetric] = v; result.origin[k as ValueMetric] = "checkin"; }
+  if (!result.symptoms.length && ai.symptoms.length) result.symptoms = ai.symptoms; // the check-in's list wins when present
   return result;
 }
 

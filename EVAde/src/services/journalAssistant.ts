@@ -24,13 +24,14 @@ export async function loadJournal(userId: string, signal: AbortSignal) {
   return (await fetchJournalMessages(userId, { signal })).map(toJournalMessage);
 }
 
-// Saves an entry; the Worker analyses it and stores the assistant reply.
+// Saves a message and returns the EVA companion's conversational reply. The Worker analyses and parses the
+// message into the health record separately, behind the scenes.
 export async function getAssistantReply(entry: JournalMessage, signal: AbortSignal): Promise<JournalMessage | null> {
   const { reply } = await postJournalMessage(entry.id, entry.text, { signal });
   return reply ? toJournalMessage(reply) : null;
 }
 
-// Saves a finished voice session once; returns its turns and the companion's reply as chat messages.
+// Saves a finished voice session once; returns its turns and the saved acknowledgement as chat messages.
 export async function saveVoiceSession(
   sessionId: string,
   turns: VoiceSessionTurn[],

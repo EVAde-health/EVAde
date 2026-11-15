@@ -23,7 +23,7 @@ import {
 import { deleteUserStatements } from "./deleteUser";
 import { HttpError } from "./http";
 import { crewOverview, registerOps } from "./ops";
-import { awardDaily, journalReply, materializeTasks, registerWebAppRoutes, type WebAppEnv } from "./webapp";
+import { awardDaily, voiceSavedReply, materializeTasks, registerWebAppRoutes, type WebAppEnv } from "./webapp";
 import { extractHealth, rowsFor, stableId, type CheckinIn, type Extraction } from "./journalParse";
 export { CrewFeed } from "./live";
 
@@ -327,6 +327,7 @@ const isStaff = (who: Principal) => who.kind === "service" || STAFF_ROLES.has(wh
 interface JournalProcessOpts {
   checkin?: CheckinIn | null; // the voice agent's structured check-in, when the entry is a voice session
   callRef?: string | null; // voice session id, stored in self_reports.call_ref
+  parseText?: string; // what the parser reads, when it differs from the entry (a chat message plus the question it answers)
 }
 
 async function processJournal(env: Env, ctx: ExecutionContext, id: number, userId: string, content: string, opts: JournalProcessOpts = {}) {
@@ -341,7 +342,7 @@ async function processJournal(env: Env, ctx: ExecutionContext, id: number, userI
 async function analyzeAndExtract(env: Env, ctx: ExecutionContext, id: number, userId: string, content: string, opts: JournalProcessOpts = {}) {
   const [a, extraction] = await Promise.all([
     analyzeJournal(env, content),
-    extractHealth(env, content, opts.checkin).catch((e) => { console.error("journal extraction", e instanceof Error ? e.name : "Error"); return null; }),
+    extractHealth(env, opts.parseText ?? content, opts.checkin).catch((e) => { console.error("journal extraction", e instanceof Error ? e.name : "Error"); return null; }),
   ]);
   const ts = now();
   const stmts = [
@@ -721,7 +722,7 @@ route("POST", "/journal/voice-sessions", async (req, env, _p, _u, ctx, who) => {
     console.error("voice session analysis", e instanceof Error ? e.name : "Error");
   }
   const reply = {
-    id: replyId, sender: "assistant", content: journalReply(result?.analysis ?? null),
+    id: replyId, sender: "assistant", content: voiceSavedReply(!!result?.analysis.needs_human_review),
     ts: new Date(turns[turns.length - 1].ts + 1).toISOString(),
   };
   await env.DB.prepare("INSERT INTO journal_messages (id,user_id,sender,content,ts,entry_id,model) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING")
@@ -1188,7 +1189,7 @@ route("POST", "/sync", async (req, env, _p, _u, ctx) => {
 registerWebAppRoutes<Env>({
   route, json, body, requireUser, isStaff,
   fail: (status, message) => new HttpError(status, message),
-  journal: (env, ctx, id, userId, content) => processJournal(env, ctx, id, userId, content),
+  journal: (env, ctx, id, userId, content, opts) => processJournal(env, ctx, id, userId, content, opts),
 });
 registerOps(route, { json, body, now });
 
