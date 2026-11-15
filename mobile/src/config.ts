@@ -8,9 +8,8 @@ export const SITE_URL: string = trimSlash(process.env.EXPO_PUBLIC_SITE_URL || 'h
 /** The evade-api Worker the site signs in through (Cloudflare Access guards its /auth/access path). */
 export const API_URL: string = trimSlash(process.env.EXPO_PUBLIC_API_URL || defaultApiUrl(SITE_URL));
 
-/** The app's own URL scheme (app.json "scheme"); evade://journal opens the journal, evade://auth is sign-in only. */
+/** The app's URL scheme. For example, evade://journal opens the journal. */
 export const APP_SCHEME = 'evade';
-export const AUTH_RETURN_URL = `${APP_SCHEME}://auth`;
 
 /**
  * Hosts that stay inside the app (subdomains included): the site, the API (sign-in redirects and logout go through
@@ -18,9 +17,6 @@ export const AUTH_RETURN_URL = `${APP_SCHEME}://auth`;
  * system browser or the matching app (mail, phone, maps).
  */
 export const IN_APP_HOSTS: string[] = unique([hostOf(SITE_URL), hostOf(API_URL), 'cloudflareaccess.com']);
-
-/** The Cloudflare Access sign-in page, where the app offers "use a passkey" in the system browser. */
-export const ACCESS_LOGIN_HOST_SUFFIX = 'cloudflareaccess.com';
 
 function defaultApiUrl(site: string) {
   const url = new URL(site);

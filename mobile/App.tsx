@@ -6,12 +6,11 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import WebView, { type WebViewMessageEvent, type WebViewNavigation } from 'react-native-webview';
 import type { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTypes';
-import { browserSignInAvailable, signInWithSystemBrowser, type RedeemRequest } from './src/browserSignIn';
-import { ACCESS_LOGIN_HOST_SUFFIX, APP_SCHEME, IN_APP_HOSTS, SITE_URL } from './src/config';
+import { APP_SCHEME, IN_APP_HOSTS, SITE_URL } from './src/config';
 import { CHROME_REPORTER, isLight, parseChromeMessage, solidColor } from './src/siteChrome';
 
 const SPACE = '#0B0F1A';
-type Source = { uri: string } | RedeemRequest;
+type Source = { uri: string };
 
 const hostMatches = (host: string, allowed: string) => host === allowed || host.endsWith(`.${allowed}`);
 
@@ -27,16 +26,7 @@ function isInAppUrl(url: string) {
   }
 }
 
-const isAccessLogin = (url: string) => {
-  try {
-    const parsed = new URL(url);
-    return hostMatches(parsed.hostname, ACCESS_LOGIN_HOST_SUFFIX) && parsed.pathname.includes('/cdn-cgi/access/login');
-  } catch {
-    return false;
-  }
-};
-
-// evade://journal -> https://evade.health/journal. evade://auth is reserved for the browser sign-in hand-back.
+// evade://journal -> https://evade.health/journal. Ignore legacy authentication callbacks.
 function siteUrlForDeepLink(link: string | null | undefined) {
   if (!link || !link.startsWith(`${APP_SCHEME}://`)) return null;
   const rest = link.slice(APP_SCHEME.length + 3).replace(/^\/+/, '');
@@ -60,10 +50,6 @@ function Shell() {
   const [webViewKey, setWebViewKey] = useState(0);
   const [canGoBack, setCanGoBack] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [onAccessLogin, setOnAccessLogin] = useState(false);
-  const [passkeyRoute, setPasskeyRoute] = useState(false);
-  const [signingIn, setSigningIn] = useState(false);
-  const [signInError, setSignInError] = useState<string | null>(null);
   const [chrome, setChrome] = useState({ top: SPACE, bottom: SPACE });
 
   // Loads a page in a fresh WebView (also clears the error screen).
@@ -86,13 +72,6 @@ function Shell() {
     return () => sub.remove();
   }, [open]);
 
-  // Offer "Use a passkey" only when this build can receive the hand-back and the deployed Worker supports it.
-  useEffect(() => {
-    const controller = new AbortController();
-    browserSignInAvailable(controller.signal).then(setPasskeyRoute);
-    return () => controller.abort();
-  }, []);
-
   // Android back button goes back in the site before leaving the app.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -106,6 +85,7 @@ function Shell() {
   // Links that leave EVAde (and mailto:, tel:, ...) open in the system browser or the matching app.
   function handleShouldLoad(event: ShouldStartLoadRequest) {
     if (event.isTopFrame === false) return true;
+    if (event.url.startsWith(`${APP_SCHEME}://auth`)) return false;
     if (isInAppUrl(event.url)) return true;
     Linking.openURL(event.url).catch(() => undefined);
     return false;
@@ -113,7 +93,6 @@ function Shell() {
 
   function handleNavigation(state: WebViewNavigation) {
     setCanGoBack(state.canGoBack);
-    setOnAccessLogin(isAccessLogin(state.url));
     if (isInAppUrl(state.url)) lastUrl.current = state.url;
   }
 
@@ -122,16 +101,7 @@ function Shell() {
     if (msg) setChrome({ top: solidColor(msg.top, SPACE), bottom: solidColor(msg.bottom, SPACE) });
   }
 
-  async function startPasskeySignIn() {
-    setSigningIn(true);
-    setSignInError(null);
-    const result = await signInWithSystemBrowser();
-    setSigningIn(false);
-    if (result.type === 'success') open(result.request);
-    else if (result.type === 'error') setSignInError(result.message);
-  }
-
-  const retry = () => open({ uri: lastUrl.current.includes('/auth/app-redeem') ? SITE_URL : lastUrl.current });
+  const retry = () => open({ uri: lastUrl.current });
 
   if (loadError) {
     return (
@@ -150,16 +120,6 @@ function Shell() {
     <View style={[styles.screen, { backgroundColor: chrome.bottom }]}>
       <StatusBar style={isLight(chrome.top) ? 'dark' : 'light'} />
       <View style={{ height: insets.top, backgroundColor: chrome.top }} />
-      {onAccessLogin && passkeyRoute && (
-        <View style={styles.passkeyBar}>
-          <Text style={styles.passkeyText}>
-            {signInError ?? 'Passkeys open in a secure browser window. The emailed code works right here.'}
-          </Text>
-          <Pressable style={styles.passkeyButton} onPress={startPasskeySignIn} disabled={signingIn} accessibilityRole="button">
-            {signingIn ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.buttonText}>Use a passkey</Text>}
-          </Pressable>
-        </View>
-      )}
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'android' ? 'height' : undefined}>
         <WebView
           key={webViewKey}
@@ -212,7 +172,4 @@ const styles = StyleSheet.create({
   body: { fontSize: 15, color: '#B8C0D0', textAlign: 'center' },
   button: { marginTop: 8, paddingVertical: 12, paddingHorizontal: 24, borderRadius: 10, backgroundColor: '#7C5CFF' },
   buttonText: { fontSize: 15, fontWeight: '600', color: '#FFFFFF' },
-  passkeyBar: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 10, backgroundColor: '#1A2033' },
-  passkeyText: { flex: 1, fontSize: 13, color: '#D7DCE8' },
-  passkeyButton: { paddingVertical: 10, paddingHorizontal: 14, borderRadius: 10, backgroundColor: '#7C5CFF', minWidth: 120, alignItems: 'center' },
 });
