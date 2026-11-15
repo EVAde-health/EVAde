@@ -1,0 +1,13 @@
+FROM --platform=linux/amd64 python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 EVADE_MODEL_DIR=/models
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt boto3
+COPY evade ./evade
+COPY scripts/fetch_models.py ./scripts/fetch_models.py
+RUN useradd --create-home --uid 10001 evade && mkdir -p /models && chown evade /models
+USER evade
+EXPOSE 8000
+# ";" not "&&": a model that fails its checksum is left out (listed as unavailable) and the API still starts.
+# --no-access-log: access logs would record user IDs from URL paths.
+CMD ["sh", "-c", "python scripts/fetch_models.py --dest /models; exec uvicorn evade.api.app:app --host 0.0.0.0 --port 8000 --no-server-header --no-access-log"]
