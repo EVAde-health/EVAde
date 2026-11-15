@@ -1,4 +1,11 @@
-import { fetchJournalMessages, postJournalMessage, type ApiJournalMessage } from './healthApi';
+import {
+  fetchJournalMessages,
+  postJournalMessage,
+  postVoiceSession,
+  type ApiJournalMessage,
+  type VoiceSessionCheckin,
+  type VoiceSessionTurn,
+} from './healthApi';
 
 export interface JournalMessage {
   id: string;
@@ -21,6 +28,17 @@ export async function loadJournal(userId: string, signal: AbortSignal) {
 export async function getAssistantReply(entry: JournalMessage, signal: AbortSignal): Promise<JournalMessage | null> {
   const { reply } = await postJournalMessage(entry.id, entry.text, { signal });
   return reply ? toJournalMessage(reply) : null;
+}
+
+// Saves a finished voice session once; returns its turns and the companion's reply as chat messages.
+export async function saveVoiceSession(
+  sessionId: string,
+  turns: VoiceSessionTurn[],
+  checkin: VoiceSessionCheckin | null,
+  signal?: AbortSignal,
+): Promise<JournalMessage[]> {
+  const result = await postVoiceSession({ session_id: sessionId, turns, checkin }, { signal });
+  return [...result.messages, ...(result.reply ? [result.reply] : [])].map(toJournalMessage);
 }
 
 // Creates a message with a fresh id and timestamp.

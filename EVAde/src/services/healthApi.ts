@@ -296,6 +296,40 @@ export const postJournalMessage = (id: string, content: string, { signal }: Sign
     method: 'POST', body: { id, content }, signal,
   });
 
+// One finished voice check-in: the transcript turns plus the agent's saved check-in (if any). The Worker stores the
+// entry and turns, then parses self-reports and readings. The session id makes retries safe (no duplicates).
+export interface VoiceSessionTurn {
+  sender: 'user' | 'assistant';
+  content: string;
+  ts: string;
+}
+
+export interface VoiceSessionCheckin {
+  sleep_hours?: number | null;
+  mood?: number | null;
+  symptoms?: string[];
+  systolic?: number | null;
+  diastolic?: number | null;
+  temperature_c?: number | null;
+  blood_sugar_mg_dl?: number | null;
+  notes?: string | null;
+  level?: string;
+  reasons?: string[];
+  actions?: string[];
+}
+
+export interface VoiceSessionResult {
+  entry_id: number;
+  duplicate: boolean;
+  messages: ApiJournalMessage[];
+  reply: ApiJournalMessage | null;
+}
+
+export const postVoiceSession = (
+  session: { session_id: string; turns: VoiceSessionTurn[]; checkin?: VoiceSessionCheckin | null },
+  { signal }: Signal = {},
+) => api<VoiceSessionResult>('/journal/voice-sessions', { method: 'POST', body: session, signal });
+
 // ---------- media (selfies) ----------
 
 // The user's stored photos, newest first.

@@ -23,7 +23,8 @@ import {
 import { deleteUserStatements } from "./deleteUser";
 import { HttpError } from "./http";
 import { crewOverview, registerOps } from "./ops";
-import { awardDaily, materializeTasks, registerWebAppRoutes, type WebAppEnv } from "./webapp";
+import { awardDaily, journalReply, materializeTasks, registerWebAppRoutes, type WebAppEnv } from "./webapp";
+import { extractHealth, rowsFor, stableId, type CheckinIn, type Extraction } from "./journalParse";
 export { CrewFeed } from "./live";
 
 export interface Env extends AuthEnv, ModelEnv, WebAppEnv {
@@ -323,8 +324,25 @@ function publish(env: Env, ctx: ExecutionContext, ev: LiveEvent & { staff_only?:
 const isStaff = (who: Principal) => who.kind === "service" || STAFF_ROLES.has(who.role ?? "");
 
 // ---------- Journal analysis (Workers AI) ----------
-async function processJournal(env: Env, ctx: ExecutionContext, id: number, userId: string, content: string) {
-  const a = await analyzeJournal(env, content);
+interface JournalProcessOpts {
+  checkin?: CheckinIn | null; // the voice agent's structured check-in, when the entry is a voice session
+  callRef?: string | null; // voice session id, stored in self_reports.call_ref
+}
+
+async function processJournal(env: Env, ctx: ExecutionContext, id: number, userId: string, content: string, opts: JournalProcessOpts = {}) {
+  return (await analyzeAndExtract(env, ctx, id, userId, content, opts)).analysis;
+}
+
+/**
+ * Journal analysis (summary, sentiment, concern) plus the health-data parser (journalParse.ts), run in parallel.
+ * The parser writes self_reports / observations with client_ids derived from the entry's client_id, so re-running
+ * it for the same entry (re-posts, /journal/:jid/analyze) never duplicates rows. A parser failure never fails the entry.
+ */
+async function analyzeAndExtract(env: Env, ctx: ExecutionContext, id: number, userId: string, content: string, opts: JournalProcessOpts = {}) {
+  const [a, extraction] = await Promise.all([
+    analyzeJournal(env, content),
+    extractHealth(env, content, opts.checkin).catch((e) => { console.error("journal extraction", e instanceof Error ? e.name : "Error"); return null; }),
+  ]);
   const ts = now();
   const stmts = [
     env.DB.prepare(
@@ -349,7 +367,54 @@ async function processJournal(env: Env, ctx: ExecutionContext, id: number, userI
   publish(env, ctx, { type: "journal", user_id: userId, staff_only: true,
     data: { id, summary: a.summary, mood_label: a.mood_label, sentiment: a.sentiment, concern_level: a.concern_level, needs_human_review: a.needs_human_review } });
   if (a.needs_human_review) publish(env, ctx, { type: "alert", user_id: userId, staff_only: true, data: { metric: "journal", level: a.concern_level === "high" ? "red" : "yellow" } });
-  return a;
+  let saved: Awaited<ReturnType<typeof saveExtraction>> | null = null;
+  if (extraction) {
+    try {
+      saved = await saveExtraction(env, ctx, id, userId, extraction, opts.callRef ?? null);
+    } catch (e) {
+      console.error("journal extraction save", e instanceof Error ? e.name : "Error");
+    }
+  }
+  return { analysis: a, extraction, saved };
+}
+
+/** Writes parsed values for one journal entry into self_reports + observations (existing columns only). */
+async function saveExtraction(env: Env, ctx: ExecutionContext, entryId: number, userId: string, x: Extraction, callRef: string | null) {
+  const entry = await env.DB.prepare("SELECT client_id, ts, source FROM journal_entries WHERE id=?")
+    .bind(entryId).first<{ client_id: string | null; ts: string; source: string }>();
+  if (!entry) return { self_report: null, observations: [] as { metric: string; value: number; unit: string; source: string }[] };
+  const base = entry.client_id ?? `journal:${entryId}`;
+  const parsedTs = Date.parse(entry.ts);
+  const ts = Number.isFinite(parsedTs) && parsedTs <= Date.now() ? new Date(parsedTs).toISOString() : now();
+  const { selfReport: sr, observations } = rowsFor(x, base, ts, entry.source === "voice" ? "voice" : "text", callRef);
+  if (sr) {
+    await env.DB.prepare(
+      `INSERT INTO self_reports (client_id,user_id,ts,mood,stress,fatigue,sleep_quality,note,source,sleep_hours,symptoms,checkin_level,reasons,actions,call_ref)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(client_id) DO NOTHING`
+    ).bind(sr.client_id, userId, sr.ts, sr.mood, sr.stress, sr.fatigue, sr.sleep_quality, sr.note, sr.source, sr.sleep_hours,
+      sr.symptoms, sr.checkin_level, sr.reasons, sr.actions, sr.call_ref).run();
+  }
+  // Only readings not stored before: ingestObservations also raises alerts and closes tasks, which must happen once.
+  let fresh = observations;
+  if (observations.length) {
+    const { results } = await env.DB.prepare(`SELECT client_id FROM observations WHERE client_id IN (${observations.map(() => "?").join(",")})`)
+      .bind(...observations.map((o) => o.client_id)).all<{ client_id: string }>();
+    const seen = new Set(results.map((r) => r.client_id));
+    fresh = observations.filter((o) => !seen.has(o.client_id));
+  }
+  if (fresh.length) {
+    const stored = await ingestObservations(env, userId, fresh.map(({ unit: _unit, ...o }) => o));
+    const recent = stored.filter((o) => Date.now() - Date.parse(o.ts) < 48 * 3600_000);
+    if (recent.length) {
+      publish(env, ctx, { type: "observation", user_id: userId, data: recent });
+      const flagged = recent.filter((o) => o.level !== "green");
+      if (flagged.length) publish(env, ctx, { type: "alert", user_id: userId, data: flagged });
+    }
+  }
+  return {
+    self_report: sr ? { mood: sr.mood, stress: sr.stress, fatigue: sr.fatigue, sleep_quality: sr.sleep_quality, sleep_hours: sr.sleep_hours } : null,
+    observations: observations.map((o) => ({ metric: o.metric, value: o.value, unit: o.unit, source: o.source })),
+  };
 }
 
 // ---------- R2 media ----------
@@ -587,6 +652,84 @@ route("POST", "/journal/voice", async (req, env, _p, url, ctx, who) => {
     .bind(userId, now(), text, mediaId).first<{ id: number }>();
   ctx.waitUntil(processJournal(env, ctx, r!.id, userId, text).then(() => {}, (e) => console.error("journal analysis", e)));
   return json({ id: r!.id, transcript: text, media_id: mediaId, analysis: "queued" }, 201);
+});
+
+// Voice check-in session from the web app (Journal tab): the transcript becomes one journal entry (source 'voice'),
+// each turn a journal_messages row, and the parser writes self_reports + observations from the agent's check-in and
+// what the astronaut said. Idempotent: every id derives from the user and session id, so a re-post adds nothing.
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/;
+route("POST", "/journal/voice-sessions", async (req, env, _p, _u, ctx, who) => {
+  const b = await body(req);
+  const userId: string | undefined = typeof b.user_id === "string" ? b.user_id : who.user_id;
+  if (who.kind === "user" && userId !== who.user_id) throw new HttpError(403, "Only the astronaut can write in their journal");
+  await requireUser(env, userId);
+  if (typeof b.session_id !== "string" || !SESSION_ID.test(b.session_id)) throw new HttpError(422, "session_id is required (1-100 letters, digits, _ . : -)");
+  if (!Array.isArray(b.turns) || b.turns.length > 300) throw new HttpError(422, "turns must be an array (max 300)");
+  if (b.checkin !== undefined && b.checkin !== null && (typeof b.checkin !== "object" || Array.isArray(b.checkin))) throw new HttpError(422, "checkin must be an object");
+  const nowMs = Date.now();
+  const turns: { sender: "user" | "assistant"; content: string; ts: number }[] = [];
+  for (const t of b.turns) {
+    if (!t || typeof t !== "object" || (t.sender !== "user" && t.sender !== "assistant")) throw new HttpError(422, "each turn needs sender 'user' or 'assistant'");
+    const content = typeof t.content === "string" ? t.content.trim() : "";
+    if (!content) continue;
+    if (content.length > 4000) throw new HttpError(422, "turn content max 4000 characters");
+    const parsed = typeof t.ts === "string" ? Date.parse(t.ts) : NaN;
+    const prev = turns.length ? turns[turns.length - 1].ts : NaN;
+    let ts = Number.isFinite(parsed) ? Math.min(parsed, nowMs) : Number.isFinite(prev) ? prev + 1 : nowMs;
+    if (Number.isFinite(prev) && ts <= prev) ts = prev + 1; // keep the turn order stable in the chat history
+    turns.push({ sender: t.sender, content, ts });
+  }
+  if (!turns.some((t) => t.sender === "user")) throw new HttpError(422, "turns must include at least one user turn");
+  const transcript = turns.map((t) => `${t.sender === "user" ? "Me" : "EVAde"}: ${t.content}`).join("\n");
+  if (transcript.length > 20000) throw new HttpError(422, "transcript too long (max 20k chars)");
+  const sessionId: string = b.session_id;
+  const clientId = `voice:${userId}:${sessionId}`;
+  const startedAt = new Date(turns[0].ts).toISOString();
+
+  const inserted = await env.DB.prepare(
+    "INSERT INTO journal_entries (client_id,user_id,ts,source,content) VALUES (?,?,?, 'voice', ?) ON CONFLICT(client_id) DO NOTHING RETURNING id"
+  ).bind(clientId, userId, startedAt, transcript).first<{ id: number }>();
+  const entry = await env.DB.prepare("SELECT id, user_id, analyzed_at FROM journal_entries WHERE client_id=?")
+    .bind(clientId).first<{ id: number; user_id: string; analyzed_at: string | null }>();
+  if (!entry || entry.user_id !== userId) throw new HttpError(409, "Session id already used");
+
+  const messages = await Promise.all(turns.map(async (t, i) => ({
+    id: await stableId(`${clientId}:turn:${i}`), sender: t.sender, content: t.content, ts: new Date(t.ts).toISOString(),
+  })));
+  await env.DB.batch(messages.map((m) => env.DB.prepare(
+    "INSERT INTO journal_messages (id,user_id,sender,content,ts,entry_id) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING"
+  ).bind(m.id, userId, m.sender, m.content, m.ts, entry.id)));
+
+  if (inserted?.id) {
+    // Same as a typed journal message: closes today's journal task once and pays its points.
+    const ts = now();
+    const journalTask = await env.DB.prepare(`UPDATE tasks SET completed_at=? WHERE id=(SELECT id FROM tasks WHERE user_id=? AND completed_at IS NULL
+        AND title LIKE 'Journal%' AND (due_at IS NULL OR due_at >= ?) ORDER BY due_at LIMIT 1) RETURNING points`)
+      .bind(ts, userId, new Date(Date.parse(ts) - 86_400_000).toISOString()).first<{ points: number | null }>();
+    if (journalTask?.points) await env.DB.prepare("UPDATE users SET points=points+? WHERE user_id=?").bind(journalTask.points, userId).run();
+  }
+
+  const replyId = await stableId(`${clientId}:reply`);
+  if (!inserted?.id && entry.analyzed_at) {
+    const reply = await env.DB.prepare("SELECT id, sender, content, ts FROM journal_messages WHERE id=?").bind(replyId).first();
+    return json({ entry_id: entry.id, duplicate: true, messages, reply: reply ?? null, extracted: null });
+  }
+  let result: Awaited<ReturnType<typeof analyzeAndExtract>> | null = null;
+  try {
+    result = await analyzeAndExtract(env, ctx, entry.id, userId!, transcript, { checkin: b.checkin ?? null, callRef: sessionId });
+  } catch (e) {
+    console.error("voice session analysis", e instanceof Error ? e.name : "Error");
+  }
+  const reply = {
+    id: replyId, sender: "assistant", content: journalReply(result?.analysis ?? null),
+    ts: new Date(turns[turns.length - 1].ts + 1).toISOString(),
+  };
+  await env.DB.prepare("INSERT INTO journal_messages (id,user_id,sender,content,ts,entry_id,model) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING")
+    .bind(reply.id, userId, reply.sender, reply.content, reply.ts, entry.id, result?.analysis.model ?? "rules").run();
+  return json({
+    entry_id: entry.id, duplicate: !inserted?.id, messages, reply,
+    extracted: result?.saved ? { ...result.saved, ai: result.extraction?.ai_ok ?? false } : null,
+  }, inserted?.id ? 201 : 200);
 });
 
 // Re-run the AI analysis on an entry (staff / service)
@@ -1022,7 +1165,7 @@ route("DELETE", "/me", async (req, env, _p, _u, _c, who) => {
 });
 
 // Offline-first sync: the frontend queues records in IndexedDB and flushes them here when a link is up.
-route("POST", "/sync", async (req, env) => {
+route("POST", "/sync", async (req, env, _p, _u, ctx) => {
   const b = await body(req);
   await requireUser(env, b.user_id);
   const res: any = {};
@@ -1031,9 +1174,13 @@ route("POST", "/sync", async (req, env) => {
     await env.DB.prepare("INSERT INTO self_reports (client_id,user_id,ts,mood,stress,fatigue,sleep_quality,note) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(client_id) DO NOTHING")
       .bind(sr.client_id ?? null, b.user_id, sr.ts ?? now(), sr.mood ?? null, sr.stress ?? null, sr.fatigue ?? null, sr.sleep_quality ?? null, sr.note ?? null).run();
   }
+  let analyzed = 0;
   for (const j of b.journal ?? []) {
-    await env.DB.prepare("INSERT INTO journal_entries (client_id,user_id,ts,source,content) VALUES (?,?,?,?,?) ON CONFLICT(client_id) DO NOTHING")
-      .bind(j.client_id ?? null, b.user_id, j.ts ?? now(), j.source ?? "text", j.content).run();
+    const r = await env.DB.prepare("INSERT INTO journal_entries (client_id,user_id,ts,source,content) VALUES (?,?,?,?,?) ON CONFLICT(client_id) DO NOTHING RETURNING id")
+      .bind(j.client_id ?? null, b.user_id, j.ts ?? now(), j.source ?? "text", j.content).first<{ id: number }>();
+    // Newly synced entries get the same analysis + health-data parsing as POST /journal (after the response, max 20 per call).
+    if (r?.id && analyzed++ < 20)
+      ctx.waitUntil(processJournal(env, ctx, r.id, b.user_id, String(j.content)).then(() => {}, (e) => console.error("journal analysis", e)));
   }
   return json({ ok: true, ...res, synced_at: now() });
 });

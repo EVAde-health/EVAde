@@ -24,7 +24,8 @@ import VoiceJournal from '../components/VoiceJournal';
 import type { VoiceTurn } from '../hooks/useVoiceAgent';
 import { useMission } from '../context/MissionContext';
 import { MOOD_EMOJI, MOOD_LABELS } from '../data/health';
-import { createMessage, getAssistantReply, loadJournal, type JournalMessage } from '../services/journalAssistant';
+import { createMessage, getAssistantReply, loadJournal, saveVoiceSession, type JournalMessage } from '../services/journalAssistant';
+import type { VoiceSessionCheckin } from '../services/healthApi';
 import type { VoiceCheckin } from '../services/voiceAgent';
 import './css/JournalPage.css';
 
@@ -36,7 +37,7 @@ const PROMPTS = [
 ];
 
 
-const MAX_ENTRY_LENGTH = 5000;
+const VOICE_SAVE_ATTEMPTS = 3;
 
 // One-line summary of what the voice agent recorded in a check-in.
 function checkinSummary(checkin: VoiceCheckin) {
@@ -60,11 +61,14 @@ function checkinAdvice(checkin: VoiceCheckin) {
   ].join('\n');
 }
 
-// Voice transcript turns as one labelled journal entry, within the API's size limit.
-function transcriptEntry(turns: VoiceTurn[]) {
-  const text = turns.map(turn => `${turn.role === 'agent' ? 'EVAde' : 'Me'}: ${turn.text.trim()}`).join('\n');
-  return `🎙️ Voice check-in\n${text}`.slice(0, MAX_ENTRY_LENGTH);
+// The fields of the agent's saved check-in that the API parses (no ids or crew labels).
+function checkinFields(checkin: VoiceCheckin | null): VoiceSessionCheckin | null {
+  if (!checkin) return null;
+  const { sleep_hours, mood, symptoms, systolic, diastolic, temperature_c, blood_sugar_mg_dl, notes, level, reasons, actions } = checkin;
+  return { sleep_hours, mood, symptoms, systolic, diastolic, temperature_c, blood_sugar_mg_dl, notes, level, reasons, actions };
 }
+
+const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Animated three-dot "typing" indicator.
 function TypingDots() {
@@ -87,7 +91,8 @@ export default function JournalPage() {
   const [mood, setMood] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const failedRef = useRef<{ id: string; text: string } | null>(null);
-  const { user, logMood: saveMood } = useMission();
+  const checkinRef = useRef<VoiceCheckin | null>(null);
+  const { user, logMood: saveMood, refreshToday } = useMission();
   const showToast = useToast();
   const userId = user.user_id;
 
@@ -154,18 +159,39 @@ export default function JournalPage() {
     }
   }
 
-  // Shows the agent's saved check-in and stores its mood rating in D1.
+  // Shows the agent's saved check-in; it is stored with the session's transcript when the session ends.
   function handleVoiceCheckin(checkin: VoiceCheckin) {
+    checkinRef.current = checkin;
     const advice = checkinAdvice(checkin);
     setMessages(current => [...current, createMessage('system', checkinSummary(checkin)), ...(advice ? [createMessage('assistant', advice)] : [])]);
     const voiceMood = Number(checkin.mood);
-    if (Number.isInteger(voiceMood) && voiceMood >= 1 && voiceMood <= 5) void logMood(voiceMood);
+    if (Number.isInteger(voiceMood) && voiceMood >= 1 && voiceMood <= 5) setMood(voiceMood);
   }
 
-  // Saves the finished voice transcript as a journal entry (analysed like typed entries).
-  function addVoiceTurns(turns: VoiceTurn[]) {
-    if (!turns.length) return;
-    void sendMessage(transcriptEntry(turns));
+  // Saves a finished voice session once (turns + check-in). The Worker stores the transcript, parses mood, sleep and
+  // readings into the health record, and replies. Retries reuse the session id, so nothing is counted twice.
+  async function saveVoiceTurns({ sessionId, turns }: { sessionId: string; turns: VoiceTurn[] }) {
+    await pause(800); // lets a check-in that arrived just before the end finish loading
+    const checkin = checkinFields(checkinRef.current);
+    checkinRef.current = null;
+    const payload = turns.map(turn => ({
+      sender: turn.role === 'agent' ? ('assistant' as const) : ('user' as const),
+      content: turn.text.trim().slice(0, 4000),
+      ts: new Date(turn.at).toISOString(),
+    }));
+    if (!payload.some(turn => turn.sender === 'user')) return;
+    for (let attempt = 1; attempt <= VOICE_SAVE_ATTEMPTS; attempt++) {
+      try {
+        const saved = await saveVoiceSession(sessionId, payload, checkin);
+        setMessages(current => [...current, ...saved.filter(message => !current.some(existing => existing.id === message.id))]);
+        showToast({ body: '🎙️ Voice check-in saved to your journal' });
+        void refreshToday().catch(() => undefined);
+        return;
+      } catch {
+        if (attempt < VOICE_SAVE_ATTEMPTS) await pause(1500 * attempt);
+      }
+    }
+    showToast({ body: 'Your voice check-in could not be saved to the journal.' });
   }
 
   return (
@@ -199,7 +225,7 @@ export default function JournalPage() {
         </HStack>
       </Card>
 
-      <VoiceJournal crew={`crew-${userId}`} onCheckinSaved={handleVoiceCheckin} onAddToJournal={addVoiceTurns} />
+      <VoiceJournal crew={`crew-${userId}`} onCheckinSaved={handleVoiceCheckin} onSessionEnded={saveVoiceTurns} />
 
       <StackItem size="fill" className="journal__chat">
         <ChatLayout

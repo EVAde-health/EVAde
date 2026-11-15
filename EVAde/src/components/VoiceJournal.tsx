@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef } from 'react';
 import {
   ChatMessage,
   ChatMessageBubble,
@@ -23,8 +23,8 @@ interface VoiceJournalProps {
   crew: string;
   /** Called when the agent saves a check-in during the call. */
   onCheckinSaved?: (checkin: VoiceCheckin) => void;
-  /** Called with finished transcript turns the user chose to keep in the journal. */
-  onAddToJournal?: (turns: VoiceTurn[]) => void;
+  /** Called once when a voice session ends, with a fresh session id and the session's transcript turns. */
+  onSessionEnded?: (session: { sessionId: string; turns: VoiceTurn[] }) => void;
 }
 
 const STATUS_TOKEN: Record<VoiceStatus, { label: string; color: 'default' | 'green' | 'yellow' | 'red' | 'blue' | 'purple' | 'gray' }> = {
@@ -40,26 +40,25 @@ const STATUS_TOKEN: Record<VoiceStatus, { label: string; color: 'default' | 'gre
 };
 
 // Voice check-in with the EVAde agent, embedded in the journal.
-export default function VoiceJournal({ crew, onCheckinSaved, onAddToJournal }: VoiceJournalProps) {
+export default function VoiceJournal({ crew, onCheckinSaved, onSessionEnded }: VoiceJournalProps) {
   const { status, statusText, isActive, level, turns, start, stop, clearTurns } = useVoiceAgent({ crew, onCheckinSaved });
-  const [addedIds, setAddedIds] = useState<string[]>([]);
+  const sessionRef = useRef<{ id: string; firstTurn: number } | null>(null);
   const token = STATUS_TOKEN[status];
   const isLive = isActive && status !== 'starting' && status !== 'connecting';
 
-  const pending = turns.filter(
-    turn => turn.role !== 'system' && turn.final && turn.text.trim() && !addedIds.includes(turn.id),
-  );
-
-  function addToJournal() {
-    if (!pending.length) return;
-    onAddToJournal?.(pending);
-    setAddedIds(current => [...current, ...pending.map(turn => turn.id)]);
-  }
-
-  function clear() {
-    clearTurns();
-    setAddedIds([]);
-  }
+  // One journal save per voice session: the session's turns go to the journal when it ends.
+  useEffect(() => {
+    if (isActive && !sessionRef.current) {
+      sessionRef.current = { id: crypto.randomUUID(), firstTurn: turns.length };
+    } else if (!isActive && sessionRef.current) {
+      const session = sessionRef.current;
+      sessionRef.current = null;
+      const spoken = turns
+        .slice(session.firstTurn)
+        .filter(turn => turn.role !== 'system' && turn.text.trim() && (turn.final || turn.role === 'agent'));
+      if (spoken.length) onSessionEnded?.({ sessionId: session.id, turns: spoken });
+    }
+  }, [isActive, turns, onSessionEnded]);
 
   return (
     <Card padding={4} className="voice-journal rise-in">
@@ -75,10 +74,7 @@ export default function VoiceJournal({ crew, onCheckinSaved, onAddToJournal }: V
             </Text>
           </VStack>
           <HStack gap={2} wrap="wrap" vAlign="center">
-            {!isActive && turns.length > 0 && <Button label="Clear" variant="ghost" size="sm" onClick={clear} />}
-            {onAddToJournal && pending.length > 0 && (
-              <Button label="Add to journal" variant="secondary" size="sm" onClick={addToJournal} />
-            )}
+            {!isActive && turns.length > 0 && <Button label="Clear" variant="ghost" size="sm" onClick={clearTurns} />}
             <Button
               label={isActive ? 'End voice check-in' : 'Talk to EVAde'}
               variant={isActive ? 'destructive' : 'primary'}
