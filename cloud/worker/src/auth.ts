@@ -1,15 +1,9 @@
-// EVAde login: OAuth 2.0 / OpenID Connect authorization code + PKCE, run entirely on Cloudflare.
-//   Auth0      - default provider (Universal Login: email/password, passwordless email, Google, GitHub, MFA).
-//                Roles come from the ID token claim https://evade.health/roles, set by an Auth0 Post-Login Action.
-//   Google / GitHub direct - fallback providers if Auth0 isn't configured
-//   Turnstile  - bot check on the login page before any OAuth redirect
-//   Workers KV - short-lived OAuth state (10 min) and sessions (7 days), read at the edge on every request
-//   D1         - auth_identities links each login to an astronaut (users.user_id)
-// Session token lives only in an HttpOnly cookie; KV stores its SHA-256 hash, never the token itself.
+// Cloudflare Access is the primary sign-in method. Direct OAuth fallbacks use
+// Turnstile, browser-bound state and PKCE. KV stores hashed session tokens.
 
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { accessAssertion, accessConfigured, staffAudience, verifyAccessJwt, type AccessEnv } from "./access";
 
-export interface AuthEnv {
+export interface AuthEnv extends AccessEnv {
   DB: D1Database;
   SESSIONS: KVNamespace;
   AUTH_RATE_LIMITER: RateLimit;
@@ -21,9 +15,6 @@ export interface AuthEnv {
   TURNSTILE_SECRET?: string;
   ALLOWED_ORIGINS?: string;
   FRONTEND_URL?: string;
-  AUTH0_DOMAIN?: string; // e.g. evade.us.auth0.com (no scheme)
-  AUTH0_CLIENT_ID?: string;
-  AUTH0_CLIENT_SECRET?: string;
   DEV_LOGIN?: string; // "true" enables the no-OAuth test provider. Never on in production.
 }
 
@@ -35,22 +26,9 @@ export interface Principal {
 }
 
 export const STAFF_ROLES = new Set(["flight_surgeon", "therapist", "admin"]);
-export const ROLES_CLAIM = "https://evade.health/roles";
 const SESSION_TTL = 7 * 24 * 3600;
 const OAUTH_TTL = 600;
 const TURNSTILE_ORIGIN = "https://challenges.cloudflare.com";
-
-/** Highest-privilege EVAde role in an Auth0 roles claim; anything unknown or missing is an astronaut. */
-export function roleFromClaim(claim: unknown): string {
-  const roles = Array.isArray(claim) ? claim : [];
-  for (const r of ["admin", "flight_surgeon", "therapist"]) if (roles.includes(r)) return r;
-  return "astronaut";
-}
-
-function auth0Host(env: AuthEnv) {
-  const host = env.AUTH0_DOMAIN?.trim().toLowerCase() ?? "";
-  return host.length <= 253 && /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/.test(host) ? host : null;
-}
 
 const PROVIDERS = {
   google: {
@@ -64,17 +42,9 @@ const PROVIDERS = {
     scope: "read:user user:email",
   },
 } as const;
-type Provider = keyof typeof PROVIDERS | "auth0" | "dev";
-
-function endpoints(env: AuthEnv, p: "google" | "github" | "auth0") {
-  if (p !== "auth0") return PROVIDERS[p];
-  const h = auth0Host(env);
-  return {
-    authorize: `https://${h}/authorize`,
-    token: `https://${h}/oauth/token`,
-    scope: "openid profile email",
-  };
-}
+type Provider = keyof typeof PROVIDERS | "dev";
+type SessionProvider = Provider | "cloudflare_access" | "cloudflare_access_staff";
+const SESSION_PROVIDERS = new Set<SessionProvider>(["google", "github", "dev", "cloudflare_access", "cloudflare_access_staff"]);
 
 // ---------- small crypto helpers ----------
 const b64url = (buf: ArrayBuffer | Uint8Array) =>
@@ -85,20 +55,22 @@ const sha256 = async (s: string) => b64url(await crypto.subtle.digest("SHA-256",
 function clientFor(env: AuthEnv, p: Provider) {
   if (p === "google") return { id: env.GOOGLE_CLIENT_ID, secret: env.GOOGLE_CLIENT_SECRET };
   if (p === "github") return { id: env.GITHUB_CLIENT_ID, secret: env.GITHUB_CLIENT_SECRET };
-  if (p === "auth0") return { id: env.AUTH0_CLIENT_ID, secret: env.AUTH0_CLIENT_SECRET };
   return { id: "dev", secret: "dev" };
 }
 const hasTurnstile = (env: AuthEnv) => Boolean(env.TURNSTILE_SITE_KEY && env.TURNSTILE_SECRET);
 const isLoopback = (url: URL) => ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-/** Enabled login methods, default first: Auth0, then the direct fallbacks. */
-export const enabledProviders = (env: AuthEnv, url: URL): Provider[] => {
+const oauthProviders = (env: AuthEnv, url: URL): Provider[] => {
   const out: Provider[] = [];
-  if (hasTurnstile(env) && auth0Host(env) && env.AUTH0_CLIENT_ID && env.AUTH0_CLIENT_SECRET) out.push("auth0");
   if (hasTurnstile(env) && env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET) out.push("google");
   if (hasTurnstile(env) && env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET) out.push("github");
   if (env.DEV_LOGIN === "true" && isLoopback(url)) out.push("dev");
   return out;
 };
+
+export function enabledProviders(env: AuthEnv, url: URL) {
+  const oauth = oauthProviders(env, url);
+  return accessConfigured(env) ? ["cloudflare_access", ...oauth] : oauth;
+}
 
 const allowedOrigins = (env: AuthEnv) => (env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 
@@ -143,21 +115,29 @@ export async function getSessionPrincipal(req: Request, env: AuthEnv): Promise<P
   const authz = req.headers.get("Authorization");
   if (!token && authz?.startsWith("Bearer ")) token = authz.slice(7);
   if (!token) return null;
-  const s = await env.SESSIONS.get<{ user_id: string; role: string; email: string | null; provider?: Provider }>(`sess:${await sha256(token)}`, "json");
-  if (!s) return null;
+  const s = await env.SESSIONS.get<{
+    user_id: string; role: string; email: string | null; provider?: SessionProvider; audience?: string; expires?: number;
+  }>(`sess:${await sha256(token)}`, "json");
+  if (!s?.provider || !SESSION_PROVIDERS.has(s.provider) || (s.expires !== undefined && s.expires <= Date.now())) return null;
   let role = "astronaut";
-  if (s.provider === "auth0" && STAFF_ROLES.has(s.role)) {
+  if (s.provider === "cloudflare_access_staff") {
+    const audience = staffAudience(env);
+    if (!audience || s.audience !== audience || !STAFF_ROLES.has(s.role)) return null;
     const user = await env.DB.prepare("SELECT role FROM users WHERE user_id=?").bind(s.user_id).first<{ role: string }>();
-    if (!user) return null;
-    if (user.role === s.role) role = s.role;
+    if (user?.role !== s.role) return null;
+    role = user.role;
   }
   return { kind: "user", user_id: s.user_id, role, email: s.email };
 }
 
-async function createSession(env: AuthEnv, user: { user_id: string; role: string }, email: string | null, provider: string) {
+async function createSession(
+  env: AuthEnv, user: { user_id: string; role: string }, email: string | null, provider: SessionProvider,
+  ttl = SESSION_TTL, audience?: string,
+) {
   const token = randomToken();
-  await env.SESSIONS.put(`sess:${await sha256(token)}`, JSON.stringify({ user_id: user.user_id, role: user.role, email, provider, created: Date.now() }), {
-    expirationTtl: SESSION_TTL,
+  const expires = Date.now() + ttl * 1000;
+  await env.SESSIONS.put(`sess:${await sha256(token)}`, JSON.stringify({ user_id: user.user_id, role: user.role, email, provider, audience, expires }), {
+    expirationTtl: Math.max(60, ttl),
   });
   return token;
 }
@@ -174,9 +154,8 @@ export interface IdentityIn {
   user_id?: string;
 }
 
-/** Find or create the astronaut behind a login. `seedTasks` gives new astronauts today's routine.
- *  New users are astronauts unless `role` says otherwise; roles are granted in Auth0, never from an email list. */
-export async function linkIdentity(env: AuthEnv, id: IdentityIn, seedTasks: (userId: string) => Promise<void>, auth0Role?: string) {
+/** Find or create the astronaut behind a login. `seedTasks` gives new astronauts today's routine. */
+export async function linkIdentity(env: AuthEnv, id: IdentityIn, seedTasks: (userId: string) => Promise<void>) {
   const now = new Date().toISOString();
   const userId = id.user_id ?? crypto.randomUUID();
   const statements: D1PreparedStatement[] = [];
@@ -191,12 +170,12 @@ export async function linkIdentity(env: AuthEnv, id: IdentityIn, seedTasks: (use
     `INSERT INTO auth_identities (provider,subject,user_id,email,last_login)
      VALUES (?,?,COALESCE((SELECT user_id FROM auth_identities WHERE provider=? AND subject=?),?),?,?)
      ON CONFLICT(provider,subject) DO UPDATE SET last_login=excluded.last_login,
-       email=CASE WHEN ? THEN excluded.email ELSE COALESCE(excluded.email,email) END`
-  ).bind(id.provider, id.subject, id.provider, id.subject, userId, id.email ?? null, now, auth0Role !== undefined ? 1 : 0));
+       email=COALESCE(excluded.email,email)`
+  ).bind(id.provider, id.subject, id.provider, id.subject, userId, id.email ?? null, now));
   statements.push(env.DB.prepare(
-    `UPDATE users SET last_active=?, role=COALESCE(?,role)
+    `UPDATE users SET last_active=?
      WHERE user_id=(SELECT user_id FROM auth_identities WHERE provider=? AND subject=?) RETURNING *`
-  ).bind(now, auth0Role ?? null, id.provider, id.subject));
+  ).bind(now, id.provider, id.subject));
 
   // D1 batches are atomic, including when two first-time logins race.
   const batch = await env.DB.batch<{ user_id: string; role: string }>(statements);
@@ -207,25 +186,15 @@ export async function linkIdentity(env: AuthEnv, id: IdentityIn, seedTasks: (use
 }
 
 // ---------- provider calls ----------
-interface Profile {
-  subject: string;
-  email: string | null;
-  name: string | null;
-  role?: string; // only set when the provider is the source of truth for roles (Auth0)
-}
-
-async function exchangeAndProfile(
-  env: AuthEnv, p: Provider, code: string, verifier: string, redirectUri: string, nonce?: string, devEmail?: string,
-): Promise<Profile> {
+async function exchangeAndProfile(env: AuthEnv, p: Provider, code: string, verifier: string, redirectUri: string, devEmail?: string) {
   if (p === "dev") {
     const email = devEmail || "dev.astronaut@evade.health";
     return { subject: `dev:${email}`, email, name: email.split("@")[0] };
   }
   const { id, secret } = clientFor(env, p);
-  const tokenRes = await fetch(endpoints(env, p).token, {
+  const tokenRes = await fetch(PROVIDERS[p].token, {
     method: "POST",
     redirect: "manual",
-    signal: AbortSignal.timeout(10_000),
     headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
     body: new URLSearchParams({
       grant_type: "authorization_code", code, redirect_uri: redirectUri, client_id: id!, client_secret: secret!, code_verifier: verifier,
@@ -234,30 +203,6 @@ async function exchangeAndProfile(
   const tok = await tokenRes.json<any>();
   if (!tokenRes.ok || !tok.access_token) throw new Error("OAuth token exchange failed");
   const auth = { Authorization: `Bearer ${tok.access_token}`, "User-Agent": "EVAde", Accept: "application/json" };
-
-  if (p === "auth0") {
-    if (typeof tok.id_token !== "string" || !nonce) throw new Error("Auth0 ID token or nonce missing");
-    const issuer = `https://${auth0Host(env)}/`;
-    const keys = createRemoteJWKSet(new URL(".well-known/jwks.json", issuer));
-    const { payload: claims } = await jwtVerify(tok.id_token, keys, {
-      algorithms: ["RS256"], issuer, audience: id!, requiredClaims: ["exp", "iat", "nonce", "sub"],
-    });
-    if (claims.nonce !== nonce || ((claims.azp !== undefined || (Array.isArray(claims.aud) && claims.aud.length > 1)) && claims.azp !== id))
-      throw new Error("Auth0 token is not bound to this login");
-    const ui = await fetch(new URL("userinfo", issuer), { headers: auth, redirect: "manual", signal: AbortSignal.timeout(10_000) });
-    if (!ui.ok) throw new Error("Auth0 profile request failed");
-    const u = await ui.json<{ sub?: string; email?: string; email_verified?: boolean; name?: string; nickname?: string }>();
-    if (!claims.sub || u.sub !== claims.sub) throw new Error("Auth0 profile missing or mismatched sub");
-    const email = u.email_verified === true && typeof u.email === "string" ? u.email : null;
-    const name = [u.name, u.nickname, claims.name, claims.nickname]
-      .find(value => typeof value === "string" && value.trim() && !value.includes("@")) as string | undefined;
-    return {
-      subject: claims.sub,
-      email,
-      name: name ?? email,
-      role: roleFromClaim(claims[ROLES_CLAIM]),
-    };
-  }
 
   if (p === "google") {
     const response = await fetch("https://openidconnect.googleapis.com/v1/userinfo", { headers: auth, redirect: "manual" });
@@ -298,15 +243,15 @@ async function verifyTurnstile(env: AuthEnv, token: string | null, ip: string | 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
 function loginPage(env: AuthEnv, url: URL, redirect: string, error?: string, status = 200) {
-  const providers = enabledProviders(env, url);
+  const providers = oauthProviders(env, url);
   const nonce = randomToken();
-  const label: Record<string, string> = { auth0: "Sign in", google: "Continue with Google", github: "Continue with GitHub", dev: "Test login (dev only)" };
+  const label: Record<string, string> = { google: "Continue with Google", github: "Continue with GitHub", dev: "Test login (dev only)" };
   const buttons = providers.length
-    ? providers.map((p) => `<button name="provider" value="${p}" class="btn ${p}">${label[p]}</button>`).join("") +
-      (providers.includes("auth0")
-        ? `<button name="provider" value="auth0" formaction="/auth/start?screen_hint=signup" class="btn auth0-signup">Create account</button>`
-        : "")
-    : `<p class="err">No login provider is configured yet.</p>`;
+    ? providers.map((p) => `<button name="provider" value="${p}" class="btn ${p}">${label[p]}</button>`).join("")
+    : accessConfigured(env) ? "" : `<p class="err">No login provider is configured yet.</p>`;
+  const accessLink = accessConfigured(env)
+    ? `<a class="btn" href="/auth/access?redirect=${encodeURIComponent(redirect)}">Sign in or create account</a>`
+    : "";
   const devField = providers.includes("dev") ? `<input name="dev_email" placeholder="test email (dev login)" />` : "";
   const ts = providers.some((p) => p !== "dev") && env.TURNSTILE_SITE_KEY
     ? `<div class="cf-turnstile" data-sitekey="${esc(env.TURNSTILE_SITE_KEY)}" data-action="login" data-theme="dark"></div>
@@ -326,14 +271,15 @@ function loginPage(env: AuthEnv, url: URL, redirect: string, error?: string, sta
 </style></head><body><main>
 <h1>EVAde</h1><p>Astronaut health monitoring</p>
 ${error ? `<p class="err">${esc(error)}</p>` : ""}
+${accessLink}
 <form method="post" action="/auth/start">
   <input type="hidden" name="redirect" value="${esc(redirect)}">${devField}${ts}${buttons}
 </form>
-<small>Protected by Cloudflare Turnstile · runs on Cloudflare Workers</small>
+
 </main></body></html>`;
   return new Response(html, { status, headers: {
     "Content-Type": "text/html; charset=utf-8",
-    "Content-Security-Policy": `default-src 'none'; script-src ${TURNSTILE_ORIGIN}; frame-src ${TURNSTILE_ORIGIN}; connect-src ${TURNSTILE_ORIGIN}; style-src 'nonce-${nonce}'; form-action 'self' https://accounts.google.com https://github.com${providers.includes("auth0") ? ` https://${auth0Host(env)}` : ""}; base-uri 'none'; frame-ancestors 'none'`,
+    "Content-Security-Policy": `default-src 'none'; script-src ${TURNSTILE_ORIGIN}; frame-src ${TURNSTILE_ORIGIN}; connect-src ${TURNSTILE_ORIGIN}; style-src 'nonce-${nonce}'; form-action 'self' https://accounts.google.com https://github.com; base-uri 'none'; frame-ancestors 'none'`,
   } });
 }
 
@@ -341,8 +287,9 @@ ${error ? `<p class="err">${esc(error)}</p>` : ""}
 export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks: (id: string) => Promise<void>): Promise<Response | null> {
   const path = url.pathname.replace(/\/$/, "");
   const ip = req.headers.get("CF-Connecting-IP");
-  if (path === "/auth/start" || path.startsWith("/auth/callback/")) {
-    const bucket = path === "/auth/start" ? "start" : "callback";
+  const accessPath = path === "/auth/access" || path === "/auth/access/staff";
+  if (accessPath || path === "/auth/start" || path.startsWith("/auth/callback/")) {
+    const bucket = accessPath ? "access" : path === "/auth/start" ? "start" : "callback";
     const { success } = await env.AUTH_RATE_LIMITER.limit({ key: `${bucket}:${ip ?? "unknown"}` });
     if (!success) return Response.json({ error: "Too many sign-in requests. Try again in a minute." }, {
       status: 429, headers: { "Retry-After": "60" },
@@ -366,20 +313,17 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     const encoded = await req.text();
     if (encoded.length > 8192) return Response.json({ error: "Sign-in form is too large" }, { status: 413 });
     const form = new URLSearchParams(encoded);
-    const providers = enabledProviders(env, url);
-    const provider = (form.get("provider") ?? providers[0]) as Provider | undefined;
-    const screenHint = (form.get("screen_hint") ?? url.searchParams.get("screen_hint")) === "signup" ? "signup" : null;
+    const provider = String(form.get("provider") ?? "") as Provider;
     const redirect = safeRedirect(env, String(form.get("redirect") ?? ""), url);
     const back = (msg: string) => Response.redirect(`${url.origin}/login?error=${encodeURIComponent(msg)}&redirect=${encodeURIComponent(redirect)}`, 303);
-    if (!provider || !providers.includes(provider)) return back("That sign-in method isn't available.");
+    if (!oauthProviders(env, url).includes(provider)) return back("That sign-in method isn't available.");
     if (provider !== "dev" && !(await verifyTurnstile(env, form.get("cf-turnstile-response"), ip, new URL(origin).hostname).catch(() => false)))
       return back("Human check failed, please try again.");
 
     const state = randomToken(24);
     const browser = randomToken();
     const verifier = randomToken(48);
-    const nonce = provider === "auth0" ? randomToken() : undefined;
-    await env.SESSIONS.put(`oauth:${state}`, JSON.stringify({ provider, verifier, redirect, browser: await sha256(browser), nonce, dev_email: form.get("dev_email") }), {
+    await env.SESSIONS.put(`oauth:${state}`, JSON.stringify({ provider, verifier, redirect, browser: await sha256(browser), dev_email: form.get("dev_email") }), {
       expirationTtl: OAUTH_TTL,
     });
     const redirectUri = `${url.origin}/auth/callback/${provider}`;
@@ -388,23 +332,15 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     } });
     if (provider === "dev") return next(`${redirectUri}?code=dev&state=${state}`);
     const challenge = await sha256(verifier);
-    const ep = endpoints(env, provider);
     const q = new URLSearchParams({
       client_id: clientFor(env, provider).id!, redirect_uri: redirectUri, response_type: "code",
-      scope: ep.scope, state, code_challenge: challenge, code_challenge_method: "S256",
+      scope: PROVIDERS[provider].scope, state, code_challenge: challenge, code_challenge_method: "S256",
     });
     if (provider === "google") q.set("prompt", "select_account");
-    if (provider === "auth0") {
-      q.set("nonce", nonce!);
-      if (screenHint) {
-        q.set("screen_hint", screenHint);
-        q.set("prompt", "login");
-      }
-    }
-    return next(`${ep.authorize}?${q}`);
+    return next(`${PROVIDERS[provider].authorize}?${q}`);
   }
 
-  const cb = path.match(/^\/auth\/callback\/(auth0|google|github|dev)$/);
+  const cb = path.match(/^\/auth\/callback\/(google|github|dev)$/);
   if (cb && req.method === "GET") {
     const provider = cb[1] as Provider;
     const state = url.searchParams.get("state");
@@ -413,19 +349,15 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     if (url.searchParams.get("error")) return fail("Sign-in was cancelled.");
     const browser = readCookie(req, cookieName(url, "oauth"));
     if (!state || !/^[\w-]{32}$/.test(state) || !code || !browser) return fail("Sign-in expired, please try again.");
-    const saved = await env.SESSIONS.get<{ provider: Provider; verifier: string; redirect: string; browser: string; nonce?: string; dev_email: string | null }>(`oauth:${state}`, "json");
+    const saved = await env.SESSIONS.get<{ provider: Provider; verifier: string; redirect: string; browser: string; dev_email: string | null }>(`oauth:${state}`, "json");
     if (!saved || saved.provider !== provider || saved.browser !== await sha256(browser)) return fail("Sign-in expired, please try again.");
     await env.SESSIONS.delete(`oauth:${state}`); // one-time use
-    if (!enabledProviders(env, url).includes(provider)) return fail("That sign-in method isn't available.");
+    if (!oauthProviders(env, url).includes(provider)) return fail("That sign-in method isn't available.");
 
     try {
-      const profile = await exchangeAndProfile(env, provider, code, saved.verifier, `${url.origin}/auth/callback/${provider}`, saved.nonce, saved.dev_email ?? undefined);
-      const user = await linkIdentity(
-        env,
-        { provider, subject: profile.subject, email: profile.email, display_name: profile.name, role: profile.role },
-        seedTasks, profile.role
-      );
-      const token = await createSession(env, { user_id: user.user_id, role: profile.role ?? "astronaut" }, profile.email, provider);
+      const profile = await exchangeAndProfile(env, provider, code, saved.verifier, `${url.origin}/auth/callback/${provider}`, saved.dev_email ?? undefined);
+      const user = await linkIdentity(env, { provider, subject: profile.subject, email: profile.email, display_name: profile.name }, seedTasks);
+      const token = await createSession(env, user, profile.email, provider);
       await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, provider).run();
       const headers = new Headers({ Location: safeRedirect(env, saved.redirect, url) });
       headers.append("Set-Cookie", cookieHeader(url, "session", token, SESSION_TTL));
@@ -437,10 +369,52 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     }
   }
 
+  if (accessPath && req.method === "GET") {
+    const redirect = safeRedirect(env, url.searchParams.get("redirect"), url);
+    const fail = (msg: string, status = 401) => loginPage(env, url, redirect, msg, status);
+    const staff = path.endsWith("/staff");
+    const audience = staff ? staffAudience(env) : env.ACCESS_AUD;
+    if (!accessConfigured(env) || !audience) return fail("This Cloudflare Access sign-in is unavailable.", 503);
+    const assertion = accessAssertion(req);
+    if (!assertion) return fail("Please sign in through Cloudflare Access.");
+
+    let identity;
+    try {
+      identity = await verifyAccessJwt(assertion, env, audience);
+    } catch {
+      return fail("Sign-in could not be verified. Try again.");
+    }
+    try {
+      if (staff) {
+        const existing = await env.DB.prepare(
+          "SELECT u.role FROM users u JOIN auth_identities i ON i.user_id=u.user_id WHERE i.provider='cloudflare_access' AND i.subject=?"
+        ).bind(identity.subject).first<{ role: string }>();
+        if (!existing || !STAFF_ROLES.has(existing.role)) return fail("Staff sign-in requires a staff account.", 403);
+      }
+      const user = await linkIdentity(env, {
+        provider: "cloudflare_access", subject: identity.subject, email: identity.email, display_name: identity.name,
+      }, seedTasks);
+      if (staff !== STAFF_ROLES.has(user.role)) {
+        return fail(staff ? "Staff sign-in requires a staff account." : "Staff accounts sign in at /auth/access/staff.", 403);
+      }
+      const ttl = staff ? Math.min(1800, identity.expiresAt - Math.floor(Date.now() / 1000)) : SESSION_TTL;
+      if (ttl <= 0) return fail("Your Cloudflare Access sign-in expired. Try again.");
+      const provider = staff ? "cloudflare_access_staff" : "cloudflare_access";
+      await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, provider).run();
+      const token = await createSession(env, user, identity.email, provider, ttl, staff ? audience : undefined);
+      return new Response(null, { status: 302, headers: {
+        Location: redirect, "Set-Cookie": cookieHeader(url, "session", token, ttl), "Cache-Control": "no-store",
+      } });
+    } catch {
+      console.warn("Cloudflare Access session could not be created");
+      return fail("Sign-in failed. Try again.", 500);
+    }
+  }
+
   if (path === "/auth/me" && req.method === "GET") {
     const p = await getSessionPrincipal(req, env);
     if (!p) return Response.json({ error: "Not signed in", login: `${url.origin}/login` }, { status: 401 });
-    const user = await env.DB.prepare("SELECT * FROM users WHERE user_id=?").bind(p.user_id).first<Record<string, unknown>>();
+    const user = await env.DB.prepare("SELECT * FROM users WHERE user_id=?").bind(p.user_id).first();
     if (!user) return Response.json({ error: "Not signed in" }, { status: 401 });
     return Response.json({ user: { ...user, role: p.role }, role: p.role, email: p.email });
   }
@@ -449,23 +423,8 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     if (req.method !== "POST") return Response.json({ error: "Use POST to sign out" }, { status: 405, headers: { Allow: "POST" } });
     if (!trustedOrigin(env, url, req.headers.get("Origin"))) return Response.json({ error: "Cross-origin sign-out blocked" }, { status: 403 });
     const token = sessionCookie(req, url);
-    let provider: string | null = null;
-    if (token) {
-      const key = `sess:${await sha256(token)}`;
-      provider = (await env.SESSIONS.get<{ provider?: string }>(key, "json"))?.provider ?? null;
-      await env.SESSIONS.delete(key);
-    }
-    const clear = { "Set-Cookie": cookieHeader(url, "session", "", 0) };
-    const host = auth0Host(env);
-    if (provider === "auth0" && host && env.AUTH0_CLIENT_ID) {
-      const params = new URLSearchParams({ client_id: env.AUTH0_CLIENT_ID, returnTo: "https://evade.health" });
-      const logoutUrl = `https://${host}/v2/logout?${params}`;
-      if ((req.headers.get("Accept") ?? "").includes("application/json")) {
-        return Response.json({ logout_url: logoutUrl }, { headers: clear });
-      }
-      return new Response(null, { status: 303, headers: { ...clear, Location: logoutUrl } });
-    }
-    return new Response(null, { status: 204, headers: clear });
+    if (token) await env.SESSIONS.delete(`sess:${await sha256(token)}`);
+    return new Response(null, { status: 204, headers: { "Set-Cookie": cookieHeader(url, "session", "", 0) } });
   }
 
   return null;
