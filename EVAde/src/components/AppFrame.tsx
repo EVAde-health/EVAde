@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useState } from 'react';
-import { matchRoutes, Navigate, Outlet, useLocation } from 'react-router-dom';
+import { matchRoutes, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@astryxdesign/core/Button';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Text } from '@astryxdesign/core/Text';
@@ -32,7 +32,9 @@ import { useMission } from '../context/MissionContext';
 import { ApiError, SIGN_IN_REQUIRED, STAFF_ROLES } from '../services/api';
 import { fetchSession, signOut, type SessionUser } from '../services/healthApi';
 import AmbientBackdrop from './AmbientBackdrop';
-import AdminShell from './AdminShell';
+import SurgeonShell from './surgeon/SurgeonShell';
+import AstronautNotices from './AstronautNotices';
+import { usePoll } from '../hooks/usePoll';
 import BrandMark from './BrandMark';
 import EmergencyButton from './EmergencyButton';
 import LevelMeter from './LevelMeter';
@@ -48,7 +50,7 @@ const NAV_ITEMS = [
   { href: '/tasks', label: 'Missions', icon: CheckCircleIcon, selectedIcon: CheckCircleSolid },
   { href: '/journal', label: 'Journal', icon: BookOpenIcon, selectedIcon: BookOpenSolid },
   { href: '/selfies', label: 'Selfies', icon: CameraIcon, selectedIcon: CameraSolid },
-  { href: '/chat', label: 'Team line', icon: ChatBubbleLeftRightIcon, selectedIcon: ChatSolid },
+  { href: '/messages', label: 'Messages', icon: ChatBubbleLeftRightIcon, selectedIcon: ChatSolid },
 ];
 
 type SessionState = SessionUser | 'loading' | 'signed-out' | 'error';
@@ -100,38 +102,51 @@ export default function AppFrame() {
   }
 
   if (STAFF_ROLES.has(session.role) && !session.demo) {
-    return <AdminShell key={session.user_id} user={session} onSignOut={() => setSession('signed-out')} />;
+    return <SurgeonShell key={session.user_id} user={session} />;
   }
-  if (matchRoutes([{ path: '/admin/*' }], location) || (session.demo && matchRoutes([{ path: '/chat/*' }], location))) {
+  if (matchRoutes([{ path: '/admin/*' }], location)) {
     return <Navigate to="/dashboard" replace />;
   }
 
   return (
     <AccountStorageContext.Provider value={session.demo ? null : session.user_id}>
       <MissionProvider key={`${session.user_id}:${session.demo}`} user={session}>
-        <SignedInFrame onSignOut={() => setSession('signed-out')} />
+        <SignedInFrame />
       </MissionProvider>
     </AccountStorageContext.Provider>
   );
 }
 
 // Signed-in shell: side navigation, level meter, sign-out and the routed page.
-function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
+function SignedInFrame() {
   const [signingOut, setSigningOut] = useState(false);
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const { completed, tasks, user } = useMission();
   const showToast = useToast();
   const remaining = tasks.length - completed.length;
+  // Unread 1:1 messages from flight surgeons, polled every few seconds for the nav badge.
+  const unread = usePoll<{ unread: number }>('/messages/unread', 5000);
+  const reloadUnread = unread.reload;
+  useEffect(() => {
+    window.addEventListener('evade:messages-read', reloadUnread);
+    return () => window.removeEventListener('evade:messages-read', reloadUnread);
+  }, [reloadUnread]);
+  const unreadCount = unread.data?.unread ?? 0;
 
+  // Signs out, then goes to the home screen. Only a successful logout leaves the page (replace: Back can't
+  // return to a signed-in page); a failed one stays here with a toast.
   async function handleSignOut() {
     if (signingOut) return;
     setSigningOut(true);
     try {
-      if (!(await signOut({ clearAccess: !user.demo }))) onSignOut();
+      await signOut({ clearAccess: !user.demo, redirect: false });
     } catch {
       showToast({ body: 'Sign-out failed. Please try again.' });
       setSigningOut(false);
+      return;
     }
+    navigate('/', { replace: true });
   }
 
   return (
@@ -167,22 +182,24 @@ function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
               </VStack>
             }>
             <SideNavSection title="Mission control" isHeaderHidden>
-              {NAV_ITEMS.filter(item => !user.demo || item.href !== '/chat').map(item => (
+              {NAV_ITEMS.map(item => (
                 <SideNavItem
                   key={item.href}
                   label={item.label}
                   href={item.href}
                   icon={item.icon}
                   selectedIcon={item.selectedIcon}
-                  isSelected={pathname === item.href}
-                  endContent={item.href === '/tasks' && remaining > 0 ? <Badge variant="purple" label={String(remaining)} /> : undefined}
+                  isSelected={pathname === item.href || pathname.startsWith(`${item.href}/`)}
+                  endContent={item.href === '/tasks' && remaining > 0 ? <Badge variant="purple" label={String(remaining)} />
+                    : item.href === '/messages' && unreadCount > 0 ? <Badge variant="error" label={String(unreadCount)} /> : undefined}
                 />
               ))}
             </SideNavSection>
           </SideNav>
         }>
         <Suspense fallback={<PageLoader />}>
-          <VStack className="app-frame__page" key={pathname}>
+          <VStack className="app-frame__page" key={pathname.split('/').slice(0, 2).join('/')}>
+            <AstronautNotices readOnly={!!user.demo} />
             {user.demo && <Banner status="info" title="Read-only demo" description="You can try meals and hydration here. These changes reset when you reload." />}
             <Outlet />
           </VStack>

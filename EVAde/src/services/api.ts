@@ -93,5 +93,4 @@ export function accessLoginUrl() {
   return loginUrl('/auth/access', '/dashboard');
 }
 
-export const staffLoginUrl = () => loginUrl('/auth/access/staff', '/admin');
 export const demoLoginUrl = () => loginUrl('/auth/demo', '/dashboard');

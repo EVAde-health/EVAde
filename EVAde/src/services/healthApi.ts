@@ -202,10 +202,17 @@ export const fetchSession = ({ signal }: Signal = {}) => api<{ user: SessionUser
 export const fetchAuthProviders = ({ signal }: Signal = {}) => api<AuthProviders>('/auth/providers', { signal });
 
 // End the EVAde session before navigating to the Access logout on the configured API host.
-export async function signOut({ clearAccess = true } = {}) {
+// Throws when the EVAde logout fails. Returns true when the page is navigating away to the Access logout.
+// With redirect: false the Access session is ended in the background (same-site request) and the caller
+// decides where the user lands.
+export async function signOut({ clearAccess = true, redirect = true } = {}) {
   await api<void>('/auth/logout', { method: 'POST' });
   const accessLogout = new URL('/cdn-cgi/access/logout', API_ORIGIN);
   if (!clearAccess || accessLogout.protocol !== 'https:') return false;
+  if (!redirect) {
+    await fetch(accessLogout, { method: 'GET', mode: 'no-cors', credentials: 'include', cache: 'no-store' }).catch(() => undefined);
+    return false;
+  }
   window.location.assign(accessLogout.href);
   return true;
 }
@@ -295,6 +302,40 @@ export const postJournalMessage = (id: string, content: string, { signal }: Sign
   api<{ message?: ApiJournalMessage; reply: ApiJournalMessage | null; duplicate?: boolean }>('/journal/messages', {
     method: 'POST', body: { id, content }, signal,
   });
+
+// One finished voice check-in: the transcript turns plus the agent's saved check-in (if any). The Worker stores the
+// entry and turns, then parses self-reports and readings. The session id makes retries safe (no duplicates).
+export interface VoiceSessionTurn {
+  sender: 'user' | 'assistant';
+  content: string;
+  ts: string;
+}
+
+export interface VoiceSessionCheckin {
+  sleep_hours?: number | null;
+  mood?: number | null;
+  symptoms?: string[];
+  systolic?: number | null;
+  diastolic?: number | null;
+  temperature_c?: number | null;
+  blood_sugar_mg_dl?: number | null;
+  notes?: string | null;
+  level?: string;
+  reasons?: string[];
+  actions?: string[];
+}
+
+export interface VoiceSessionResult {
+  entry_id: number;
+  duplicate: boolean;
+  messages: ApiJournalMessage[];
+  reply: ApiJournalMessage | null;
+}
+
+export const postVoiceSession = (
+  session: { session_id: string; turns: VoiceSessionTurn[]; checkin?: VoiceSessionCheckin | null },
+  { signal }: Signal = {},
+) => api<VoiceSessionResult>('/journal/voice-sessions', { method: 'POST', body: session, signal });
 
 // ---------- media (selfies) ----------
 

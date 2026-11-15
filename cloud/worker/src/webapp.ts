@@ -5,11 +5,15 @@
 // Points are always read from D1 (task_templates, tutorials), never from the request.
 
 import type { Principal } from "./auth";
+import { companionReply, SUPPORT_LINE, type ChatTurn } from "./companion";
+import { GOAL_TYPES, goalInserts, resolveGoals, type GoalType } from "./ops";
 
 export interface WebAppEnv {
   DB: D1Database;
   MEDIA?: R2Bucket;
   USDA_API_KEY?: string; // optional server-side FoodData Central key; Open Food Facts + the pantry work without it
+  AI?: Ai; // Workers AI: the EVA companion's replies
+  AI_GATEWAY?: string;
 }
 
 type Handler<E> = (req: Request, env: E, p: Record<string, string>, url: URL, ctx: ExecutionContext, who: Principal) => Promise<Response>;
@@ -21,9 +25,8 @@ export interface WebAppDeps<E extends WebAppEnv> {
   fail: (status: number, message: string) => Error;
   requireUser: (env: E, userId: string | undefined) => Promise<any>;
   isStaff: (who: Principal) => boolean;
-  journal: (env: E, ctx: ExecutionContext, id: number, userId: string, content: string) => Promise<{
-    summary: string | null; mood_label: string | null; needs_human_review: boolean; model: string | null;
-  }>;
+  /** Journal analysis + health-data parser for one entry. parseText adds conversation context for the parser only. */
+  journal: (env: E, ctx: ExecutionContext, id: number, userId: string, content: string, opts?: { parseText?: string }) => Promise<unknown>;
 }
 
 const DAY_MS = 864e5;
@@ -192,12 +195,20 @@ export async function awardDaily(env: WebAppEnv, userId: string, action: keyof t
   return points;
 }
 
-/** Supportive reply shown in the journal chat. Concern scores are never shown to the astronaut. */
-export function journalReply(a: { summary: string | null; mood_label: string | null; needs_human_review: boolean } | null) {
-  const parts = [a?.summary ? a.summary : "Saved to your journal."];
-  if (a?.mood_label) parts.push(`Mood: ${a.mood_label}`);
-  if (a?.needs_human_review) parts.push("You don't have to carry this alone. Your crew support team is available to talk with you today.");
-  return parts.join("\n\n");
+/** The reply after a saved voice session: an acknowledgement, never a summary or score. */
+export function voiceSavedReply(needsSupport: boolean) {
+  return needsSupport ? `Your voice check-in is saved to your journal.\n\n${SUPPORT_LINE}` : "Your voice check-in is saved to your journal.";
+}
+
+/**
+ * What the parser reads for one chat message: the companion's previous message (so a short answer such as "about 7"
+ * keeps its question) plus the new message. Only the new message counts as the astronaut's words, so values from
+ * earlier messages are never parsed twice.
+ */
+export function parseTextFor(history: ChatTurn[], content: string) {
+  let prev: ChatTurn | undefined;
+  for (let i = history.length - 2; i >= 0; i--) if (history[i].sender === "assistant") { prev = history[i]; break; } else break;
+  return prev ? `EVAde: ${prev.content.replace(/\s*\n\s*/g, " ").slice(0, 1000)}\nMe: ${content}` : content;
 }
 
 export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
@@ -247,24 +258,28 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
     const user = await requireUser(env, p.id);
     let day: string;
     try { day = trackingDay(url.searchParams.get("day")); } catch (e) { throw fail(422, (e as Error).message); }
-    if (who.demo) {
-      const { results: tasks } = await env.DB.prepare(
-        "SELECT t.*, CASE WHEN category='advanced' THEN 'protocol' ELSE 'basic' END AS kind FROM tasks t WHERE user_id=? AND id BETWEEN 900001 AND 900004 ORDER BY id"
-      ).bind(p.id).all();
-      return json({ day, week: weekStart(day), tasks, streak_days: user.streak_days, points: user.points });
-    }
+    // The demo account gets the same materialized list (the demo session itself stays read-only).
     const week = await materializeTasks(env, p.id, day);
-    const [tasks, done] = await env.DB.batch<any>([
+    const [tasks, done] = await Promise.all([
+      // LEFT JOIN: rows created before task templates existed (no task_key/day) are still shown,
+      // as long as they are due today or still open, instead of silently disappearing from the board.
       env.DB.prepare(
-        `SELECT t.id, t.task_key, t.title, t.detail, t.category, t.metric, t.recurrence, t.day, t.due_at, t.points, t.completed_at,
-                t.tutorial_id, t.time_window, tt.kind, tt.icon, tt.sort_order
-         FROM tasks t JOIN task_templates tt ON tt.task_key = t.task_key
-         WHERE t.user_id=? AND ((t.recurrence='daily' AND t.day=?) OR (t.recurrence='weekly' AND t.day=?))
-         ORDER BY tt.sort_order`
-      ).bind(p.id, day, week),
+        `SELECT t.id, COALESCE(t.task_key, 'task-' || t.id) AS task_key, t.title, t.detail, t.category, t.metric, t.recurrence,
+                t.day, t.due_at, t.points, t.completed_at, t.tutorial_id, t.time_window,
+                COALESCE(tt.kind, CASE WHEN t.category='advanced' THEN 'protocol' ELSE 'basic' END) AS kind,
+                tt.icon, COALESCE(tt.sort_order, 1000) AS sort_order
+         FROM tasks t LEFT JOIN task_templates tt ON tt.task_key = t.task_key
+         WHERE t.user_id=? AND (
+           (t.task_key IS NOT NULL AND ((t.recurrence='daily' AND t.day=?) OR (t.recurrence='weekly' AND t.day=?)))
+           OR (t.task_key IS NULL AND (
+             substr(COALESCE(t.due_at, t.created_at), 1, 10) = ?
+             OR (t.completed_at IS NULL AND (t.due_at IS NULL OR t.due_at >= ?))
+             OR substr(t.completed_at, 1, 10) = ?)))
+         ORDER BY COALESCE(tt.sort_order, 1000), t.id`
+      ).bind(p.id, day, week, day, `${day}T00:00:00.000Z`, day).all<any>(),
       env.DB.prepare(
         "SELECT DISTINCT day FROM tasks WHERE user_id=? AND recurrence='daily' AND day IS NOT NULL AND completed_at IS NOT NULL ORDER BY day DESC LIMIT 400"
-      ).bind(p.id),
+      ).bind(p.id).all<any>(),
     ]);
     const streak = streakFrom(done.results.map((r: any) => r.day), day);
     if (streak !== user.streak_days) await env.DB.prepare("UPDATE users SET streak_days=? WHERE user_id=?").bind(streak, p.id).run();
@@ -273,11 +288,21 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
   });
 
   // Goals and preferences (user_settings). Missing rows read as defaults.
+  // Goal fields come from the latest user_goals row (a flight surgeon's or the astronaut's own), then user_settings.
   route("GET", "/users/:id/settings", async (_r, env, p) => {
     await requireUser(env, p.id);
     const row = await env.DB.prepare("SELECT * FROM user_settings WHERE user_id=?").bind(p.id).first<any>();
     const { user_id: _id, updated_at, ...settings } = row ?? { ...SETTINGS_DEFAULTS, updated_at: null };
-    return json({ ...SETTINGS_DEFAULTS, ...settings, reduced_motion: Boolean(settings.reduced_motion), updated_at });
+    const goals = (await resolveGoals(env.DB, p.id))(p.id);
+    const fromGoals: Record<string, number> = {};
+    const goalSources: Record<string, string> = {};
+    for (const goal of goals) {
+      const field = GOAL_TYPES[goal.goal_type].setting;
+      if (field) fromGoals[field] = goal.target;
+      goalSources[goal.goal_type] = goal.set_by_name && goal.source === "surgeon" ? `Set by ${goal.set_by_name}` : goal.source;
+    }
+    return json({ ...SETTINGS_DEFAULTS, ...settings, ...fromGoals, steps_goal: goals.find((g) => g.goal_type === "steps")?.target ?? 8000,
+      reduced_motion: Boolean(settings.reduced_motion), goal_sources: goalSources, updated_at });
   });
 
   route("PATCH", "/users/:id/settings", async (req, env, p) => {
@@ -289,6 +314,12 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
       `INSERT INTO user_settings (user_id, ${cols.join(",")}, updated_at) VALUES (?, ${cols.map(() => "?").join(",")}, ?)
        ON CONFLICT(user_id) DO UPDATE SET ${cols.map((c) => `${c}=excluded.${c}`).join(",")}, updated_at=excluded.updated_at`
     ).bind(p.id, ...pairs.map(([, v]) => v), nowIso()).run();
+    // A goal the astronaut changes themselves is also a user_goals row, so "latest wins" holds for both sides.
+    const goalChanges = pairs.flatMap(([column, value]) => {
+      const type = (Object.keys(GOAL_TYPES) as GoalType[]).find((t) => GOAL_TYPES[t].setting === column);
+      return type && typeof value === "number" ? [{ goal_type: type, target: value }] : [];
+    });
+    if (goalChanges.length) await env.DB.batch(goalInserts(env.DB, p.id, goalChanges, p.id, null, nowIso()));
     return json({ ok: true });
   });
 
@@ -303,15 +334,29 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
   });
 
   // Journal chat history (the single running thread).
+  // Chat messages plus journal entries saved any other way (POST /journal, voice check-ins, sync, seeded history),
+  // so the journal shows every saved entry, not only ones typed into the chat.
   route("GET", "/users/:id/journal/messages", async (_r, env, p, url) => {
     const limit = Math.max(1, Math.min(Number(url.searchParams.get("limit")) || 200, 500));
-    const { results } = await env.DB.prepare(
-      "SELECT id, sender, content, ts FROM journal_messages WHERE user_id=? AND thread_id IS NULL ORDER BY ts DESC LIMIT ?"
-    ).bind(p.id, limit).all();
-    return json(results.reverse());
+    const [{ results: chat }, { results: entries }] = await Promise.all([
+      env.DB.prepare(
+        "SELECT id, sender, content, ts FROM journal_messages WHERE user_id=? AND thread_id IS NULL ORDER BY ts DESC LIMIT ?"
+      ).bind(p.id, limit).all<{ id: string; sender: string; content: string; ts: string }>(),
+      env.DB.prepare(
+        `SELECT j.id, j.ts, j.source, j.content, j.ai_summary, j.mood_label FROM journal_entries j
+         WHERE j.user_id=? AND NOT EXISTS (SELECT 1 FROM journal_messages m WHERE m.entry_id = j.id)
+         ORDER BY j.ts DESC LIMIT ?`
+      ).bind(p.id, limit).all<{ id: number; ts: string; content: string }>(),
+    ]);
+    // Only the astronaut's own words: analysis (summary, mood label, concern) is never shown back to them.
+    const fromEntries = entries.map((e) => ({ id: `entry-${e.id}`, sender: "user", content: e.content, ts: e.ts }));
+    const merged = [...chat, ...fromEntries].sort((a, b) => a.ts.localeCompare(b.ts) || (a.sender === "user" ? -1 : 1));
+    return json(merged.slice(-limit));
   });
 
-  // Astronaut message -> journal entry -> AI analysis (safety keywords always alert a human) -> stored reply.
+  // Astronaut message -> journal entry -> the EVA companion's conversational reply (companion.ts). The journal
+  // analysis (summary, sentiment, concern, staff alerts) and the health-data parser run after the response, on this
+  // message only, with ids derived from the message id, so a re-post or re-run never writes anything twice.
   route("POST", "/journal/messages", async (req, env, _p, _u, ctx, who) => {
     const b = await body(req);
     const userId = userOf(who, b?.user_id);
@@ -340,13 +385,19 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
         AND title LIKE 'Journal%' AND (due_at IS NULL OR due_at >= ?) ORDER BY due_at LIMIT 1) RETURNING points`)
       .bind(ts, userId, since).first<{ points: number | null }>();
     if (journalTask?.points) await env.DB.prepare("UPDATE users SET points=points+? WHERE user_id=?").bind(journalTask.points, userId).run();
-    let analysis = null;
+    // The conversation so far: the last day of the main thread (typed and voice turns), oldest first, ending with this message.
+    const { results: recent } = await env.DB.prepare(
+      "SELECT sender, content FROM journal_messages WHERE user_id=? AND thread_id IS NULL AND sender IN ('user','assistant') AND ts>=? ORDER BY ts DESC, rowid DESC LIMIT 30"
+    ).bind(userId, since).all<ChatTurn>();
+    const history = recent.reverse();
     if (entry?.id) {
-      try { analysis = await d.journal(env, ctx, entry.id, userId, content); } catch (e) { console.error("journal analysis", e instanceof Error ? e.name : "Error"); }
+      ctx.waitUntil(d.journal(env, ctx, entry.id, userId, content, { parseText: parseTextFor(history, content) })
+        .then(() => {}, (e) => console.error("journal analysis", e instanceof Error ? e.name : "Error")));
     }
-    const reply = { id: crypto.randomUUID(), sender: "assistant", content: journalReply(analysis), ts: new Date(Date.parse(ts) + 1).toISOString() };
+    const answer = await companionReply(env, history);
+    const reply = { id: crypto.randomUUID(), sender: "assistant", content: answer.content, ts: new Date(Date.parse(ts) + 1).toISOString() };
     await env.DB.prepare("INSERT INTO journal_messages (id,user_id,sender,content,ts,entry_id,model) VALUES (?,?,?,?,?,?,?)")
-      .bind(reply.id, userId, reply.sender, reply.content, reply.ts, entry?.id ?? null, analysis?.model ?? "rules").run();
+      .bind(reply.id, userId, reply.sender, reply.content, reply.ts, entry?.id ?? null, answer.model ?? "rules").run();
     return json({ message: { id, sender: "user", content, ts }, reply }, 201);
   });
 

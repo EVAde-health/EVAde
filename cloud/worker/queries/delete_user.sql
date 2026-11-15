@@ -19,6 +19,14 @@ UPDATE alerts   SET acknowledged_by = NULL WHERE acknowledged_by = ?1 AND user_i
 UPDATE daily_goals SET set_by = NULL WHERE set_by = ?1 AND user_id <> ?1;
 UPDATE emergencies SET acknowledged_by = NULL WHERE acknowledged_by = ?1 AND user_id <> ?1;
 UPDATE emergencies SET resolved_by = NULL WHERE resolved_by = ?1 AND user_id <> ?1;
+UPDATE user_goals SET set_by = NULL WHERE set_by = ?1 AND user_id <> ?1;
+UPDATE vital_corrections SET corrected_by = NULL WHERE corrected_by = ?1 AND user_id <> ?1;
+UPDATE user_notifications SET actor_id = NULL WHERE actor_id = ?1 AND user_id <> ?1;
+DELETE FROM conversation_messages WHERE sender_id = ?1 OR conversation_id IN (SELECT id FROM conversations WHERE astronaut_id = ?1 OR surgeon_id = ?1);
+DELETE FROM conversations WHERE astronaut_id = ?1 OR surgeon_id = ?1;
+DELETE FROM user_goals WHERE user_id = ?1;
+DELETE FROM vital_corrections WHERE user_id = ?1;
+DELETE FROM user_notifications WHERE user_id = ?1;
 DELETE FROM staff_messages WHERE sender_id = ?1 OR thread_id IN (SELECT id FROM staff_threads WHERE astronaut_id = ?1 OR staff_id = ?1);
 DELETE FROM staff_threads WHERE astronaut_id = ?1 OR staff_id = ?1;
 DELETE FROM daily_goals WHERE user_id = ?1;

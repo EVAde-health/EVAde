@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("cloudflare:workers", () => ({ DurableObject: class {} }));
 const { default: worker } = await import("../src/index");
-const { streakFrom, trackingDay, weekStart, settingsPatch, journalReply } = await import("../src/webapp");
+const { streakFrom, trackingDay, weekStart, settingsPatch, voiceSavedReply } = await import("../src/webapp");
 
 const API = "https://api.evade.health";
 const FRONTEND = "https://evade.health";
@@ -117,10 +117,11 @@ describe("pure helpers", () => {
     expect(() => settingsPatch({ is_admin: true })).toThrow();
     expect(settingsPatch({ water_goal_ml: 3000.4, reduced_motion: true })).toEqual([["water_goal_ml", 3000], ["reduced_motion", 1]]);
   });
-  it("never shows concern scores in the journal reply", () => {
-    const reply = journalReply({ summary: "A hard day.", mood_label: "low", needs_human_review: true });
+  it("never shows a summary or concern scores after a voice check-in", () => {
+    const reply = voiceSavedReply(true);
     expect(reply).toContain("crew support team");
-    expect(reply).not.toMatch(/concern|high|score/i);
+    expect(reply).not.toMatch(/concern|high|score|mood/i);
+    expect(voiceSavedReply(false)).toBe("Your voice check-in is saved to your journal.");
   });
 });
 
@@ -156,6 +157,18 @@ describe("today's missions", () => {
     const after = await call("GET", `/users/${ASTRONAUT}/today?day=${today()}`);
     expect(after.data).toMatchObject({ streak_days: 1, points: 30 });
     expect((await call("POST", `/tasks/${bp.id}/complete`, { token: "other", body: {} })).status).toBe(403);
+  });
+  it("keeps tasks that have no template (LEFT JOIN) instead of dropping them", async () => {
+    const raw: DatabaseSync = env.DB.raw;
+    const now = new Date().toISOString();
+    raw.prepare("INSERT INTO tasks (user_id, title, category, metric, recurrence, points, due_at) VALUES (?,?,?,?,?,?,?)")
+      .run(ASTRONAUT, "Legacy: log sleep", "basic", "sleep_hours", "daily", 10, now);
+    raw.prepare("INSERT INTO tasks (user_id, title, category, metric, recurrence, points, due_at) VALUES (?,?,?,?,?,?,?)")
+      .run(ASTRONAUT, "Old and overdue", "basic", null, "daily", 10, "2020-01-01T00:00:00.000Z");
+    const res = await call("GET", `/users/${ASTRONAUT}/today?day=${today()}`);
+    expect(res.data.tasks).toHaveLength(15);
+    expect(res.data.tasks.at(-1)).toMatchObject({ title: "Legacy: log sleep", kind: "basic", task_key: expect.stringMatching(/^task-\d+$/) });
+    expect(res.data.tasks.map((t: any) => t.title)).not.toContain("Old and overdue");
   });
   it("rejects far-off days", async () => {
     expect((await call("GET", `/users/${ASTRONAUT}/today?day=2020-01-01`)).status).toBe(422);
@@ -215,6 +228,23 @@ describe("journal chat", () => {
     expect(history.data.map((m: any) => m.sender)).toEqual(["user", "assistant"]);
     expect((await call("POST", "/journal/messages", { body: { id, content: "again" } })).data.duplicate).toBe(true);
     expect((await call("POST", "/journal/messages", { token: "other", body: { id, content: "steal" } })).status).toBe(409);
+  });
+  it("shows journal entries saved outside the chat (POST /journal, voice, sync) in the chat history", async () => {
+    const raw: DatabaseSync = env.DB.raw;
+    raw.prepare("INSERT INTO journal_entries (user_id, ts, source, content, ai_summary, mood_label) VALUES (?,?,?,?,?,?)")
+      .run(ASTRONAUT, "2026-11-10T08:00:00.000Z", "voice", "Voice note from the cupola.", "Calm, reflective entry.", "calm");
+    raw.prepare("INSERT INTO journal_entries (user_id, ts, source, content) VALUES (?,?,?,?)")
+      .run(ASTRONAUT, "2026-11-11T08:00:00.000Z", "text", "Synced from the tablet.");
+    await call("POST", "/journal/messages", { body: { id: crypto.randomUUID(), content: "Typed in the chat." } });
+    const history = await call("GET", `/users/${ASTRONAUT}/journal/messages`);
+    const contents = history.data.map((m: any) => m.content);
+    expect(contents.slice(0, 2)).toEqual(["Voice note from the cupola.", "Synced from the tablet."]);
+    // The analysis (summary, mood label) is for the flight surgeon only and never shown back in the astronaut's chat.
+    expect(contents.join("\n")).not.toContain("Calm, reflective entry.");
+    expect(contents.join("\n")).not.toContain("Mood: calm");
+    expect(contents).toContain("Typed in the chat.");
+    expect(contents.filter((c: string) => c === "Typed in the chat.")).toHaveLength(1); // chat entries are not duplicated
+    expect((await call("GET", `/users/${ASTRONAUT}/journal/messages`, { token: "other" })).status).toBe(403);
   });
   it("leaves the mood check-in task for the mood rating", async () => {
     await call("GET", `/users/${ASTRONAUT}/today?day=${today()}`);
