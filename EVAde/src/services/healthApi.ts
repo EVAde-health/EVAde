@@ -1,6 +1,6 @@
 // Typed calls to the EVAde Worker. Every function here reads or writes D1 through the API;
 // the Worker checks the session, ownership and points, so the browser never decides either.
-import { api, userPath } from './api';
+import { API_ORIGIN, api, userPath } from './api';
 
 export type Level = 'green' | 'yellow' | 'red';
 
@@ -9,6 +9,7 @@ export interface SessionUser {
   display_name: string;
   full_name: string | null;
   role: string;
+  demo?: boolean;
   environment: string;
   mission_name: string | null;
   mission_start: string | null;
@@ -176,7 +177,6 @@ export interface ApiFood {
 export interface AuthProviders {
   providers: string[];
   default_provider: string | null;
-  turnstile_site_key: string | null;
 }
 
 type Signal = { signal?: AbortSignal };
@@ -196,13 +196,19 @@ export function localDayWindow(date = new Date()) {
 // ---------- session ----------
 
 // Current signed-in user, or throws ApiError 401.
-export const fetchSession = ({ signal }: Signal = {}) => api<{ user: SessionUser }>('/auth/me', { signal });
+export const fetchSession = ({ signal }: Signal = {}) => api<{ user: SessionUser | null; demo?: boolean }>('/auth/me', { signal });
 
-// Login methods the Worker has enabled, plus the public Turnstile site key.
+// Login methods the Worker has enabled.
 export const fetchAuthProviders = ({ signal }: Signal = {}) => api<AuthProviders>('/auth/providers', { signal });
 
-// Ends the EVAde session (204); a provider logout URL is followed if the Worker ever returns one.
-export const signOut = () => api<{ logout_url?: string } | undefined>('/auth/logout', { method: 'POST' });
+// End the EVAde session before navigating to the Access logout on the configured API host.
+export async function signOut({ clearAccess = true } = {}) {
+  await api<void>('/auth/logout', { method: 'POST' });
+  const accessLogout = new URL('/cdn-cgi/access/logout', API_ORIGIN);
+  if (!clearAccess || accessLogout.protocol !== 'https:') return false;
+  window.location.assign(accessLogout.href);
+  return true;
+}
 
 // ---------- health data ----------
 

@@ -11,6 +11,7 @@ interface RequestOptions {
 }
 
 export const SIGN_IN_REQUIRED = 'evade:sign-in-required';
+export const STAFF_ROLES = new Set(['flight_surgeon', 'therapist', 'admin']);
 
 // Validates VITE_API_URL: HTTPS only, except a loopback Worker during local development.
 function resolveApiOrigin() {
@@ -56,7 +57,7 @@ async function send(path: string, { method = 'GET', body, raw, signal }: Request
     headers,
     body: raw ?? (body === undefined ? undefined : JSON.stringify(body)),
   });
-  if (response.status === 401) window.dispatchEvent(new Event(SIGN_IN_REQUIRED));
+  if (response.status === 401 && !signal?.aborted) window.dispatchEvent(new Event(SIGN_IN_REQUIRED));
   if (!response.ok) {
     const detail = await response.json().then((data: { error?: string }) => data.error, () => undefined);
     throw new ApiError(response.status, detail);
@@ -81,11 +82,16 @@ export function userPath(userId: string, resource: string) {
 }
 
 // Where the Worker sends the browser after a successful sign-in.
-export function dashboardRedirect() {
-  return `${window.location.origin}/dashboard`;
+function loginUrl(path: string, destination: '/dashboard' | '/admin') {
+  const url = apiUrl(path);
+  url.searchParams.set('redirect', `${window.location.origin}${destination}`);
+  return url.href;
 }
 
 // Cloudflare Access sign-in (also creates the account on first visit); Access guards this Worker path.
 export function accessLoginUrl() {
-  return `${API_ORIGIN}/auth/access?${new URLSearchParams({ redirect: dashboardRedirect() })}`;
+  return loginUrl('/auth/access', '/dashboard');
 }
+
+export const staffLoginUrl = () => loginUrl('/auth/access/staff', '/admin');
+export const demoLoginUrl = () => loginUrl('/auth/demo', '/dashboard');

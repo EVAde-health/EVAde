@@ -6,12 +6,12 @@ The website reads and writes everything through the `evade-api` Worker (`../clou
 The only build setting is the public `VITE_API_URL` (see `.env.example`); never put secrets in `VITE_*` values,
 because they ship to every browser. The USDA key and Access settings live in the Worker.
 
-- **Sign-in:** Cloudflare Access is the only sign-in. When `GET /auth/providers` lists `cloudflare_access`, the
-  login page links to the Worker's `/auth/access` (Access verifies the person; first sign-in creates the account).
-  The session is an HttpOnly cookie. There is no demo or test login in the UI.
-- **Sign-out:** ends the EVAde session, then goes to the Access logout page the Worker returns, which ends the
-  Cloudflare Access session too.
+- **Sign-in:** The API advertises the available sign-in options. Astronauts use `/auth/access`, and approved staff
+  use `/auth/access/staff`. **Try the demo** opens the synthetic read-only account when the API enables it.
+- **Sign-out:** Ends the EVAde session and opens Cloudflare Access logout for personal accounts. If the login
+  page opens the wrong account, choose **Use a different email**, then return to the login page and enter your own email.
 - **Signed-in routes:** `AppFrame` checks `/auth/me` and redirects to `/login` on 401.
+- **Staff console:** `/admin` requires a staff session. Ship the matching API from `evade-cloud` first.
 - **Points:** task, tutorial, meal, water and measurement XP is decided and capped by the Worker.
 - **Selfies:** stored privately in R2 through `/media` (shows a notice until the R2 bucket is enabled).
 - **New users:** panels show "No readings yet" until data syncs.
@@ -74,7 +74,6 @@ export default defineConfig([
 ])
 
 ```
-
 You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
 
 ```js

@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useState } from 'react';
-import { Navigate, Outlet, useLocation } from 'react-router-dom';
+import { matchRoutes, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { Button } from '@astryxdesign/core/Button';
+import { Banner } from '@astryxdesign/core/Banner';
 import { Text } from '@astryxdesign/core/Text';
 import { useToast } from '@astryxdesign/core/Toast';
 import { AppShell } from '@astryxdesign/core/AppShell';
@@ -13,6 +14,7 @@ import {
   ArrowLeftStartOnRectangleIcon,
   BookOpenIcon,
   CameraIcon,
+  ChatBubbleLeftRightIcon,
   CheckCircleIcon,
   PlayCircleIcon,
   Squares2X2Icon,
@@ -20,15 +22,19 @@ import {
 import {
   BookOpenIcon as BookOpenSolid,
   CameraIcon as CameraSolid,
+  ChatBubbleLeftRightIcon as ChatSolid,
   CheckCircleIcon as CheckCircleSolid,
   PlayCircleIcon as PlayCircleSolid,
   Squares2X2Icon as Squares2X2Solid,
 } from '@heroicons/react/24/solid';
+import { AccountStorageContext } from '../context/AccountStorageContext';
 import { useMission } from '../context/MissionContext';
-import { ApiError, SIGN_IN_REQUIRED } from '../services/api';
+import { ApiError, SIGN_IN_REQUIRED, STAFF_ROLES } from '../services/api';
 import { fetchSession, signOut, type SessionUser } from '../services/healthApi';
 import AmbientBackdrop from './AmbientBackdrop';
+import AdminShell from './AdminShell';
 import BrandMark from './BrandMark';
+import EmergencyButton from './EmergencyButton';
 import LevelMeter from './LevelMeter';
 import MotionToggle from './MotionToggle';
 import MissionProvider from './MissionProvider';
@@ -42,36 +48,33 @@ const NAV_ITEMS = [
   { href: '/tasks', label: 'Missions', icon: CheckCircleIcon, selectedIcon: CheckCircleSolid },
   { href: '/journal', label: 'Journal', icon: BookOpenIcon, selectedIcon: BookOpenSolid },
   { href: '/selfies', label: 'Selfies', icon: CameraIcon, selectedIcon: CameraSolid },
+  { href: '/chat', label: 'Team line', icon: ChatBubbleLeftRightIcon, selectedIcon: ChatSolid },
 ];
 
 type SessionState = SessionUser | 'loading' | 'signed-out' | 'error';
-
-// Only follow provider logout links that are absolute HTTPS URLs.
-function safeLogoutUrl(url: string | undefined) {
-  if (!url) return null;
-  try {
-    return new URL(url).protocol === 'https:' ? url : null;
-  } catch {
-    return null;
-  }
-}
 
 // Session gate: every app route renders only for a verified /auth/me user.
 export default function AppFrame() {
   const [session, setSession] = useState<SessionState>('loading');
   const [attempt, setAttempt] = useState(0);
+  const location = useLocation();
 
   useEffect(() => {
     const expire = () => setSession('signed-out');
+    const refresh = () => setAttempt(previous => previous + 1);
     window.addEventListener(SIGN_IN_REQUIRED, expire);
-    return () => window.removeEventListener(SIGN_IN_REQUIRED, expire);
+    window.addEventListener('focus', refresh);
+    return () => {
+      window.removeEventListener(SIGN_IN_REQUIRED, expire);
+      window.removeEventListener('focus', refresh);
+    };
   }, []);
 
   useEffect(() => {
     const controller = new AbortController();
     fetchSession({ signal: controller.signal })
-      .then(({ user }) => {
-        if (!controller.signal.aborted) setSession(user?.user_id ? user : 'signed-out');
+      .then(({ user, demo }) => {
+        if (!controller.signal.aborted) setSession(user?.user_id ? { ...user, demo: demo === true } : 'signed-out');
       })
       .catch(error => {
         if (!controller.signal.aborted) setSession(error instanceof ApiError && error.status === 401 ? 'signed-out' : 'error');
@@ -96,10 +99,19 @@ export default function AppFrame() {
     );
   }
 
+  if (STAFF_ROLES.has(session.role) && !session.demo) {
+    return <AdminShell key={session.user_id} user={session} onSignOut={() => setSession('signed-out')} />;
+  }
+  if (matchRoutes([{ path: '/admin/*' }], location) || (session.demo && matchRoutes([{ path: '/chat/*' }], location))) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
   return (
-    <MissionProvider key={session.user_id} user={session}>
-      <SignedInFrame onSignOut={() => setSession('signed-out')} />
-    </MissionProvider>
+    <AccountStorageContext.Provider value={session.demo ? null : session.user_id}>
+      <MissionProvider key={`${session.user_id}:${session.demo}`} user={session}>
+        <SignedInFrame onSignOut={() => setSession('signed-out')} />
+      </MissionProvider>
+    </AccountStorageContext.Provider>
   );
 }
 
@@ -111,14 +123,11 @@ function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
   const showToast = useToast();
   const remaining = tasks.length - completed.length;
 
-  // Ends the server session, then follows the provider logout when given.
   async function handleSignOut() {
     if (signingOut) return;
     setSigningOut(true);
     try {
-      const logoutUrl = safeLogoutUrl((await signOut())?.logout_url);
-      if (logoutUrl) window.location.assign(logoutUrl);
-      else onSignOut();
+      if (!(await signOut({ clearAccess: !user.demo }))) onSignOut();
     } catch {
       showToast({ body: 'Sign-out failed. Please try again.' });
       setSigningOut(false);
@@ -146,6 +155,7 @@ function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
             footer={
               <VStack gap={2}>
                 <LevelMeter />
+                {!user.demo && <EmergencyButton />}
                 <Divider />
                 <HStack gap={1} vAlign="center" hAlign="between">
                   <SideNavItem label="Sign out" icon={ArrowLeftStartOnRectangleIcon} onClick={handleSignOut} isDisabled={signingOut} />
@@ -157,7 +167,7 @@ function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
               </VStack>
             }>
             <SideNavSection title="Mission control" isHeaderHidden>
-              {NAV_ITEMS.map(item => (
+              {NAV_ITEMS.filter(item => !user.demo || item.href !== '/chat').map(item => (
                 <SideNavItem
                   key={item.href}
                   label={item.label}
@@ -173,6 +183,7 @@ function SignedInFrame({ onSignOut }: { onSignOut: () => void }) {
         }>
         <Suspense fallback={<PageLoader />}>
           <VStack className="app-frame__page" key={pathname}>
+            {user.demo && <Banner status="info" title="Read-only demo" description="You can try meals and hydration here. These changes reset when you reload." />}
             <Outlet />
           </VStack>
         </Suspense>
