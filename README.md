@@ -206,10 +206,9 @@ Each NOAA record looks like `{"time_tag": "…Z", "satellite": 18, "flux": 0.3, 
 
 | File | Contents |
 |---|---|
-| [`data/mission_trends.json`](data/mission_trends.json) | 34 published health values + 14 mission-timeline events, each with a source URL and evidence label |
-| [`data/radiation_data.json`](data/radiation_data.json) | Dose rates by destination, limits, solar-storm events, NOAA S-scale, live feed URLs |
-| [`data/research_trends.md`](data/research_trends.md) | Full research brief: findings, a suggested 6-month mission storyline, caveats |
-| [`docs/images/`](docs/images/) | The charts in this README, drawn directly from the JSON files |
+| [`missionTrendsRaw.ts`](EVAde/src/data/research/missionTrendsRaw.ts) | Published health values and mission-timeline events, with source URLs and evidence labels |
+| [`radiationRaw.ts`](EVAde/src/data/research/radiationRaw.ts) | Dose rates by destination, limits, solar-storm events, NOAA S-scale, and live feed URLs |
+| [`sources.md`](sources.md) | Source index for NASA reports, mission references, and other datasets |
 
 ---
 
@@ -248,7 +247,7 @@ Each NOAA record looks like `{"time_tag": "…Z", "satellite": 18, "flux": 0.3, 
 - The HRV trend comes from a non-peer-reviewed preprint.
 - EEG papers give the **direction** of change, not its size.
 - Radiation varies with the solar cycle, shielding and orbit altitude; 1.84 mSv/day was measured near solar maximum.
-- Some numbers come from NASA reports or press releases summarising the original papers (noted in `data/mission_trends.json`).
+- Some numbers come from NASA reports or press releases summarising the original papers (noted in [`missionTrendsRaw.ts`](EVAde/src/data/research/missionTrendsRaw.ts)).
 
 ---
 
