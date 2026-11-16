@@ -1,0 +1,8 @@
+# Security headers for the web app's static assets on evade.health (Workers static assets).
+# Worker-handled paths (/api/*, /voice/*, /health) set their own headers.
+/*
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(self), microphone=(self), geolocation=()
