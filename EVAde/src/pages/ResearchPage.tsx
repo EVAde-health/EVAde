@@ -47,6 +47,7 @@ export default function ResearchPage() {
 
       <VStack gap={4}>
         <SectionTitle title="Sources" caption="Open any study to check a number" />
+        <Link href="/bibliography">Browse the bibliography</Link>
         <Grid columns={{ minWidth: 300, max: 2 }} gap={4}>
           {TOPICS.map(topic => (
             <Card key={topic} padding={4} className="research__sources reveal-on-scroll">

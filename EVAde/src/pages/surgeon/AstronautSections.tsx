@@ -25,7 +25,8 @@ import StatusBadge from '../../components/StatusBadge';
 import { useSurgeon } from '../../context/SurgeonContext';
 import { AXIS_TICK, BAR_CURSOR, CHART_MARGIN, GRID_STROKE, SERIES, Y_AXIS_WIDTH } from '../../components/chartConfig';
 import { useResource } from '../../services/useResource';
-import DeepModelResults, { type DeepModelCatalog, type StaffDeepModelResults } from './DeepModelResults';
+import DeepModelResults, { type StaffDeepModelResults } from './DeepModelResults';
+import type { ModelCatalog } from '../../services/modelCatalog';
 import {
   correctObservation, formatValue, hasTimestamp, levelStatus, responseRows, setGoals,
   type AstronautDetail, type Correction, type GoalHistoryRow, type GoalType, type GoalTypeInfo, type JournalData, type JournalOverview,
@@ -55,7 +56,7 @@ export function VitalsSection({ id, latest }: { id: string; latest: AstronautDet
   const series = useResource<{ metrics: SeriesMetric[] }>(group === 'sleep' ? null : `/admin/astronauts/${id}/series?group=${group}&days=${days}`);
   const sleep = useResource<SleepData>(group === 'sleep' ? `/admin/astronauts/${id}/sleep?days=${Math.min(Number(days), 30)}` : null);
   const models = useResource<StaffDeepModelResults>(`/admin/astronauts/${encodeURIComponent(id)}/deep-model-results`);
-  const catalog = useResource<DeepModelCatalog>(models.data && Object.values(models.data).some(row => !row) ? '/models' : null);
+  const catalog = useResource<ModelCatalog>(models.data && Object.values(models.data).some(row => !row) ? '/models' : null);
   const charted = responseRows(series.data?.metrics).filter(metric => Array.isArray(metric.points) && metric.points.length);
   const reds = responseRows(latest).filter(item => item.level === 'red');
 

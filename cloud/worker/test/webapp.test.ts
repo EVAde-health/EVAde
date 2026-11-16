@@ -123,6 +123,36 @@ async function call(method: string, path: string, { token = "astro", body, origi
 
 const today = () => new Date().toISOString().slice(0, 10);
 
+it("summarizes model runs without result contents or cross-account exposure to demo and personal users", async () => {
+  env.DEMO_LOGIN = "true";
+  const demoId = "00000000-0000-4000-8000-00000000d001";
+  const raw: DatabaseSync = env.DB.raw;
+  raw.prepare("INSERT OR IGNORE INTO users (user_id, display_name, role) VALUES (?, 'Demo', 'astronaut')").run(demoId);
+  await env.SESSIONS.put("sess:" + await sha256("runs-demo"), JSON.stringify({ user_id: demoId, role: "astronaut", provider: "demo" }));
+  await env.SESSIONS.put("sess:" + await sha256("runs-staff"), JSON.stringify({ user_id: SURGEON, role: "flight_surgeon", provider: "cloudflare_access" }));
+  raw.prepare("DELETE FROM model_results").run();
+  const insert = raw.prepare("INSERT INTO model_results(user_id, ts, endpoint, model_id, source, output, flag) VALUES (?, ?, '/v1/predict/ecg', ?, ?, ?, 'private flag')");
+  insert.run(demoId, "2026-11-15T00:00:00Z", "EVA-6", "simulated", '{"data":{}}');
+  insert.run(demoId, "2026-11-15T09:00:00Z", "EVA-6", "simulated", '{"data":{"source":"mock"}}');
+  insert.run(OTHER, "2026-11-15T08:00:00Z", "EVA-6", "model", '{"data":{}}');
+  insert.run(OTHER, "2026-11-15T11:00:00Z", "EVA-6", "mock", '{"data":{}}');
+  insert.run(ASTRONAUT, "2026-11-15T01:00:00Z", "EVA-13", "model", '{"data":{}}');
+  const path = "/models/runs";
+  expect((await call("GET", path, { token: null })).status).toBe(401);
+  expect(await call("GET", path, { token: "runs-demo" })).toEqual({ status: 200, data: {
+    scope: "demo", models: [{ model_id: "EVA-6", count: 1, last_run: "2026-11-15T00:00:00.000Z" }],
+  } });
+  expect(await call("GET", path + "?user_id=" + OTHER)).toEqual({ status: 200, data: {
+    scope: "personal", models: [{ model_id: "EVA-13", count: 1, last_run: "2026-11-15T01:00:00.000Z" }],
+  } });
+  expect(await call("GET", path, { token: "runs-staff" })).toEqual({ status: 200, data: {
+    scope: "staff", models: expect.arrayContaining([
+      { model_id: "EVA-6", count: 2, last_run: "2026-11-15T08:00:00.000Z" },
+      { model_id: "EVA-13", count: 1, last_run: "2026-11-15T01:00:00.000Z" },
+    ]),
+  } });
+});
+
 describe("AI companion routes", () => {
   async function staffSession() {
     Object.assign(env, { ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com", ACCESS_AUD: "crew", ACCESS_STAFF_AUD: "staff" });
@@ -638,6 +668,7 @@ describe("synthetic simulation", () => {
     expect(requested.map(([path]) => path).sort()).toEqual([
       "/v1/predict/ecg-deep", "/v1/predict/radiation-risk", "/v1/predict/risk", "/v1/predict/sleep-deep", "/v1/users",
     ]);
+      expect(requested.find(([path]) => path === "/v1/users")?.[1]).toEqual({ consent: true, cohort: "demo" });
     expect(requested.slice(1).every(([, input]) => input.user_id === "model-simulation-fixture")).toBe(true);
     expect(requested.find(([path]) => path.endsWith("/ecg-deep"))?.[1]).toMatchObject({ fs_hz: 100, source: "simulated" });
     expect(requested.find(([path]) => path.endsWith("/sleep-deep"))?.[1]).toMatchObject({ fs_hz: 100, source: "simulated" });

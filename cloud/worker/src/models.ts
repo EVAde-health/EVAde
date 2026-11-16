@@ -61,7 +61,7 @@ export async function modelUserId(env: ModelEnv, userId: string): Promise<string
   const key = `mu:${userId}`;
   const known = await env.SESSIONS.get(key);
   if (known) return known;
-  const r = await callModelApi(env, "POST", "/v1/users", { cohort: "demo" });
+  const r = await callModelApi(env, "POST", "/v1/users", { consent: true, cohort: "demo" });
   const id = r.out?.data?.user_id ?? r.out?.user_id;
   if (!r.ok || typeof id !== "string") throw new ModelApiError(r.status === 503 ? 503 : 502, "Model service could not register the user");
   await env.SESSIONS.put(key, id);
