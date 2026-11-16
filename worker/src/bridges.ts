@@ -47,13 +47,13 @@ export class CallBridge extends AgentSession {
       this.callSid = start.callSid ?? null;
       const params = start.customParameters || {};
       this.crewId = params.caller || "unknown";
-      this.label = this.callSid || this.crewId;
+      this.label = this.callSid || "phone"; // crewId is the caller's phone number: keep it out of logs
       if (this.requireToken && !(await this.consumeToken(params.token))) {
         log("warn", "Stream rejected: missing/expired token", { stream: this.streamSid });
         return "stop";
       }
       this.authorized = true;
-      log("info", "Call started", { call: this.callSid, stream: this.streamSid, caller: this.crewId });
+      log("info", "Call started", { call: this.callSid, stream: this.streamSid });
     } else if (event === "media") {
       const media = msg.media || {};
       if (this.authorized && (media.track ?? "inbound") === "inbound") await this.userAudio(media.payload ?? "");
