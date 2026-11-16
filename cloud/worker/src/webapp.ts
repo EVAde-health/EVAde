@@ -13,6 +13,7 @@ export interface WebAppEnv extends AiEnv {
   DB: D1Database;
   MEDIA?: R2Bucket;
   USDA_API_KEY?: string; // optional server-side FoodData Central key; Open Food Facts + the pantry work without it
+  AUTH_RATE_LIMITER: RateLimit; // per-user cap on Grok companion replies (the same binding /journal/chat uses)
 }
 
 type Handler<E> = (req: Request, env: E, p: Record<string, string>, url: URL, ctx: ExecutionContext, who: Principal) => Promise<Response>;
@@ -381,7 +382,10 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
     const note = forwarded
       ? `The app has just forwarded this message to the flight surgeon${forwarded.urgent ? " as urgent" : ""}. A confirmation line is added after your reply; don't repeat it.`
       : "This message was NOT forwarded to the flight surgeon. If they want the surgeon, tell them to ask you to contact the flight surgeon, or to use Messages.";
-    const answer = await companionReply(env, history, note);
+    // Each message costs one Grok call, so replies share the per-user limit /journal/chat uses. Past it, the entry is
+    // still saved and analysed; the astronaut gets the companion's "try again in a moment" line instead of a reply.
+    const withinLimit = (await env.AUTH_RATE_LIMITER.limit({ key: `ai-companion:${userId}` })).success;
+    const answer = await companionReply(withinLimit ? env : { ...env, XAI_API_KEY: undefined }, history, note);
     const confirmation = forwarded
       ? forwarded.urgent ? "I've alerted the flight surgeon as urgent with what you wrote." : "I've sent what you wrote to the flight surgeon's inbox."
       : null;
