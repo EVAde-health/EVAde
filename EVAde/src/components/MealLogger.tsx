@@ -17,6 +17,7 @@ import { createFoodSearchSource, macrosForPortion, type FoodItem } from '../serv
 import { useMission } from '../context/MissionContext';
 import { MEAL_XP } from '../data/tasks';
 import PanelCard from './PanelCard';
+import './css/MealLogger.css';
 
 const foodSource = createFoodSearchSource();
 const DEFAULT_GRAMS = 100;
@@ -95,6 +96,7 @@ export default function MealLogger() {
       {meals.length === 0 ? (
         <EmptyState isCompact title="No meals logged yet" description={`Each meal you log earns +${MEAL_XP} XP (up to 6 a day).`} />
       ) : (
+        <div className="meal-logger__list" tabIndex={0} aria-label="Meals logged today">
         <List hasDividers edge="flush" density="compact">
           {meals.map(meal => (
             <ListItem
@@ -115,6 +117,7 @@ export default function MealLogger() {
             />
           ))}
         </List>
+        </div>
       )}
     </PanelCard>
   );
