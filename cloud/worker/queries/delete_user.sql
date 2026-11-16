@@ -27,8 +27,6 @@ DELETE FROM conversations WHERE astronaut_id = ?1 OR surgeon_id = ?1;
 DELETE FROM user_goals WHERE user_id = ?1;
 DELETE FROM vital_corrections WHERE user_id = ?1;
 DELETE FROM user_notifications WHERE user_id = ?1;
-DELETE FROM staff_messages WHERE sender_id = ?1 OR thread_id IN (SELECT id FROM staff_threads WHERE astronaut_id = ?1 OR staff_id = ?1);
-DELETE FROM staff_threads WHERE astronaut_id = ?1 OR staff_id = ?1;
 DELETE FROM daily_goals WHERE user_id = ?1;
 DELETE FROM emergencies WHERE user_id = ?1;
 
@@ -36,7 +34,6 @@ DELETE FROM emergencies WHERE user_id = ?1;
 DELETE FROM messages        WHERE user_id = ?1;
 DELETE FROM alerts          WHERE user_id = ?1;
 
-DELETE FROM phone_numbers   WHERE user_id = ?1;
 DELETE FROM meals           WHERE user_id = ?1;
 DELETE FROM hydration       WHERE user_id = ?1;
 DELETE FROM media           WHERE user_id = ?1;
@@ -55,8 +52,5 @@ DELETE FROM action_log      WHERE user_id = ?1;   -- no FK on this table, so it 
 
 DELETE FROM tutorial_progress WHERE user_id = ?1;
 DELETE FROM user_settings     WHERE user_id = ?1;
-DELETE FROM daily_rollups     WHERE user_id = ?1;
-DELETE FROM metric_forecasts  WHERE user_id = ?1;
-DELETE FROM agent_jobs        WHERE user_id = ?1;
 
 DELETE FROM users           WHERE user_id = ?1;

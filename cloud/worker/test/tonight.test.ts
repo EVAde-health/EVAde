@@ -305,8 +305,6 @@ describe("DELETE /me", () => {
     sql.prepare("INSERT INTO daily_goals (user_id,metric,target,set_by) VALUES (?, 'sleep_hours', 8,?)").run(other.uid, uid);
     sql.prepare("INSERT INTO emergencies (user_id,status,acknowledged_by,resolved_by) VALUES (?,'resolved',?,?)").run(other.uid, uid, uid);
     sql.prepare("INSERT INTO emergencies (user_id,status) VALUES (?,'open')").run(uid);
-    const thread = sql.prepare("INSERT INTO staff_threads (astronaut_id,staff_id) VALUES (?,?)").run(other.uid, uid).lastInsertRowid;
-    sql.prepare("INSERT INTO staff_messages (thread_id,sender_id,body) VALUES (?,?, 'fixture')").run(thread, other.uid);
     const insertGoal = sql.prepare("INSERT INTO user_goals (user_id, goal_type, target, unit, set_by) VALUES (?,'sleep_h',8,'h',?)");
     insertGoal.run(uid, other.uid);
     insertGoal.run(other.uid, uid);
@@ -336,8 +334,6 @@ describe("DELETE /me", () => {
       expect(count(table, uid)).toBe(0);
     }
     expect(count("user_settings", other.uid)).toBe(1);
-    expect(sql.prepare("SELECT COUNT(*) AS n FROM staff_threads").get()).toMatchObject({ n: 0 });
-    expect(sql.prepare("SELECT COUNT(*) AS n FROM staff_messages").get()).toMatchObject({ n: 0 });
     expect(sql.prepare("SELECT COUNT(*) AS n FROM conversations WHERE id=?").get(deletedConversation)).toMatchObject({ n: 0 });
     expect(sql.prepare("SELECT COUNT(*) AS n FROM conversation_messages WHERE conversation_id=?").get(deletedConversation)).toMatchObject({ n: 0 });
     expect(sql.prepare("SELECT COUNT(*) AS n FROM conversations WHERE id=?").get(unaffectedConversation)).toMatchObject({ n: 1 });

@@ -410,9 +410,8 @@ function groupOf(def: Metric) {
 
 async function seriesFor(env: OpsDb, userId: string, group: string | null, metric: string | null, days: number) {
   const start = sinceDay(days);
-  const [{ results: defs }, trendView, { results: observations }, { results: latest }] = await Promise.all([
+  const [{ results: defs }, { results: observations }, { results: latest }] = await Promise.all([
     env.DB.prepare("SELECT * FROM metric_definitions WHERE (? IS NULL OR metric=?) ORDER BY label").bind(metric, metric).all<Metric>(),
-    env.DB.prepare("SELECT name FROM sqlite_schema WHERE type='view' AND name='v_daily_trend'").first(),
     env.DB.prepare(
       `SELECT metric, substr(ts,1,10) AS day, AVG(value) AS value, MIN(value) AS min, MAX(value) AS max, COUNT(*) AS n
        FROM observations WHERE user_id=? AND ts>=? AND (? IS NULL OR metric=?)
@@ -423,14 +422,9 @@ async function seriesFor(env: OpsDb, userId: string, group: string | null, metri
   ]);
   const filtered = defs.filter((def) => !group || groupOf(def) === group);
   if (metric && !filtered.length) throw new HttpError(422, "Unknown metric");
-  const rollups = trendView
-    ? (await env.DB.prepare("SELECT metric, day, value, min, max, n FROM v_daily_trend WHERE user_id=? AND day>=? ORDER BY day")
-      .bind(userId, start).all<SeriesPoint>()).results
-    : [];
   const latestOf = new Map(latest.map((row) => [row.metric, row]));
   return filtered.map((def) => {
     const points = new Map(observations.filter((p) => p.metric === def.metric).map((p) => [p.day, { ...p, source: "observation" }]));
-    for (const p of rollups) if (p.metric === def.metric) points.set(p.day, { ...p, source: "rollup" });
     return {
       metric: def.metric, label: def.label, unit: def.unit, latest: latestOf.get(def.metric) ?? null,
       decimals: def.decimals ?? 0, green_min: def.green_min, green_max: def.green_max,
