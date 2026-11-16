@@ -28,6 +28,7 @@ import { useResource } from '../../services/useResource';
 import { apiBlob } from '../../services/api';
 import type { ApiMedia } from '../../services/healthApi';
 import MetricModelDialog from '../../components/MetricModelDialog';
+import { hasAiInsight } from '../../data/aiInsight';
 import SelfieAnalysisDialog from '../../components/SelfieAnalysisDialog';
 import DeepModelResults, { type StaffDeepModelResults } from './DeepModelResults';
 import type { ModelCatalog } from '../../services/modelCatalog';
@@ -114,7 +115,7 @@ function MetricChart({ metric, index, userId }: { metric: SeriesMetric; index: n
             </VStack>
             <VStack gap={1} hAlign="end">
               {latest?.level && <StatusBadge status={levelStatus(latest.level)} />}
-              <Button label="Adverse-event chance" size="sm" variant="secondary" onClick={() => setOpen(true)} />
+              {hasAiInsight(metric.metric) && <Button label="AI insight" size="sm" variant="secondary" onClick={() => setOpen(true)} />}
             </VStack>
           </HStack>
           <ResponsiveContainer width="100%" height={180}>
