@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
@@ -25,6 +25,9 @@ import StatusBadge from '../../components/StatusBadge';
 import { useSurgeon } from '../../context/SurgeonContext';
 import { AXIS_TICK, BAR_CURSOR, CHART_MARGIN, GRID_STROKE, SERIES, Y_AXIS_WIDTH } from '../../components/chartConfig';
 import { useResource } from '../../services/useResource';
+import { apiBlob } from '../../services/api';
+import type { ApiMedia } from '../../services/healthApi';
+import MetricModelDialog from '../../components/MetricModelDialog';
 import DeepModelResults, { type StaffDeepModelResults } from './DeepModelResults';
 import type { ModelCatalog } from '../../services/modelCatalog';
 import {
@@ -83,7 +86,7 @@ export function VitalsSection({ id, latest }: { id: string; latest: AstronautDet
           {series.loading && !series.data && <Grid columns={{ minWidth: 320, max: 2 }} gap={4}><Loading /><Loading /></Grid>}
           {series.data && !charted.length && <EmptyState isCompact title="No readings in this range" description="Pick a longer range or another group." />}
           <Grid columns={{ minWidth: 340, max: 2 }} gap={4}>
-            {charted.map((metric, index) => <MetricChart key={metric.metric} metric={metric} index={index} />)}
+            {charted.map((metric, index) => <MetricChart key={metric.metric} metric={metric} index={index} userId={id} />)}
           </Grid>
         </>
       )}
@@ -95,8 +98,9 @@ export function VitalsSection({ id, latest }: { id: string; latest: AstronautDet
   );
 }
 
-function MetricChart({ metric, index }: { metric: SeriesMetric; index: number }) {
+function MetricChart({ metric, index, userId }: { metric: SeriesMetric; index: number; userId: string }) {
   const latest = metric.latest;
+  const [open, setOpen] = useState(false);
   return (
     <div className="rise-in" style={{ ['--i' as string]: Math.min(index, 8) }}>
       <Card padding={4}>
@@ -107,7 +111,10 @@ function MetricChart({ metric, index }: { metric: SeriesMetric; index: number })
               <Text type="large" hasTabularNumbers>{latest ? `${formatValue(latest.value, metric.decimals)} ${metric.unit}` : 'No reading'}</Text>
               {hasTimestamp(latest?.ts) && <Timestamp value={latest.ts} format="relative" type="supporting" />}
             </VStack>
-            {latest?.level && <StatusBadge status={levelStatus(latest.level)} />}
+            <VStack gap={1} hAlign="end">
+              {latest?.level && <StatusBadge status={levelStatus(latest.level)} />}
+              <Button label="Adverse-event chance" size="sm" variant="secondary" onClick={() => setOpen(true)} />
+            </VStack>
           </HStack>
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={metric.points} margin={CHART_MARGIN}>
@@ -122,6 +129,7 @@ function MetricChart({ metric, index }: { metric: SeriesMetric; index: number })
               <Line dataKey="max" name="Max" stroke={SERIES.secondary} strokeOpacity={0.45} strokeWidth={1} dot={false} animationDuration={700} />
             </LineChart>
           </ResponsiveContainer>
+          {open && <MetricModelDialog userId={userId} metric={metric.metric} label={metric.label} onClose={() => setOpen(false)} />}
         </VStack>
       </Card>
     </div>
@@ -617,6 +625,69 @@ export function GoalsSection({ id, name }: { id: string; name: string }) {
         </Card>
       </Grid>
       <StackItem />
+    </VStack>
+  );
+}
+
+// Photos the astronaut saved, each with the Workers AI assessment stored beside it.
+export function SelfiesSection({ id }: { id: string }) {
+  const media = useResource<ApiMedia[]>(`/users/${encodeURIComponent(id)}/media`);
+  const photos = (media.data ?? []).filter(item => item.kind === 'photo');
+  const [urls, setUrls] = useState<Record<string, string>>({});
+  const [open, setOpen] = useState<ApiMedia | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const created: string[] = [];
+    const list = (media.data ?? []).filter(item => item.kind === 'photo');
+    list.forEach(photo => {
+      apiBlob(photo.url, controller.signal).then(blob => {
+        const url = URL.createObjectURL(blob);
+        created.push(url);
+        setUrls(current => ({ ...current, [photo.id]: url }));
+      }, () => undefined);
+    });
+    return () => {
+      controller.abort();
+      created.forEach(url => URL.revokeObjectURL(url));
+    };
+  }, [media.data]);
+
+  if (media.loading && !media.data) return <Loading height={180} />;
+  if (media.error) return <Text role="alert">{media.error}</Text>;
+  if (!photos.length) return <EmptyState isCompact title="No selfies yet" description="When this astronaut saves a selfie, it shows up here with the vision model's assessment." />;
+
+  return (
+    <VStack gap={4}>
+      <Grid columns={{ minWidth: 220, max: 4 }} gap={3}>
+        {photos.map(photo => (
+          <Card key={photo.id} padding={3}>
+            <VStack gap={2}>
+              {urls[photo.id] ? <img src={urls[photo.id]} alt={photo.note || 'Astronaut selfie'} style={{ width: '100%', borderRadius: '8px' }} /> : <Loading height={140} />}
+              <Text type="supporting">{new Date(photo.ts).toLocaleString()}</Text>
+              <Text type="supporting">{photo.mood_label ? `Mood: ${photo.mood_label}` : 'No mood label'}</Text>
+              <Button label="View analysis" size="sm" onClick={() => setOpen(photo)} />
+            </VStack>
+          </Card>
+        ))}
+      </Grid>
+      {open && (
+        <Dialog isOpen onOpenChange={next => { if (!next) setOpen(null); }} purpose="info" width={520}>
+          <VStack gap={3} padding={4}>
+            <Heading level={3}>Selfie analysis</Heading>
+            <Text type="supporting">{open.analysis?.model ?? open.analysis_model ?? 'No model recorded'}</Text>
+            {open.analysis?.status === 'ok' ? (
+              <VStack gap={2}>
+                <Text type="label">{open.analysis.mood} · {open.analysis.confidence != null ? `${Math.round(open.analysis.confidence * 100)}% confidence` : 'confidence not reported'}</Text>
+                <Text>{open.analysis.explanation}</Text>
+              </VStack>
+            ) : (
+              <Text>{open.analysis?.reason ?? 'This selfie has no assessment. The vision model was not available, and no mood was invented.'}</Text>
+            )}
+            <HStack hAlign="end"><Button label="Close" onClick={() => setOpen(null)} /></HStack>
+          </VStack>
+        </Dialog>
+      )}
     </VStack>
   );
 }

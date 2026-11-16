@@ -3,7 +3,7 @@
 
 import { accessAssertion, accessConfigured, accessLogoutUrl, verifyAccessJwt, type AccessEnv } from "./access";
 import { handleLocalAccess } from "./localAccess";
-import { DEMO_PERSONAS, isDemoId, type DemoPersona } from "./demo";
+import { DEMO_PERSONAS, ensureCurrentDemo, isDemoId, type DemoPersona } from "./demo";
 
 export interface AuthEnv extends AccessEnv {
   DB: D1Database;
@@ -500,6 +500,7 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     if (req.headers.get("Sec-Fetch-Site") === "cross-site") {
       return Response.json({ error: "Open the demo from the EVAde website" }, { status: 403 });
     }
+    await ensureCurrentDemo(env);
     const redirect = safeRedirect(env, url.searchParams.get("redirect"), url);
     const persona: DemoPersona = url.searchParams.get("as") === "surgeon" ? "surgeon" : "astronaut";
     const user = await demoUser(env, persona);

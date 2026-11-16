@@ -30,6 +30,7 @@ import SleepPanel from '../components/SleepPanel';
 import SpaceWeatherPanel from '../components/SpaceWeatherPanel';
 import StatusBadge from '../components/StatusBadge';
 import VitalTile from '../components/VitalTile';
+import MetricModelDialog from '../components/MetricModelDialog';
 import { useHealthData } from '../context/HealthDataContext';
 import { crewGreetingName, levelInfo, useMission } from '../context/MissionContext';
 import { behaviorAxes, behaviorIndex, classifyWith, healthScore, missionDay, sleepNights, weeklySleepAverage } from '../data/health';
@@ -91,6 +92,7 @@ function DashboardContent() {
   const [selectedVital, setSelectedVital] = useState(EXPLORER_VITALS[0].id);
   const { status, defs, readings, summary, updatedAt, reload } = useHealthData();
   const { user, xp, streak, tasks, completed, reload: reloadMission } = useMission();
+  const [riskMetric, setRiskMetric] = useState<{ metric: string; label: string } | null>(null);
   const tiles = buildTiles(defs, readings);
   const sleepAverage = weeklySleepAverage(sleepNights(readings));
   const behavior = behaviorIndex(readings, behaviorAxes(readings));
@@ -248,7 +250,7 @@ function DashboardContent() {
               delta={tile.delta}
               spark={tile.spark}
               isSelected={selectedVital === tile.id}
-              onSelect={() => exploreVital(tile.id)}
+              onSelect={() => { exploreVital(tile.id); setRiskMetric({ metric: tile.id, label: tile.label }); }}
             />
           ))}
         </Grid>
@@ -268,6 +270,9 @@ function DashboardContent() {
           <NutritionPanel />
         </Grid>
       </VStack>
+      {riskMetric && (
+        <MetricModelDialog userId={user.user_id} metric={riskMetric.metric} label={riskMetric.label} onClose={() => setRiskMetric(null)} />
+      )}
     </VStack>
   );
 }

@@ -9,6 +9,8 @@ import { HttpError } from "./http";
 export const DEMO_ID_PREFIX = "00000000-0000-4000-8000-00000000d";
 export const DEMO_ASTRONAUT_ID = `${DEMO_ID_PREFIX}001`;
 export const DEMO_SURGEON_ID = `${DEMO_ID_PREFIX}002`;
+/** Bumped when the seeded demo crew changes. The first demo sign-in after a bump resets once. */
+export const DEMO_GENERATION = "two-users-unchecked-v1";
 
 /** The two "Try the demo" logins, by auth_identities (provider 'demo', subject). Never taken from the request. */
 export const DEMO_PERSONAS = {
@@ -28,7 +30,8 @@ const BLOCKED: [string, RegExp][] = [
   ["*", /^\/auth\/identities/],
   ["*", /^\/admin\/simulate$/],
   ["*", /^\/model-results$/],
-  ["*", /^\/space-weather/],
+  // The demo may read space weather, but writes change the global feed every real crew member sees.
+  ["POST", /^\/space-weather/],
   ["POST", /^\/users$/],
   ["DELETE", /^\/me$/],
 ];
@@ -118,7 +121,19 @@ export async function resetDemo(env: DemoEnv) {
   const logins = env.DB.prepare(
     "INSERT OR IGNORE INTO auth_identities (provider, subject, user_id, email) VALUES ('demo', ?, ?, NULL), ('demo', ?, ?, NULL)"
   ).bind(DEMO_PERSONAS.astronaut.subject, DEMO_ASTRONAUT_ID, DEMO_PERSONAS.surgeon.subject, DEMO_SURGEON_ID);
-  await env.DB.batch([...deletes, ...seed, logins]);
+  const generation = env.DB.prepare(
+    "INSERT INTO action_log (user_id, action, detail) VALUES (?, 'demo_generation', ?)"
+  ).bind(DEMO_ASTRONAUT_ID, DEMO_GENERATION);
+  await env.DB.batch([...deletes, ...seed, logins, generation]);
+}
+
+/** Resets the shared demo once per DEMO_GENERATION so judges start from the two-user unchecked seed. */
+export async function ensureCurrentDemo(env: DemoEnv) {
+  const row = await env.DB.prepare(
+    "SELECT 1 AS ok FROM action_log WHERE action='demo_generation' AND detail=? LIMIT 1"
+  ).bind(DEMO_GENERATION).first();
+  if (row) return;
+  await resetDemo(env);
 }
 
 // SQL that keeps `column` in the same crew as `userId`: demo ids with demo ids, real ids with real ids.

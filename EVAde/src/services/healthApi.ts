@@ -171,6 +171,16 @@ export interface ApiJournalMessage {
   ts: string;
 }
 
+export interface SelfieAnalysis {
+  status: 'ok' | 'unparsed' | 'unavailable';
+  model: string;
+  mood: string | null;
+  explanation: string | null;
+  confidence: number | null;
+  raw: string | null;
+  reason?: string;
+}
+
 export interface ApiMedia {
   id: string;
   kind: string;
@@ -179,6 +189,11 @@ export interface ApiMedia {
   note: string | null;
   ts: string;
   url: string;
+  mood_label?: string | null;
+  analysis_model?: string | null;
+  analyzed_at?: string | null;
+  analysis_confidence?: number | null;
+  analysis?: SelfieAnalysis | null;
 }
 
 export interface ApiFood {

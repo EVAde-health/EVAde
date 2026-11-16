@@ -18,6 +18,8 @@ export default function ToastCenter({ children }: { children: ReactNode }) {
   const show = useCallback<ShowToastFn>((options: ToastOptions) => {
     const id = nextId.current++;
     const dismiss = showAstryx({
+      isAutoHide: true,
+      autoHideDuration: 6000,
       ...options,
       onHide: reason => {
         dismissers.current.delete(id);

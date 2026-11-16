@@ -456,12 +456,11 @@ describe("shared crew and staff messages", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM conversation_messages").get()).toMatchObject({ n: 2 });
   });
 
-  it("reads a 0009 conversation copied by 0010 through both URL formats", async () => {
+  it("reads a conversation through both URL formats", async () => {
     const nova = await session(NOVA, "astronaut", "cloudflare_access");
     const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
-    const threadId = db.prepare("INSERT INTO staff_threads (astronaut_id,staff_id) VALUES (?,?)").run(NOVA, SURGEON).lastInsertRowid;
-    db.prepare("INSERT INTO staff_messages (thread_id,sender_id,body) VALUES (?,?,'Migrated fixture')").run(threadId, SURGEON);
-    db.exec(readFileSync(join(__dirname, "..", "migrations", "0010_surgeon_console.sql"), "utf8"));
+    const threadId = db.prepare("INSERT INTO conversations (astronaut_id,surgeon_id) VALUES (?,?)").run(NOVA, SURGEON).lastInsertRowid;
+    db.prepare("INSERT INTO conversation_messages (conversation_id,sender_id,body) VALUES (?,?,'Migrated fixture')").run(threadId, SURGEON);
     expect((await call("GET", `/messages/with/${SURGEON}`, nova)).payload).toMatchObject({
       conversation: { id: Number(threadId) }, messages: [{ body: "Migrated fixture" }],
     });

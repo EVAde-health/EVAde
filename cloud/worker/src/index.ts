@@ -24,6 +24,10 @@ import {
 } from "./models";
 import { deleteUserStatements } from "./deleteUser";
 import { assertDemoScope, DEMO_ID_PREFIX, resetDemo, scrubDemoResponse } from "./demo";
+import { evaWindows, parseForecast } from "./evaWindow";
+import { catalogById, catalogDocument, MODEL_CATALOG } from "./modelCatalog";
+import { metricModelInfo } from "./metricModels";
+import { analyzeSelfie, VISION_MODEL } from "./selfieAnalysis";
 import { HttpError } from "./http";
 import { refreshSimulation, type SimulationPrediction } from "./simulation";
 import { simulatedEcgDeep, simulatedSleepDeep } from "./simulationSignals";
@@ -37,6 +41,7 @@ export interface Env extends AuthEnv, ModelEnv, WebAppEnv, PredictionEnv {
   DB: D1Database;
   MEDIA?: R2Bucket; // R2 bucket evade-media
   LIVE?: DurableObjectNamespace; // CrewFeed Durable Object
+  AI?: Ai; // Workers AI binding for selfie assessment
   EVADE_API_KEY?: string;
   ALLOWED_ORIGINS?: string;
 }
@@ -334,7 +339,8 @@ interface JournalProcessOpts {
   parseText?: string; // what the parser reads, when it differs from the entry (a chat message plus the question it answers)
 }
 
-/** Paid xAI calls per account and kind: AUTH_RATE_LIMITER allows 20 a minute. The shared demo counts as one account. */
+/** Paid AI calls (xAI, Workers AI, model-gateway runs) per account and kind: AUTH_RATE_LIMITER allows 20 a minute.
+ * The shared demo counts as one account. */
 async function aiAllowed(env: Env, kind: string, account: string) {
   return (await env.AUTH_RATE_LIMITER.limit({ key: `ai-${kind}:${account}` })).success;
 }
@@ -490,7 +496,7 @@ async function storeMedia(env: Env, req: Request, userId: string, kind: string, 
   await env.MEDIA.put(key, buf, { httpMetadata: { contentType: ct }, customMetadata: { user_id: userId, kind } });
   await env.DB.prepare("INSERT INTO media (id,user_id,r2_key,kind,content_type,bytes,metric,note,ts) VALUES (?,?,?,?,?,?,?,?,?)")
     .bind(id, userId, key, kind, ct, buf.byteLength, metric, note, ts).run();
-  return { media: { id, kind, content_type: ct, bytes: buf.byteLength, metric, note, ts, url: `/media/${id}` }, buf };
+  return { media: { id, kind, content_type: ct, bytes: buf.byteLength, metric, note, ts, url: `/media/${id}` }, buf, ct };
 }
 const routes: [string, RegExp, Handler][] = [];
 const route = (method: string, path: string, h: Handler) =>
@@ -1170,13 +1176,35 @@ route("POST", "/media", async (req, env, _p, url, ctx, who) => {
   if (!["photo", "ultrasound", "audio", "document", "other"].includes(kind)) throw new HttpError(422, "kind must be photo, ultrasound, audio, document or other");
   const metric = url.searchParams.get("metric");
   const note = url.searchParams.get("note")?.slice(0, 500) ?? null;
-  const { media } = await storeMedia(env, req, userId, kind, metric, note);
+  const { media, buf, ct } = await storeMedia(env, req, userId, kind, metric, note);
+  if (kind === "photo") {
+    const assessment = await aiAllowed(env, "vision", userId)
+      ? await analyzeSelfie(env.AI, buf, ct)
+      : { status: "unavailable" as const, model: VISION_MODEL, mood: null, explanation: null, confidence: null, raw: null,
+          reason: "Too many selfies in the last minute, so this one was saved without an assessment." };
+    const analyzedAt = now();
+    await env.DB.prepare(
+      "UPDATE media SET analysis=?, analysis_model=?, analyzed_at=?, mood_label=?, analysis_confidence=? WHERE id=?"
+    ).bind(JSON.stringify(assessment), assessment.model, analyzedAt, assessment.mood, assessment.confidence, media.id).run();
+    Object.assign(media, { analysis: assessment, mood_label: assessment.mood, analysis_model: assessment.model, analyzed_at: analyzedAt, analysis_confidence: assessment.confidence });
+    const bodyText = assessment.status === "ok"
+      ? `Mood ${assessment.mood} (${Math.round((assessment.confidence ?? 0) * 100)}% confidence). ${assessment.explanation}`
+      : `A selfie was saved. ${assessment.reason ?? "The vision model did not return an assessment."}`;
+    await env.DB.prepare(
+      "INSERT INTO user_notifications (user_id, kind, title, body, created_at) VALUES (?, 'message', ?, ?, ?)"
+    ).bind(userId, "Selfie sent to the flight surgeon", bodyText, analyzedAt).run();
+  }
   publish(env, ctx, { type: "media", user_id: userId, data: media });
   return json(media, 201);
 });
 route("GET", "/users/:id/media", async (_r, env, p) =>
-  json((await env.DB.prepare("SELECT id,kind,content_type,bytes,metric,note,ts FROM media WHERE user_id=? ORDER BY ts DESC LIMIT 200")
-    .bind(p.id).all()).results.map((m: any) => ({ ...m, url: `/media/${m.id}` }))));
+  json((await env.DB.prepare(
+    "SELECT id,kind,content_type,bytes,metric,note,ts,analysis,analysis_model,analyzed_at,mood_label,analysis_confidence FROM media WHERE user_id=? ORDER BY ts DESC LIMIT 200"
+  ).bind(p.id).all()).results.map((m: any) => ({
+    ...m,
+    analysis: (() => { try { return m.analysis ? JSON.parse(m.analysis) : null; } catch { return null; } })(),
+    url: `/media/${m.id}`,
+  }))));
 route("GET", "/media/:mid", async (_r, env, p) => {
   if (!env.MEDIA) throw new HttpError(503, "R2 bucket not configured yet");
   const m = await env.DB.prepare("SELECT r2_key, content_type FROM media WHERE id=?").bind(p.mid).first<{ r2_key: string; content_type: string }>();
@@ -1245,6 +1273,125 @@ route("GET", "/models", async (_r, env) => {
   }
 });
 
+const sha256Hex = async (text: string) => {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+};
+
+// Next EVA window: NOAA Kp rule (labeled) plus EVA-12 only when the gateway actually returns it.
+route("GET", "/eva/window", async (_r, env) => {
+  const started = Date.now();
+  let forecast: unknown = null;
+  let protons: unknown = [];
+  try {
+    const [forecastRes, protonRes] = await Promise.all([
+      fetch("https://services.swpc.noaa.gov/products/noaa-planetary-k-index-forecast.json", { signal: AbortSignal.timeout(8000) }),
+      fetch("https://services.swpc.noaa.gov/json/goes/primary/integral-protons-6-hour.json", { signal: AbortSignal.timeout(8000) }),
+    ]);
+    forecast = forecastRes.ok ? await forecastRes.json() : null;
+    protons = protonRes.ok ? await protonRes.json() : [];
+  } catch {
+    forecast = null;
+  }
+  const points = parseForecast(forecast);
+  const list = Array.isArray(protons) ? protons as Record<string, unknown>[] : [];
+  const latest = [...list].reverse().find((row) => String(row.energy ?? "").replace(/\s/g, "") === ">=10MeV");
+  const proton = latest ? Number(latest.flux) : null;
+  const protonPfu = Number.isFinite(proton) ? proton : null;
+  const windows = evaWindows(points, { protonPfu });
+  let spe: Record<string, unknown>;
+  if (!modelsConfigured(env)) {
+    spe = {
+      model_id: "EVA-12", ok: false, status: 503, latency_ms: 0, model_sha256: null,
+      output: { error: "evade-gateway is not connected. EVA-12 weights live in the evade-models R2 bucket and were not run. No probability was invented." },
+    };
+  } else {
+    const t0 = Date.now();
+    try {
+      const r = await callModelApi(env, "POST", "/v1/predict/space-weather", { transparency: false, source: "eva-window" });
+      const sha = r.out?.sha256 ?? r.out?.data?.sha256 ?? null;
+      spe = { model_id: "EVA-12", ok: r.ok, status: r.status, latency_ms: Date.now() - t0, model_sha256: typeof sha === "string" ? sha : null, output: r.out };
+    } catch (e) {
+      spe = { model_id: "EVA-12", ok: false, status: e instanceof ModelApiError ? e.status : 502, latency_ms: Date.now() - t0, model_sha256: null, output: { error: e instanceof Error ? e.message : "Model service unreachable" } };
+    }
+  }
+  return json({
+    rule: {
+      source: "noaa-kp-rule",
+      note: "Contiguous hours with forecast Kp under 5, from NOAA SWPC. This is not Michael's trained model.",
+      proton_10mev_pfu: protonPfu,
+      windows,
+      best: windows[0] ?? null,
+    },
+    spe_model: spe,
+    fetched_ms: Date.now() - started,
+  });
+});
+
+route("GET", "/users/:id/metric-models", async (_r, env, p, url) => {
+  await requireUser(env, p.id);
+  const metric = (url.searchParams.get("metric") ?? "").slice(0, 64);
+  if (!metric) throw new HttpError(422, "metric is required");
+  return json(metricModelInfo(metric));
+});
+
+route("GET", "/model-transparency", async (_r, env) => {
+  const document = catalogDocument();
+  const catalog_sha256 = await sha256Hex(document);
+  let gateway: { status: number; body: unknown };
+  if (!modelsConfigured(env)) {
+    gateway = { status: 503, body: { error: "evade-gateway is not connected. Weight hashes are checked inside the gateway when it loads R2 artifacts. This response does not include a weight hash." } };
+  } else {
+    try {
+      const r = await callModelApi(env, "GET", "/v1/models");
+      gateway = { status: r.status, body: r.out };
+    } catch (e) {
+      gateway = { status: e instanceof ModelApiError ? e.status : 502, body: { error: e instanceof Error ? e.message : "Model service unreachable" } };
+    }
+  }
+  return json({
+    catalog: MODEL_CATALOG,
+    catalog_sha256,
+    catalog_note: "SHA-256 of the catalog JSON in cloud/worker/src/modelCatalog.ts. It is not a hash of the weight files.",
+    vision: { model: VISION_MODEL, binding: Boolean(env.AI), note: "Selfie assessment runs on Workers AI. The image is not sent to the browser's model and the key never leaves the Worker." },
+    gateway,
+  });
+});
+
+route("POST", "/model-transparency/run", async (req, env, _p, _url, _ctx, who) => {
+  const b = await body<{ id?: string }>(req);
+  const model = catalogById(String(b.id ?? ""));
+  if (!model) throw new HttpError(404, "Unknown model id");
+  const started = Date.now();
+  if (model.runnable_here !== "gateway" || !model.served_as) {
+    return json({ id: model.id, ran: false, latency_ms: Date.now() - started, input: null, output: { error: model.why }, model_sha256: null, weights: model.weights });
+  }
+  if (!modelsConfigured(env)) {
+    return json({
+      id: model.id, ran: false, latency_ms: 0, input: null, model_sha256: null, weights: model.weights,
+      output: { error: "evade-gateway is not connected, so this model was not run. No output was fabricated." },
+    });
+  }
+  if (!(await aiAllowed(env, "model-run", who.user_id ?? who.kind))) throw new HttpError(429, "Too many model runs. Try again in a minute");
+  const input = {
+    transparency_sample: true,
+    note: "Synthetic probe from the model transparency page. Not a crew recording and not stored as a prediction.",
+  };
+  try {
+    const r = await callModelApi(env, "POST", model.served_as, input);
+    const sha = r.out?.sha256 ?? r.out?.data?.sha256 ?? null;
+    return json({
+      id: model.id, ran: true, latency_ms: Date.now() - started, input, output: r.out, http_status: r.status,
+      model_sha256: typeof sha === "string" ? sha : null, weights: model.weights,
+    });
+  } catch (e) {
+    return json({
+      id: model.id, ran: false, latency_ms: Date.now() - started, input, model_sha256: null, weights: model.weights,
+      output: { error: e instanceof Error ? e.message : "Model service unreachable" },
+    });
+  }
+});
+
 route("GET", "/models/runs", async (_r, env, _p, _url, _ctx, who) => {
   // Demo identities see only the seeded crew. Other astronauts see only their own history.
   const scope = who.demo ? "demo" : isStaff(who) ? "staff" : "personal";
@@ -1279,9 +1426,13 @@ async function predictFor(env: Env, kind: PredictKind, userId: string, payload: 
     if (r.ok && !placeholder) {
       const sum = summarize(kind, out);
       const ts = simulation?.ts ?? (typeof out.server_time === "string" ? out.server_time : now());
+      const sha = out?.sha256 ?? out?.data?.sha256 ?? null;
+      const storedOut = out && typeof out === "object"
+        ? { ...out, provenance: { endpoint: `/v1/predict/${kind}`, model_id: sum.model_id, source: "evade-gateway", model_sha256: typeof sha === "string" ? sha : null } }
+        : out;
       const stmts = [
-        env.DB.prepare("INSERT INTO model_results (user_id,endpoint,model_id,ts,output,flag,confidence,source) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING")
-          .bind(userId, `/v1/predict/${kind}`, sum.model_id, ts, JSON.stringify(out), sum.flag, sum.confidence, simulation ? "simulated" : "model"),
+        env.DB.prepare("INSERT INTO model_results (user_id,endpoint,model_id,ts,output,flag,confidence,source,model_sha256) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING")
+          .bind(userId, `/v1/predict/${kind}`, sum.model_id, ts, JSON.stringify(storedOut), sum.flag, sum.confidence, simulation ? "simulated" : "model", typeof sha === "string" ? sha : null),
       ];
       const risk = kind === "risk" ? riskRow(out) : null;
       if (risk) {

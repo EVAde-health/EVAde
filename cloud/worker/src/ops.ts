@@ -3,7 +3,7 @@
 // Callers are already authenticated. These handlers still check the role before reading another person.
 import { triageUrgent, type AiEnv } from "./ai";
 import { Principal, STAFF_ROLES } from "./auth";
-import { DEMO_ID_PREFIX, sameCrewSql } from "./demo";
+import { DEMO_ASTRONAUT_ID, DEMO_ID_PREFIX, sameCrewSql } from "./demo";
 import { HttpError } from "./http";
 import { levelFromThresholds, type MetricDef } from "./health";
 import { limitMessageSend, recordMessage } from "./messages";
@@ -410,9 +410,8 @@ function groupOf(def: Metric) {
 
 async function seriesFor(env: OpsDb, userId: string, group: string | null, metric: string | null, days: number) {
   const start = sinceDay(days);
-  const [{ results: defs }, trendView, { results: observations }, { results: latest }] = await Promise.all([
+  const [{ results: defs }, { results: observations }, { results: latest }] = await Promise.all([
     env.DB.prepare("SELECT * FROM metric_definitions WHERE (? IS NULL OR metric=?) ORDER BY label").bind(metric, metric).all<Metric>(),
-    env.DB.prepare("SELECT name FROM sqlite_schema WHERE type='view' AND name='v_daily_trend'").first(),
     env.DB.prepare(
       `SELECT metric, substr(ts,1,10) AS day, AVG(value) AS value, MIN(value) AS min, MAX(value) AS max, COUNT(*) AS n
        FROM observations WHERE user_id=? AND ts>=? AND (? IS NULL OR metric=?)
@@ -423,14 +422,9 @@ async function seriesFor(env: OpsDb, userId: string, group: string | null, metri
   ]);
   const filtered = defs.filter((def) => !group || groupOf(def) === group);
   if (metric && !filtered.length) throw new HttpError(422, "Unknown metric");
-  const rollups = trendView
-    ? (await env.DB.prepare("SELECT metric, day, value, min, max, n FROM v_daily_trend WHERE user_id=? AND day>=? ORDER BY day")
-      .bind(userId, start).all<SeriesPoint>()).results
-    : [];
   const latestOf = new Map(latest.map((row) => [row.metric, row]));
   return filtered.map((def) => {
     const points = new Map(observations.filter((p) => p.metric === def.metric).map((p) => [p.day, { ...p, source: "observation" }]));
-    for (const p of rollups) if (p.metric === def.metric) points.set(p.day, { ...p, source: "rollup" });
     return {
       metric: def.metric, label: def.label, unit: def.unit, latest: latestOf.get(def.metric) ?? null,
       decimals: def.decimals ?? 0, green_min: def.green_min, green_max: def.green_max,
@@ -481,12 +475,14 @@ export function registerOps(route: (method: string, path: string, handler: Handl
 }) {
   const { json, body, now } = deps;
 
-  route("GET", "/admin/astronauts", async (_r, env) => {
+  route("GET", "/admin/astronauts", async (_r, env, _p, _u, _c, who) => {
+    // The shared demo has exactly one astronaut. Extra seeded crew from older demos stay hidden until Reset deletes them.
+    const demoOnly = who?.demo;
     const { results } = await env.DB.prepare(
       `SELECT u.user_id, u.display_name, u.full_name, u.crew_role, u.mission_name,
               (SELECT status FROM emergencies e WHERE e.user_id=u.user_id AND e.status!='resolved') AS emergency_status
-       FROM users u WHERE u.role='astronaut' ORDER BY u.display_name`
-    ).all();
+       FROM users u WHERE u.role='astronaut' ${demoOnly ? "AND u.user_id=?" : ""} ORDER BY u.display_name`
+    ).bind(...(demoOnly ? [DEMO_ASTRONAUT_ID] : [])).all();
     return json(results);
   });
 

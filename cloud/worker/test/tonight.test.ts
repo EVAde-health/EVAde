@@ -240,6 +240,31 @@ describe("GET /auth/demo", () => {
     expect((await upload(`/media?user_id=${DEMO_VEGA}&kind=photo`)).status).toBe(201);
   });
 
+  it("lets the demo read space weather but not write the global feed", async () => {
+    env = { ...env, DEMO_LOGIN: "true" } as Env;
+    const cookie = { cookie: await demoLogin("?as=surgeon") };
+    expect((await call("GET", "/space-weather/latest", cookie)).status).toBe(200);
+    const rows = [{ ts: "2026-11-16T00:00:00Z", kp_index: 9, eva_status: "no-go" }];
+    expect((await call("POST", "/space-weather", { ...cookie, body: { rows } })).status).toBe(403);
+    expect((await call("POST", "/space-weather/refresh", cookie)).status).toBe(403);
+    expect(row("SELECT COUNT(*) n FROM space_weather").n).toBe(0);
+  });
+
+  it("caps Workers AI selfie checks and gateway model runs per account", async () => {
+    let aiRuns = 0;
+    env = { ...env, DEMO_LOGIN: "true", MEDIA: { put: async () => {}, delete: async () => {} },
+      AI: { run: async () => (aiRuns++, { description: '{"mood":"calm","explanation":"Relaxed.","confidence":0.8}' }) },
+      AUTH_RATE_LIMITER: { limit: async ({ key }: { key: string }) => ({ success: !key.startsWith("ai-") }) } } as unknown as Env;
+    const cookie = { cookie: await demoLogin() };
+    const upload = await call("POST", "/media?kind=photo", { ...cookie, headers: { "Content-Type": "image/jpeg" }, rawBody: "jpeg" });
+    expect(upload.status).toBe(201);
+    expect((await upload.json<any>()).analysis.status).toBe("unavailable");
+    expect(aiRuns).toBe(0);
+    const before = calls.length;
+    expect((await call("POST", "/model-transparency/run", { ...cookie, body: { id: "EVA-12" } })).status).toBe(429);
+    expect(calls.length).toBe(before);
+  });
+
   it("keeps real astronauts and the demo astronaut on their own crews' staff", async () => {
     env = { ...env, DEMO_LOGIN: "true" } as Env;
     const surgeonId = crypto.randomUUID();
@@ -265,7 +290,8 @@ describe("GET /auth/demo", () => {
     const seededObservations = count("observations", DEMO_VEGA);
     const unread = row("SELECT COUNT(*) n FROM user_notifications WHERE user_id=? AND read_at IS NULL", DEMO_VEGA).n;
     expect(seededObservations).toBeGreaterThan(100);
-    expect(unread).toBeGreaterThan(0);
+    // The reset seed starts with no unread notices and no checked missions.
+    expect(unread).toBe(0);
     expect((await call("POST", "/me/notifications/read", { ...cookie, body: {} })).status).toBe(204);
     expect(row("SELECT COUNT(*) n FROM user_notifications WHERE user_id=? AND read_at IS NULL", DEMO_VEGA).n).toBe(0);
     const water = count("hydration", DEMO_VEGA);
@@ -333,8 +359,6 @@ describe("DELETE /me", () => {
     sql.prepare("INSERT INTO daily_goals (user_id,metric,target,set_by) VALUES (?, 'sleep_hours', 8,?)").run(other.uid, uid);
     sql.prepare("INSERT INTO emergencies (user_id,status,acknowledged_by,resolved_by) VALUES (?,'resolved',?,?)").run(other.uid, uid, uid);
     sql.prepare("INSERT INTO emergencies (user_id,status) VALUES (?,'open')").run(uid);
-    const thread = sql.prepare("INSERT INTO staff_threads (astronaut_id,staff_id) VALUES (?,?)").run(other.uid, uid).lastInsertRowid;
-    sql.prepare("INSERT INTO staff_messages (thread_id,sender_id,body) VALUES (?,?, 'fixture')").run(thread, other.uid);
     const insertGoal = sql.prepare("INSERT INTO user_goals (user_id, goal_type, target, unit, set_by) VALUES (?,'sleep_h',8,'h',?)");
     insertGoal.run(uid, other.uid);
     insertGoal.run(other.uid, uid);
@@ -364,8 +388,6 @@ describe("DELETE /me", () => {
       expect(count(table, uid)).toBe(0);
     }
     expect(count("user_settings", other.uid)).toBe(1);
-    expect(sql.prepare("SELECT COUNT(*) AS n FROM staff_threads").get()).toMatchObject({ n: 0 });
-    expect(sql.prepare("SELECT COUNT(*) AS n FROM staff_messages").get()).toMatchObject({ n: 0 });
     expect(sql.prepare("SELECT COUNT(*) AS n FROM conversations WHERE id=?").get(deletedConversation)).toMatchObject({ n: 0 });
     expect(sql.prepare("SELECT COUNT(*) AS n FROM conversation_messages WHERE conversation_id=?").get(deletedConversation)).toMatchObject({ n: 0 });
     expect(sql.prepare("SELECT COUNT(*) AS n FROM conversations WHERE id=?").get(unaffectedConversation)).toMatchObject({ n: 1 });

@@ -20,6 +20,8 @@
   ],
   // Private uploads, accessed through the authenticated media endpoints.
   "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "evade-media" }],
+  // Selfie assessment. The image stays on Workers AI; USDA_API_KEY stays a secret (see below).
+  "ai": { "binding": "AI" },
   // Live crew feed over WebSockets
   "durable_objects": { "bindings": [{ "name": "LIVE", "class_name": "CrewFeed" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CrewFeed"] }],
@@ -37,8 +39,8 @@
     // service binding below (no public URL). Fallback only: set MODEL_API_URL to the gateway's HTTPS URL.
     // Until either is set, /predict/* and /models return 503.
     "MODEL_API_URL": "",
-    // "true" enables GET /auth/demo: a 2-hour shared session as the seeded fake astronaut Cmdr. Vega, or (?as=surgeon) the
-    // fake flight surgeon Dr. Ortiz. It reads and writes only the demo crew; POST /demo/reset restores it. Never a real user.
+    // "true" enables GET /auth/demo: a 2-hour shared session as Demo Astronaut, or (?as=surgeon) Demo Flight Surgeon.
+    // It reads and writes only the demo crew; POST /demo/reset restores the unchecked two-user seed. Never a real user.
     "DEMO_LOGIN": "true",
     // Where users land after signing in if no redirect was requested.
     "FRONTEND_URL": "https://evade.health",
@@ -71,4 +73,6 @@
   //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   Google OAuth client
   //   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET   GitHub OAuth app
   //   TURNSTILE_SITE_KEY, TURNSTILE_SECRET     Turnstile widget site key and private secret
+  //   USDA_API_KEY   FoodData Central key for GET /foods/search on this Worker (evade-api).
+  //                  Never put it in the browser. If it is unset, search falls back to the pantry and Open Food Facts.
 }

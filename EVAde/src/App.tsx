@@ -35,7 +35,7 @@ export default function App() {
   return (
     <ColorModeContext.Provider value={colorMode}>
       <Theme theme={themes[defaultThemeSlug]} mode={colorMode.mode}>
-        <ToastViewport position="bottomEnd" maxVisible={3} inset={{ bottom: 64 }}>
+        <ToastViewport position="topEnd" maxVisible={4} inset={{ top: 24, end: 24, start: 24 }}>
         <ToastCenter>
         <BrowserRouter>
           <LinkProvider component={RouterLink}>
