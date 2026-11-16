@@ -4,11 +4,17 @@
 import { accessAssertion, accessConfigured, accessLogoutUrl, verifyAccessJwt, type AccessEnv } from "./access";
 import { handleLocalAccess } from "./localAccess";
 import { DEMO_PERSONAS, ensureCurrentDemo, isDemoId, type DemoPersona } from "./demo";
+import { clientIp, limitIp, logAbuse, rateLimited, reserveQuota, type BudgetEnv } from "../../../shared/abuse";
+import { demoTurnstileSiteKey, verifyDemoTurnstile, type DemoTurnstileEnv } from "./turnstile";
+import { HttpError } from "./http";
 
-export interface AuthEnv extends AccessEnv {
+export interface AuthEnv extends AccessEnv, BudgetEnv, DemoTurnstileEnv {
   DB: D1Database;
   SESSIONS: KVNamespace;
   AUTH_RATE_LIMITER: RateLimit;
+  SIGN_IN_IP_LIMITER?: RateLimit;
+  DEMO_WRITE_IP_LIMITER?: RateLimit;
+  DEMO_RESET_IP_LIMITER?: RateLimit;
   /** "true" enables GET /auth/demo (the seeded fake demo astronaut or flight surgeon only). */
   DEMO_LOGIN?: string;
   GOOGLE_CLIENT_ID?: string;
@@ -194,13 +200,13 @@ export interface IdentityIn {
 }
 
 /** Find or create the astronaut behind a login. `seedTasks` gives new astronauts today's routine. */
-export async function linkIdentity(env: AuthEnv, id: IdentityIn, seedTasks: (userId: string) => Promise<void>) {
+export async function linkIdentity(env: AuthEnv, id: IdentityIn, seedTasks: (userId: string) => Promise<void>, ip?: string) {
   const now = new Date().toISOString();
   const email = id.email?.trim().toLowerCase() || null;
+  const known = !id.user_id && await env.DB.prepare("SELECT 1 FROM auth_identities WHERE provider=? AND subject=?").bind(id.provider, id.subject).first();
   if (!id.user_id && email && id.email_verified) {
     // A first login through a new provider (or a new Access subject) joins the account that already holds
     // this verified email instead of creating an empty one.
-    const known = await env.DB.prepare("SELECT 1 FROM auth_identities WHERE provider=? AND subject=?").bind(id.provider, id.subject).first();
     if (!known) {
       const existing = await env.DB.prepare(
         `SELECT user_id FROM auth_identities WHERE lower(email)=? AND provider IN (${VERIFIED_EMAIL_PROVIDERS.map(() => "?").join(",")})
@@ -208,6 +214,10 @@ export async function linkIdentity(env: AuthEnv, id: IdentityIn, seedTasks: (use
       ).bind(email, ...VERIFIED_EMAIL_PROVIDERS).first<{ user_id: string }>();
       if (existing) id = { ...id, user_id: existing.user_id };
     }
+  }
+  if (!known && !id.user_id && ip !== undefined) {
+    const quota = await reserveQuota(env, { kind: "accounts", key: ip });
+    if (!quota.allowed) throw new HttpError(429, "Too many new accounts. Try again later.", quota.retryAfter);
   }
   const userId = id.user_id ?? crypto.randomUUID();
   const statements: D1PreparedStatement[] = [];
@@ -345,18 +355,16 @@ ${accessLink}
 // ---------- route handler (returns null when the path isn't an auth route) ----------
 export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks: (id: string) => Promise<void>): Promise<Response | null> {
   const path = url.pathname.replace(/\/$/, "");
-  if (path === "/auth/access/staff" && req.method === "GET") {
-    return Response.redirect(`${url.origin}/auth/access${url.search}`, 302);
-  }
   const ip = req.headers.get("CF-Connecting-IP");
   const accessPath = path === "/auth/access";
-  if (accessPath || path === "/auth/demo" || path === "/auth/start" || path.startsWith("/auth/callback/")) {
-    const bucket = accessPath ? "access" : path === "/auth/demo" ? "demo" : path === "/auth/start" ? "start" : "callback";
-    const { success } = await env.AUTH_RATE_LIMITER.limit({ key: `${bucket}:${ip ?? "unknown"}` });
-    if (!success) return Response.json({ error: "Too many sign-in requests. Try again in a minute." }, {
-      status: 429, headers: { "Retry-After": "60" },
-    });
+  const staffAccessPath = path === "/auth/access/staff";
+  if (accessPath || staffAccessPath || path === "/auth/demo" || path === "/auth/start" || path.startsWith("/auth/callback/")) {
+    if (!await limitIp(env.SIGN_IN_IP_LIMITER, req, "sign_in_ip")) return rateLimited();
+    const bucket = accessPath ? "access" : staffAccessPath ? "access-staff" : path === "/auth/demo" ? "demo" : path === "/auth/start" ? "start" : "callback";
+    const { success } = await env.AUTH_RATE_LIMITER.limit({ key: `${bucket}:${clientIp(req)}` });
+    if (!success) { logAbuse("rate_limited", "auth_bucket"); return rateLimited(); }
   }
+  if (staffAccessPath && req.method === "GET") return Response.redirect(`${url.origin}/auth/access${url.search}`, 302);
 
   if (path === "/login" && req.method === "GET") {
     return loginPage(env, url, safeRedirect(env, url.searchParams.get("redirect"), url), url.searchParams.get("error") ?? undefined);
@@ -365,7 +373,8 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
   if (path === "/auth/providers" && req.method === "GET") {
     const providers = enabledProviders(env, url);
     if (env.DEMO_LOGIN === "true" && await demoUser(env)) providers.push("demo");
-    return Response.json({ providers, default_provider: providers[0] ?? null, turnstile_site_key: hasTurnstile(env) ? env.TURNSTILE_SITE_KEY : null });
+    return Response.json({ providers, default_provider: providers[0] ?? null, turnstile_site_key: hasTurnstile(env) ? env.TURNSTILE_SITE_KEY : null,
+      demo_turnstile_site_key: demoTurnstileSiteKey(env) });
   }
 
   if (path === "/auth/start" && req.method === "POST") {
@@ -425,14 +434,15 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
         provider, subject: profile.subject, email: profile.email, display_name: profile.name,
         // Google only returns a verified email and GitHub only its primary verified one; the dev login is never verified.
         email_verified: provider !== "dev" && !!profile.email,
-      }, seedTasks);
+      }, seedTasks, clientIp(req));
       const token = await createSession(env, user, profile.email, provider);
       await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, provider).run();
       const headers = new Headers({ Location: safeRedirect(env, saved.redirect, url) });
       headers.append("Set-Cookie", cookieHeader(url, "session", token, SESSION_TTL));
       headers.append("Set-Cookie", cookieHeader(url, "oauth", "", 0));
       return new Response(null, { status: 302, headers });
-    } catch {
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 429) return rateLimited(error.retryAfter, error.message);
       console.warn("OAuth callback failed", provider);
       return fail("Sign-in failed, please try again.");
     }
@@ -477,7 +487,7 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
       // FLIGHT_SURGEON_EMAILS, decides what the session can reach.
       const user = await linkIdentity(env, {
         provider: "cloudflare_access", subject: identity.subject, email: identity.email, display_name: identity.name, email_verified: true,
-      }, seedTasks);
+      }, seedTasks, clientIp(req));
       const ttl = SESSION_TTL;
       const provider = "cloudflare_access";
       await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, provider).run();
@@ -485,7 +495,8 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
       return new Response(null, { status: 302, headers: {
         Location: redirect, "Set-Cookie": cookieHeader(url, "session", token, ttl), "Cache-Control": "no-store",
       } });
-    } catch {
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 429) return rateLimited(error.retryAfter, error.message);
       console.warn("Cloudflare Access session could not be created");
       return fail("Sign-in failed. Try again.", 500);
     }
@@ -494,15 +505,33 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
   // "Try demo" for judges: signs into the seeded fake astronaut, or with ?as=surgeon the seeded fake flight surgeon.
   // Never takes a user id from the request. Off unless DEMO_LOGIN = "true". The session is short (2 h), stays
   // inside the demo crew (demo.ts) and can't delete the account. Switching persona replaces the current session.
-  if (path === "/auth/demo" && req.method === "GET") {
+  if (path === "/auth/demo" && (req.method === "GET" || req.method === "POST")) {
     if (env.DEMO_LOGIN !== "true") return Response.json({ error: "Demo sign-in is off" }, { status: 404 });
     // Another site must not sign a visitor into the shared demo (ending their own session) with a link or redirect.
     if (req.headers.get("Sec-Fetch-Site") === "cross-site") {
       return Response.json({ error: "Open the demo from the EVAde website" }, { status: 403 });
     }
-    await ensureCurrentDemo(env);
     const redirect = safeRedirect(env, url.searchParams.get("redirect"), url);
     const persona: DemoPersona = url.searchParams.get("as") === "surgeon" ? "surgeon" : "astronaut";
+    const siteKey = demoTurnstileSiteKey(env);
+    if (req.method === "GET" && siteKey) {
+      return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Try EVAde</title>
+        <script src="${TURNSTILE_ORIGIN}/turnstile/v0/api.js" async defer></script>
+        <main><h1>Try EVAde</h1><form method="post"><p>Complete the verification to open the demo.</p>
+        <div class="cf-turnstile" data-sitekey="${esc(siteKey)}" data-action="demo_sign_in"></div><button>Open demo</button></form></main></html>`, {
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
+          "Content-Security-Policy": `default-src 'none'; script-src ${TURNSTILE_ORIGIN}; frame-src ${TURNSTILE_ORIGIN}; connect-src ${TURNSTILE_ORIGIN}; form-action 'self' ${new URL(redirect).origin}; frame-ancestors 'none'` },
+      });
+    }
+    if (req.method === "POST" && req.headers.get("Origin") !== url.origin) {
+      return Response.json({ error: "Cross-origin sign-in blocked" }, { status: 403 });
+    }
+    const proof = req.method === "POST" ? await req.text() : "";
+    if (proof.length > 8192) return Response.json({ error: "Sign-in form is too large" }, { status: 413 });
+    if (!await verifyDemoTurnstile(env, new URLSearchParams(proof).get("cf-turnstile-response"), "demo_sign_in", url.hostname, ip)) {
+      return Response.json({ error: "Human check failed. Open the demo again." }, { status: 403 });
+    }
+    await ensureCurrentDemo(env);
     const user = await demoUser(env, persona);
     if (!user) return Response.json({ error: "Demo account isn't set up" }, { status: 503 });
     const previous = sessionCookie(req, url);
@@ -510,7 +539,7 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
     const token = await createSession(env, user, null, "demo", DEMO_SESSION_TTL);
     await env.DB.prepare("INSERT INTO action_log (user_id, action, detail) VALUES (?, 'login', ?)").bind(user.user_id, `demo:${persona}`).run();
     return new Response(null, {
-      status: 302, headers: { Location: redirect, "Set-Cookie": cookieHeader(url, "session", token, DEMO_SESSION_TTL), "Cache-Control": "no-store" },
+      status: req.method === "POST" ? 303 : 302, headers: { Location: redirect, "Set-Cookie": cookieHeader(url, "session", token, DEMO_SESSION_TTL), "Cache-Control": "no-store" },
     });
   }
 

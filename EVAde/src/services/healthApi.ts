@@ -303,7 +303,7 @@ export async function signOut({ clearAccess = true, redirect = true } = {}) {
 }
 
 // Puts the shared demo crew back to its seeded data (demo sessions only).
-export const resetDemo = () => api<{ reset: boolean; reset_at: string }>('/demo/reset', { method: 'POST' });
+export const resetDemo = () => api<{ reset: boolean; reset_at: string }>('/demo/reset', { method: 'POST', demoAction: 'demo_reset' });
 
 // ---------- health data ----------
 
@@ -478,13 +478,13 @@ export const fetchJournalMessages = (userId: string, { signal }: Signal = {}) =>
   api<ApiJournalMessage[]>(userPath(userId, 'journal/messages'), { signal });
 
 // Sends one journal message and returns the stored reply.
-export const postJournalMessage = (id: string, content: string, { signal }: Signal = {}) =>
+export const postJournalMessage = (id: string, content: string, { signal, demo }: Signal & { demo?: boolean } = {}) =>
   api<{ message?: ApiJournalMessage; reply: ApiJournalMessage | null; duplicate?: boolean }>('/journal/messages', {
-    method: 'POST', body: { id, content }, signal,
+    method: 'POST', body: { id, content }, signal, demoAction: demo ? 'demo_chat' : undefined,
   });
 
-export const postJournalChat = (id: string, message: string, { signal }: Signal = {}) =>
-  api<{ reply: ApiJournalMessage | null }>('/journal/chat', { method: 'POST', body: { id, message }, signal });
+export const postJournalChat = (id: string, message: string, { signal, demo }: Signal & { demo?: boolean } = {}) =>
+  api<{ reply: ApiJournalMessage | null }>('/journal/chat', { method: 'POST', body: { id, message }, signal, demoAction: demo ? 'demo_chat' : undefined });
 
 // One finished voice check-in: the transcript turns plus the agent's saved check-in (if any). The Worker stores the
 // entry and turns, then parses self-reports and readings. The session id makes retries safe (no duplicates).

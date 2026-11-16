@@ -21,6 +21,7 @@ export interface AiEnv {
   XAI_TEXT_MODEL?: string;
   XAI_FALLBACK_TEXT_MODEL?: string;
   XAI_STT_MODEL?: string;
+  reservePaidAi?: () => Promise<boolean>;
 }
 
 export const aiConfigured = (env: AiEnv) => Boolean(env.XAI_API_KEY);
@@ -70,6 +71,7 @@ export async function xaiChat(env: AiEnv, model: string, input: ChatInput): Prom
 export async function grok<T>(env: AiEnv, input: ChatInput, accept: (text: string) => T | null, label: string): Promise<{ value: T; model: string } | null> {
   if (!aiConfigured(env)) return null;
   for (const model of textModels(env)) {
+    if (env.reservePaidAi && !await env.reservePaidAi()) return null;
     try {
       const value = accept(await xaiChat(env, model, input));
       if (value !== null && value !== undefined) return { value, model };

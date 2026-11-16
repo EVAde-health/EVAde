@@ -3,10 +3,13 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { budgetHarness } from "./budgetHarness";
 // 0008 and 0011_seed_surgeon_demo are data-only (demo rows, applied on live); the tests seed their own data.
 const DATA_ONLY = new Set(["0008_remove_demo_data.sql", "0011_seed_surgeon_demo.sql"]);
 
-vi.mock("cloudflare:workers", () => ({ DurableObject: class {} }));
+vi.mock("cloudflare:workers", () => ({
+  DurableObject: class { constructor(public ctx: unknown, public env: unknown) {} },
+}));
 const { default: worker } = await import("../src/index");
 const { streakFrom, trackingDay, weekStart, settingsPatch, voiceSavedReply } = await import("../src/webapp");
 
@@ -122,6 +125,134 @@ async function call(method: string, path: string, { token = "astro", body, origi
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+describe("request abuse protection", () => {
+  async function invoke(path: string, options: { token?: string; ip?: string; body?: unknown; proof?: string } = {}) {
+    const headers = new Headers({ Origin: FRONTEND, "CF-Connecting-IP": options.ip ?? "192.0.2.10" });
+    if (options.token) headers.set("Cookie", `__Host-evade_session=${options.token}`);
+    if (options.proof) headers.set("X-Turnstile-Token", options.proof);
+    if (options.body !== undefined) headers.set("Content-Type", "application/json");
+    return worker.fetch(new Request(API + path, {
+      method: options.body === undefined ? "GET" : "POST", headers,
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    }), env, ctx);
+  }
+
+  const limitOnce = () => {
+    const used = new Set<string>();
+    return { limit: async ({ key }: { key: string }) => {
+      if (used.has(key)) return { success: false };
+      used.add(key);
+      return { success: true };
+    } };
+  };
+
+  async function demoSession() {
+    env.DEMO_LOGIN = "true";
+    const id = "00000000-0000-4000-8000-00000000d001";
+    env.DB.raw.prepare("INSERT OR IGNORE INTO users (user_id,display_name,role) VALUES (?, 'Demo', 'astronaut')").run(id);
+    await env.SESSIONS.put("sess:" + await sha256("demo-abuse"), JSON.stringify({ user_id: id, provider: "demo" }));
+    return "demo-abuse";
+  }
+
+  it("combines the sign-in IP limit with the old per-bucket limit", async () => {
+    env.SIGN_IN_IP_LIMITER = limitOnce();
+    expect((await invoke("/auth/access/staff")).status).toBe(302);
+    const blocked = await invoke("/auth/demo");
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("Retry-After")).toBe("60");
+    expect((await invoke("/auth/access/staff", { ip: "192.0.2.11" })).status).toBe(302);
+    env.SIGN_IN_IP_LIMITER = undefined;
+    env.AUTH_RATE_LIMITER = { limit: async () => ({ success: false }) };
+    expect((await invoke("/auth/access/staff")).status).toBe(429);
+  });
+
+  it("limits anonymous/demo writes and has a separate reset bucket", async () => {
+    env.DEMO_WRITE_IP_LIMITER = limitOnce();
+    env.DEMO_RESET_IP_LIMITER = limitOnce();
+    expect((await invoke("/sync", { body: {} })).status).toBe(401);
+    expect((await invoke("/journal/voice", { body: {} })).status).toBe(429);
+    const token = await demoSession();
+    expect((await invoke("/sync", { token, body: {}, ip: "192.0.2.11" })).status).toBe(200);
+    expect((await invoke("/media", { token, body: {}, ip: "192.0.2.11" })).status).toBe(429);
+    expect((await invoke("/demo/reset", { body: {}, ip: "192.0.2.11" })).status).toBe(401);
+    expect((await invoke("/demo/reset", { token, body: {}, ip: "192.0.2.11" })).status).toBe(429);
+  });
+
+  it("gates demo login, reset and chat on a matching single-use Turnstile action when configured", async () => {
+    const token = await demoSession();
+    const chat = () => ({ id: crypto.randomUUID(), message: "Feeling fine" });
+    expect((await invoke("/journal/chat", { token, body: chat() })).status).toBe(201);
+    env.TURNSTILE_SITE_KEY = "test-widget";
+    env.TURNSTILE_SECRET_KEY = "test-fixture";
+    const page = await invoke("/auth/demo");
+    expect(await page.text()).toContain('data-action="demo_sign_in"');
+    expect(page.headers.has("Set-Cookie")).toBe(false);
+    expect((await invoke("/demo/reset", { token, body: {} })).status).toBe(403);
+    expect((await invoke("/journal/chat", { token, body: chat() })).status).toBe(403);
+    const seen = new Set<string>();
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      expect(url).toBe("https://challenges.cloudflare.com/turnstile/v0/siteverify");
+      const form = init.body as URLSearchParams;
+      const proof = form.get("response")!;
+      const success = !seen.has(proof);
+      seen.add(proof);
+      return Response.json({ success, hostname: proof === "demo_sign_in" ? "api.evade.health" : "evade.health", action: proof.split(":")[0] });
+    });
+    expect((await invoke("/journal/chat", { token, body: chat(), proof: "demo_reset" })).status).toBe(403);
+    expect((await invoke("/journal/chat", { token, body: chat(), proof: "demo_chat" })).status).toBe(201);
+    expect((await invoke("/journal/chat", { token, body: chat(), proof: "demo_chat" })).status).toBe(403);
+    expect((await invoke("/demo/reset", { token, body: {}, proof: "demo_reset:fresh" })).status).toBe(200);
+    expect((await invoke("/auth/demo", { body: {} })).status).toBe(403);
+    const admitted = await worker.fetch(new Request(API + "/auth/demo", {
+      method: "POST", headers: { Origin: API }, body: new URLSearchParams({ "cf-turnstile-response": "demo_sign_in" }),
+    }), env, ctx);
+    expect(admitted.status).toBe(303);
+    expect(admitted.headers.has("Set-Cookie")).toBe(true);
+  });
+
+  it("saves journal entries with fallback replies after the cap, preserves staff allowance, and rejects STT", async () => {
+    const harness = budgetHarness({ AI_DAILY_CALL_BUDGET: "0", AI_STAFF_DAILY_CALL_BUDGET: "1" });
+    Object.assign(env, harness.env, { XAI_API_KEY: XAI_KEY });
+    const calls = stubGrok(() => JSON.stringify({ bullets: ["Vitals checked", "No alerts", "Mood noted"] }));
+    env.DB.raw.prepare("UPDATE users SET role='admin' WHERE user_id=?").run(SURGEON);
+    await env.SESSIONS.put("sess:" + await sha256("usage-admin"), JSON.stringify({ user_id: SURGEON, provider: "cloudflare_access" }));
+    try {
+      expect((await invoke("/journal?analyze=sync", { token: "astro", body: { content: "A calm day." } })).status).toBe(201);
+      expect(env.DB.raw.prepare("SELECT COUNT(*) AS n FROM journal_entries WHERE user_id=?").get(ASTRONAUT).n).toBe(1);
+      const chat = await invoke("/journal/chat", { token: "astro", body: { id: crypto.randomUUID(), message: "Feeling fine" } });
+      expect(chat.status).toBe(201);
+      expect(await chat.text()).toContain("Thanks for checking in");
+      const voice = await invoke("/journal/voice", { token: "astro", body: {} });
+      expect(voice.status).toBe(429);
+      expect(await voice.text()).toContain("Voice is paused for today");
+      expect(calls).toHaveLength(0);
+      const path = `/admin/astronauts/${ASTRONAUT}/summary`;
+      expect(await (await invoke(path, { token: "usage-admin" })).text()).toContain("Vitals checked");
+      expect(await (await invoke(path, { token: "usage-admin" })).text()).toContain("No vitals recorded");
+      expect(calls).toHaveLength(1);
+      expect((await invoke("/admin/usage", { token: "astro" })).status).toBe(403);
+      const usage = await invoke("/admin/usage", { token: "usage-admin" });
+      expect(await usage.json()).toMatchObject({ calls: { count: 0, budget: 0 }, staff_calls: { count: 1, budget: 1 } });
+    } finally { await settle(); harness.close(); }
+  });
+
+  it("limits external predictions per astronaut and leaves other accounts independent", async () => {
+    const harness = budgetHarness({ MODEL_PER_USER_DAILY: "1" });
+    Object.assign(env, harness.env, {
+      MODEL_GATEWAY_KEY: "test-fixture",
+      MODELS: { fetch: async (request: Request) => new URL(request.url).pathname === "/v1/users"
+        ? Response.json({ data: { user_id: "model-user" } }) : Response.json({ source: "mock" }) },
+    });
+    try {
+      expect((await invoke("/predict/ecg", { token: "astro", body: {} })).status).toBe(200);
+      const denied = await invoke("/predict/ecg", { token: "astro", body: {} });
+      expect(denied.status).toBe(429);
+      expect(Number(denied.headers.get("Retry-After"))).toBeGreaterThan(0);
+      expect((await invoke("/predict/ecg", { token: "other", body: {} })).status).toBe(200);
+    } finally { harness.close(); }
+  });
+});
 
 it("summarizes model runs without result contents or cross-account exposure to demo and personal users", async () => {
   env.DEMO_LOGIN = "true";

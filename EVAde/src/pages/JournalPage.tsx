@@ -173,7 +173,7 @@ export default function JournalPage() {
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      const reply = await getAssistantReply(entry, controller.signal);
+      const reply = await getAssistantReply(entry, controller.signal, user.demo);
       if (!controller.signal.aborted && reply) setMessages(current => [...current, reply]);
     } catch (error) {
       if (!controller.signal.aborted) {

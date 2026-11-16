@@ -18,6 +18,7 @@ import { BrowserBridge, CallBridge } from "./bridges";
 import { IDLE_AUDIO_SECONDS, SESSION_LIMIT_REACHED, TIME_UP, heartbeatSlot, releaseSlot } from "./slots";
 import { consumeStreamToken } from "./tokens";
 import type { ToolContext } from "./tools";
+import { bucketSeconds, clientIp, rateLimited, reserveQuota, settleVoice, VOICE_PAUSED, type BudgetEnv, type VoiceLease } from "../../shared/abuse";
 
 type Mode = "phone" | "browser";
 
@@ -35,6 +36,10 @@ export class VoiceSession extends DurableObject<Env> {
   private limitTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private maxSeconds = 600;
+  private startedAt = 0;
+  private lease?: VoiceLease;
+  private reservedAt = 0;
 
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
@@ -44,7 +49,13 @@ export class VoiceSession extends DurableObject<Env> {
     const url = new URL(request.url);
     this.mode = url.searchParams.get("mode") === "phone" ? "phone" : "browser";
     this.slotId = url.searchParams.get("slot") || null;
-    const maxSeconds = Number(url.searchParams.get("maxSeconds")) || (this.mode === "phone" ? 600 : 300);
+    this.maxSeconds = Number(url.searchParams.get("maxSeconds")) || (this.mode === "phone" ? 600 : 300);
+    this.startedAt = Date.now();
+    if (this.mode === "browser") {
+      const decision = await this.reserveVoice("browser:" + clientIp(request));
+      if (!decision.allowed) return rateLimited(decision.retryAfter, VOICE_PAUSED);
+      this.maxSeconds = decision.seconds ?? this.maxSeconds;
+    }
 
     const pair = new WebSocketPair();
     const [clientEnd, server] = [pair[0], pair[1]];
@@ -65,7 +76,7 @@ export class VoiceSession extends DurableObject<Env> {
       this.sendClient({ type: "status", state: "connecting" });
       this.ctx.waitUntil(this.startXai());
     }
-    this.armGuards(maxSeconds);
+    this.armGuards(this.maxSeconds);
     return new Response(null, { status: 101, webSocket: clientEnd });
   }
 
@@ -117,9 +128,36 @@ export class VoiceSession extends DurableObject<Env> {
   }
 
   // --------------------------------------------------------------- xAI side
+  private async reserveVoice(key: string) {
+    const remaining = Math.max(0, this.maxSeconds - Math.ceil((Date.now() - this.startedAt) / 1000));
+    const decision = await reserveQuota(this.env as BudgetEnv, {
+      kind: "voice", key, seconds: Math.min(remaining, bucketSeconds(86400)),
+    });
+    this.lease = decision.lease;
+    this.reservedAt = Date.now();
+    if (this.ended) this.finishVoice();
+    return decision;
+  }
+
+  private finishVoice() {
+    if (!this.lease) return;
+    const lease = this.lease;
+    this.lease = undefined;
+    const used = Math.max(0, Math.ceil((Date.now() - this.reservedAt) / 1000));
+    this.ctx.waitUntil(settleVoice(this.env as BudgetEnv, lease, used));
+  }
+
   private async startXai(): Promise<void> {
     if (this.xaiStarted || this.ended) return;
     this.xaiStarted = true;
+    // The phone handshake has already consumed Twilio's one-time stream token.
+    if (this.mode === "phone") {
+      const decision = await this.reserveVoice("phone");
+      if (!decision.allowed) { this.end(1008, VOICE_PAUSED); return; }
+      if (this.ended) return;
+      if (this.limitTimer) clearTimeout(this.limitTimer);
+      this.limitTimer = setTimeout(() => this.end(1000, SESSION_LIMIT_REACHED), (decision.seconds ?? this.maxSeconds) * 1000);
+    }
     let xai: WebSocket;
     try {
       xai = await connectXai(this.env);
@@ -176,6 +214,7 @@ export class VoiceSession extends DurableObject<Env> {
     if (this.ended) return;
     this.ended = true;
     this.clearGuards();
+    this.finishVoice();
     if (this.slotId) this.ctx.waitUntil(releaseSlot(this.env.DB, this.slotId));
     try { this.xai?.close(1000); } catch { /* already closed */ }
     if (this.mode === "browser") {

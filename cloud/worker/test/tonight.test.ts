@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
+vi.mock("cloudflare:workers", () => ({ DurableObject: class {} }));
 import { sha256hex } from "../src/auth";
 import { DELETE_USER_SQL } from "../src/deleteUser";
 // 0008 and 0011_seed_surgeon_demo are data-only (demo rows, applied on live); the tests seed their own data.
@@ -262,6 +263,20 @@ describe("GET /auth/demo", () => {
     expect(aiRuns).toBe(0);
     const before = calls.length;
     expect((await call("POST", "/model-transparency/run", { ...cookie, body: { id: "EVA-12" } })).status).toBe(429);
+    expect(calls.length).toBe(before);
+  });
+
+  it("applies the daily model quota to on-demand runs for a person, not only /predict and transparency runs", async () => {
+    const reserves: string[] = [];
+    const denyAll = { idFromName: (n: string) => n, get: () => ({ fetch: async (_url: string, init?: RequestInit) =>
+      (reserves.push(JSON.parse(String(init?.body)).kind), Response.json({ allowed: false })) }) };
+    env = { ...env, ABUSE_BUDGET: denyAll } as unknown as Env;
+    const { uid, token } = await astronaut("Quota");
+    const before = calls.length;
+    const res = await call("POST", `/users/${uid}/models/EVA-12/run`, { cookie: token, body: {} });
+    expect(res.status).toBe(429);
+    expect((await res.json<any>()).error).toMatch(/Daily model limit/);
+    expect(reserves).toEqual(["predictions"]);
     expect(calls.length).toBe(before);
   });
 

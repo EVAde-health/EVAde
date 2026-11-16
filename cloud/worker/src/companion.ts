@@ -2,6 +2,7 @@ import { aiConfigured, grok, keywordFlag, parseModelJson, type AiEnv } from "./a
 import { STAFF_ROLES, type AuthEnv, type Principal } from "./auth";
 import { HttpError } from "./http";
 import { raiseEmergency } from "./ops";
+import { logAbuse } from "../../../shared/abuse";
 
 interface CompanionEnv extends AuthEnv, AiEnv {}
 
@@ -112,7 +113,12 @@ export function registerCompanion<E extends CompanionEnv>(route: (method: string
     const urgent = crisisLanguage(content);
     const limit = await env.AUTH_RATE_LIMITER.limit({ key: "journal-chat:" + userId });
     if (!limit.success) {
-      if (urgent) return json({ error: await flagCrisis(env.DB, userId, new Date().toISOString()) }, 429);
+      logAbuse("rate_limited", "journal_chat_account");
+      if (urgent) {
+        const response = json({ error: await flagCrisis(env.DB, userId, new Date().toISOString()), safety_guidance: true }, 429);
+        response.headers.set("Retry-After", "60");
+        return response;
+      }
       throw new HttpError(429, "Too many messages. Try again in a minute");
     }
     const replyId = "companion:" + id;
@@ -167,6 +173,7 @@ export function registerCompanion<E extends CompanionEnv>(route: (method: string
   route("GET", "/admin/astronauts/:id/summary", async (_req, env, p, _url, _ctx, who) => {
     if (who.kind !== "user" || !who.user_id || !STAFF_ROLES.has(who.role ?? "")) throw new HttpError(403, "Flight surgeon / admin access only");
     if (!(await env.AUTH_RATE_LIMITER.limit({ key: "staff-summary:" + who.user_id })).success) {
+      logAbuse("rate_limited", "staff_summary_account");
       throw new HttpError(429, "Too many summaries. Try again in a minute");
     }
     if (!await env.DB.prepare("SELECT 1 FROM users WHERE user_id=? AND role='astronaut'").bind(p.id).first()) {

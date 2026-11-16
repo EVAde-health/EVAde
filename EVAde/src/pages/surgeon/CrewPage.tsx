@@ -19,9 +19,30 @@ import StatusBadge from '../../components/StatusBadge';
 import { usePoll } from '../../hooks/usePoll';
 import { ago, personName, responseRows, splitIssue, type CrewRow, type CrewStatus } from '../../services/surgeon';
 import { hasSimulatedData } from '../../services/simulation';
+import { useSurgeon } from '../../context/SurgeonContext';
 
 type Filter = 'all' | 'attention' | 'unread';
 const STATUS_ORDER = { critical: 0, caution: 1, nominal: 2 } as const;
+type Count = { count: number; budget: number };
+type Usage = { date: string; calls: Count; staff_calls: Count; voice_seconds: Count & { used: number } };
+
+function UsageCard() {
+  const { data, error } = usePoll<Usage>('/admin/usage', 30000);
+  const rows = data ? [
+    ['Shared AI calls', data.calls], ['Staff AI calls', data.staff_calls], ['Voice seconds used or reserved', data.voice_seconds],
+  ] as const : [];
+  return (
+    <Card padding={4}>
+      <VStack gap={1}>
+        <Text weight="semibold">Daily AI usage</Text>
+        <Text type="supporting">{data ? `${data.date} UTC` : error ?? 'Loading usage…'}</Text>
+        <HStack gap={4} wrap="wrap">
+          {rows.map(([label, quota]) => <Text key={label}>{label} {quota.count.toLocaleString()} / {quota.budget.toLocaleString()}</Text>)}
+        </HStack>
+      </VStack>
+    </Card>
+  );
+}
 
 function crewStatus(row: CrewRow): CrewStatus | null {
   if (row.status === 'critical' || row.status === 'caution' || row.status === 'nominal') return row.status;
@@ -31,6 +52,7 @@ function crewStatus(row: CrewRow): CrewStatus | null {
 }
 
 export default function CrewPage() {
+  const { user } = useSurgeon();
   const { data, error, loading } = usePoll<CrewRow[]>('/admin/crew', 15000);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
@@ -60,6 +82,7 @@ export default function CrewPage() {
         title="Crew overview"
         description="Today’s goal progress, latest vitals, last check-in and emergencies for every astronaut. Refreshes on its own."
       />
+      {user.role === 'admin' && !user.demo && <UsageCard />}
       <HStack gap={3} wrap="wrap" vAlign="end">
         <StackItem size="fill">
           <TextInput label="Find an astronaut" isLabelHidden placeholder="Search by name or role" startIcon={MagnifyingGlassIcon}

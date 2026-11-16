@@ -25,8 +25,8 @@ export async function loadJournal(userId: string, signal: AbortSignal) {
 }
 
 // Saves a private message and returns the companion's check-in reply.
-export async function getAssistantReply(entry: JournalMessage, signal: AbortSignal): Promise<JournalMessage | null> {
-  const { reply } = await postJournalChat(entry.id, entry.text, { signal });
+export async function getAssistantReply(entry: JournalMessage, signal: AbortSignal, demo?: boolean): Promise<JournalMessage | null> {
+  const { reply } = await postJournalChat(entry.id, entry.text, { signal, demo });
   return reply ? toJournalMessage(reply) : null;
 }
 

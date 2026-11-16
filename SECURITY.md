@@ -79,3 +79,40 @@ node scripts/cloudflare-security.mjs --revert                    # undo everythi
 Re-running is idempotent. Keep the state file until a revert is no longer needed; it is the only record of the previous values.
 
 Needs a paid plan: a second, tighter rate limit for `api.evade.health/auth/*` and host-scoped rate limiting (Pro), Super Bot Fight Mode with a skip rule for `/voice/*` (Pro), and Security Events alerts (Business). Workers usage and budget alerts are set up by hand under Notifications.
+
+## Abuse protection
+
+The browser API and voice Worker use `CF-Connecting-IP` for short limits. Clients cannot select the bucket by passing forwarding headers. The Workers rate-limit bindings apply per Cloudflare location. The SQLite Durable Object enforces global quotas across API and realtime voice traffic, with atomic reservations and UTC rollover.
+
+| Enforcement | Default | Binding or variable |
+|---|---:|---|
+| Sign-in IP, shared across Access, demo, OAuth starts and callbacks | 10 per 60 s | `SIGN_IN_IP_LIMITER` (API Wrangler config) |
+| Existing sign-in bucket plus IP | 20 per 60 s per route bucket | `AUTH_RATE_LIMITER` |
+| Account creation via sign-in | 3 per IP per UTC hour | `NEW_ACCOUNT_IP_HOURLY` |
+| Anonymous/demo journal, chat, sync and media POSTs | 15 per IP per 60 s, shared | `DEMO_WRITE_IP_LIMITER` |
+| Anonymous/demo reset POSTs | 3 per IP per 60 s | `DEMO_RESET_IP_LIMITER` |
+| Existing global demo reset limit | 20 per 60 s | `AUTH_RATE_LIMITER` |
+| Voice ticket requests and browser WebSocket handshakes | 8 per IP per 60 s for each route family | `VOICE_START_IP_LIMITER`, `VOICE_SOCKET_IP_LIMITER` |
+| Existing browser voice cap | 4 concurrent sessions, 300 s per session | `MAX_CONCURRENT_SESSIONS`, `MAX_SESSION_SECONDS` |
+| Existing phone maximum | 600 s per call | `PHONE_MAX_SESSION_SECONDS` constant |
+| Existing paid AI and companion limits | 20 per account and action per 60 s | `AUTH_RATE_LIMITER` |
+| Shared xAI text, STT and realtime starts | 3,000 calls per UTC day | `AI_DAILY_CALL_BUDGET` |
+| Shared pool, one account | 120 calls per UTC day | `AI_PER_USER_DAILY` |
+| Verified staff xAI text and STT | 6,000 calls per UTC day, 600 per staff account | `AI_STAFF_DAILY_CALL_BUDGET`, `AI_STAFF_PER_USER_DAILY` |
+| Realtime voice duration | 18,000 seconds per UTC day | `VOICE_DAILY_SECONDS_BUDGET` |
+| Non-staff account prediction requests and model transparency runs | 100 per UTC day, shared | `MODEL_PER_USER_DAILY` |
+| Existing private model gateway | 120 per 60 s | `LIMITER` (gateway Wrangler config) |
+
+Each actual Grok attempt, including fallback model attempts, consumes one call. The public voice endpoints share the regular pool and key browser calls by IP because they have no authenticated API account. Phone calls reserve after the signed Twilio webhook and one-time stream token checks. Voice reserves its maximum remaining duration before opening xAI and returns unused seconds on close. An interrupted session can keep its reservation until UTC rollover. The admin console shows both pools and voice seconds used or reserved. Demo staff personas use the shared pool. Internal simulator predictions skip the per-account model quota.
+
+Minute limits return 429 with `Retry-After: 60`. Hourly and daily quota errors return the remaining time to the boundary. Budget exhaustion leaves text journal entries and companion turns eligible to save and switches text analysis and summaries to their rules. Voice returns a pause message without opening xAI. Logs emit an event and a fixed scope, with no IP, user ID, token, or journal content.
+
+### Dashboard setup checklist
+
+- [ ] In Cloudflare Turnstile, create a Managed widget and allow `api.evade.health`, `evade.health`, and `www.evade.health` if that frontend hostname is enabled.
+- [ ] Set the public widget key in `TURNSTILE_SITE_KEY` on `evade-api` and store the private value in the Worker secret named in `cloud/worker/.dev.vars.example`. Use the dashboard secret field or Wrangler secret input. Keep the existing OAuth Turnstile configuration if OAuth is enabled.
+- [ ] After approval, release the API first to provision the `AbuseBudget` Durable Object, then the site and voice Worker so its cross-script binding can resolve. This feature needs no D1 migration.
+- [ ] Check the demo sign-in form, demo reset, and demo chat with the production widget. Confirm the admin console reports usage and that the voice Worker can reach the counter.
+- [ ] In Workers Logs, filter for `rate_limited`, `budget_limited`, `guard_unavailable`, and `turnstile_disabled`. Configure log-based notifications through the team's logging integration if needed.
+
+Without a demo Turnstile secret, the challenge is skipped and the Worker logs a warning. When configured, token checks enforce both the action and hostname and fail closed on verification errors.

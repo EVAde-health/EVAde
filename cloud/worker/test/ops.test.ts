@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
+vi.mock("cloudflare:workers", () => ({ DurableObject: class {} }));
 // 0008 and 0011_seed_surgeon_demo are data-only (demo rows, applied on live); the tests seed their own data.
 const DATA_ONLY = new Set(["0008_remove_demo_data.sql", "0011_seed_surgeon_demo.sql"]);
 
