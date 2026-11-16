@@ -1,6 +1,6 @@
-// Next EVA window from the live NOAA Kp forecast.
-// This is the same conservative rule as cloud/python/evade_space/space_weather.py.
-// It is not Michael's trained SPE model (EVA-12). Callers must label it that way.
+// Next EVA window: the NOAA Kp forecast gives candidate blocks (the same conservative rule as
+// cloud/python/evade_space/space_weather.py), and Michael's EVA-12 P(solar particle event within 24 h) then decides
+// whether blocks in the next 24 h stay go, drop to caution, or are pushed past the 24 h horizon.
 
 export interface EvaWindow {
   start: string;
@@ -8,6 +8,42 @@ export interface EvaWindow {
   max_kp: number;
   status: "go" | "caution";
   source: "noaa-kp-rule";
+  reason?: string;
+}
+
+/** Our own key for the model service's pseudonymous user that runs the crew-wide EVA-12 forecast. */
+export const EVA_WINDOW_MODEL_USER = "eva-window-service";
+
+/** EVAde's decision thresholds on EVA-12 (not Michael's): the long-run base rate is about 1-2% per day. */
+export const SPE_CAUTION_P = 0.05;
+export const SPE_NO_GO_P = 0.2;
+const DAY_MS = 86_400_000;
+
+/** Applies EVA-12's probability to the Kp blocks. With no probability, the Kp blocks stand and the decision says so. */
+export function planEvaWindows(windows: EvaWindow[], pOnset: number | null, now = new Date()) {
+  const horizon = now.getTime() + DAY_MS;
+  let decision: string;
+  let planned: EvaWindow[] = windows;
+  if (pOnset == null) {
+    decision = "EVA-12 did not return a probability, so these blocks use the NOAA Kp forecast alone.";
+  } else if (pOnset >= SPE_NO_GO_P) {
+    decision = `EVA-12 gives ${(pOnset * 100).toFixed(1)}% for a solar particle event in 24 h (no-go at ${SPE_NO_GO_P * 100}%), so nothing starts before ${new Date(horizon).toISOString().slice(0, 16)}Z.`;
+    planned = windows.flatMap((w) => {
+      const end = Date.parse(w.end);
+      if (end <= horizon) return [];
+      const start = Math.max(Date.parse(w.start), horizon);
+      if (end - start < 6 * 3_600_000) return [];
+      return [{ ...w, start: new Date(start).toISOString().slice(0, 16) + "Z", reason: "Starts after EVA-12's 24 h risk horizon." }];
+    });
+  } else if (pOnset >= SPE_CAUTION_P) {
+    decision = `EVA-12 gives ${(pOnset * 100).toFixed(1)}% for a solar particle event in 24 h (caution at ${SPE_CAUTION_P * 100}%), so blocks starting in the next 24 h are caution.`;
+    planned = windows.map((w) => Date.parse(w.start) < horizon
+      ? { ...w, status: "caution" as const, reason: "Elevated EVA-12 solar particle event risk in the next 24 h." } : w);
+  } else {
+    decision = `EVA-12 gives ${(pOnset * 100).toFixed(1)}% for a solar particle event in 24 h, under the ${SPE_CAUTION_P * 100}% caution line, so the Kp blocks stand.`;
+  }
+  const recommended = planned.find((w) => w.status === "go") ?? planned[0] ?? null;
+  return { windows: planned, recommended, decision };
 }
 
 export interface ForecastPoint {

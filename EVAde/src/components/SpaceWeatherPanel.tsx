@@ -36,13 +36,23 @@ function fluxPoints(rows: SpaceWeatherRow[] | undefined) {
     .map(r => ({ label: hourLabel(r.ts), flux: Math.max(r.proton_flux_10mev ?? 0, 0.01) }));
 }
 
+interface EvaWindow { start: string; end: string; max_kp: number; status: 'go' | 'caution'; reason?: string }
+
 interface EvaWindowPayload {
-  rule: {
-    note: string;
-    proton_10mev_pfu: number | null;
-    best: { start: string; end: string; status: string; max_kp: number } | null;
-  };
-  spe_model: { model_id: string; ok: boolean; status: number; latency_ms: number; model_sha256: string | null; output: unknown };
+  generated_at: string;
+  proton_10mev_pfu: number | null;
+  recommended: EvaWindow | null;
+  windows: EvaWindow[];
+  decision: string;
+  rule: string;
+  model: { model_id: string; ran: boolean; headline: string; request_id?: string | null; latency_ms?: number };
+}
+
+const WINDOW_TIME: Intl.DateTimeFormatOptions = { weekday: 'short', hour: 'numeric', minute: '2-digit', timeZone: 'UTC', timeZoneName: 'short' };
+
+// Formats a window as "Mon 3:00 AM UTC to Mon 12:00 PM UTC".
+function windowRange(window: EvaWindow) {
+  return `${new Date(window.start).toLocaleString([], WINDOW_TIME)} to ${new Date(window.end).toLocaleString([], WINDOW_TIME)}`;
 }
 
 // Live NOAA space weather: storm level, proton flux, Kp, the Kp-rule EVA window, and EVA-12 when the gateway runs it.
@@ -97,31 +107,29 @@ export default function SpaceWeatherPanel() {
         {eva.error && <Text role="alert">{eva.error}</Text>}
         {eva.data && (
           <VStack gap={1}>
-            <Text type="supporting">{eva.data.rule.note}</Text>
-            {eva.data.rule.best ? (
-              <Text>
-                {eva.data.rule.best.status === 'go' ? 'Go' : 'Caution'} {eva.data.rule.best.start} to {eva.data.rule.best.end}, max Kp {eva.data.rule.best.max_kp}.
-              </Text>
+            {eva.data.recommended ? (
+              <HStack gap={2} vAlign="center" wrap="wrap">
+                <StatusBadge status={eva.data.recommended.status === 'go' ? 'nominal' : 'caution'}
+                  label={eva.data.recommended.status === 'go' ? 'Go' : 'Caution'} />
+                <Text weight="semibold">{windowRange(eva.data.recommended)}</Text>
+                <Text type="supporting">max Kp {eva.data.recommended.max_kp}</Text>
+              </HStack>
             ) : (
-              <Text>No 6-hour window with forecast Kp under 5{eva.data.rule.proton_10mev_pfu != null && eva.data.rule.proton_10mev_pfu >= 10 ? ' because protons are already at radiation-storm levels' : ''}.</Text>
+              <HStack gap={2} vAlign="center" wrap="wrap">
+                <StatusBadge status="critical" label="No-go" />
+                <Text>No 6-hour window in the 3-day forecast{eva.data.proton_10mev_pfu != null && eva.data.proton_10mev_pfu >= S1_PFU ? ': protons are at radiation-storm levels' : ''}.</Text>
+              </HStack>
             )}
+            <Text>{eva.data.decision}</Text>
             <Text type="supporting">
-              {eva.data.spe_model.model_id} {eva.data.spe_model.ok ? `ran in ${eva.data.spe_model.latency_ms} ms` : `did not run (HTTP ${eva.data.spe_model.status})`}.
-              {eva.data.spe_model.model_sha256 ? ` Weight sha256 ${eva.data.spe_model.model_sha256}.` : ' No weight hash was returned.'}
+              {eva.data.model.ran
+                ? `${eva.data.model.model_id} (Michael's solar particle event model) answered in ${eva.data.model.latency_ms ?? '?'} ms: ${eva.data.model.headline}`
+                : `${eva.data.model.model_id} did not run: ${eva.data.model.headline}`}
             </Text>
-            <Text type="supporting">{speMessage(eva.data.spe_model.output)}</Text>
+            <Text type="supporting">{eva.data.rule}</Text>
           </VStack>
         )}
       </VStack>
     </PanelCard>
   );
-}
-
-function speMessage(output: unknown) {
-  if (!output || typeof output !== 'object') return 'EVA-12 returned no probability.';
-  const row = output as { error?: string; data?: { p_onset_24h?: number; forecast?: { p_onset_24h?: number } } };
-  const p = row.data?.forecast?.p_onset_24h ?? row.data?.p_onset_24h;
-  if (typeof p === 'number') return `EVA-12 P(solar particle event within 24 h) = ${(p * 100).toFixed(1)}%.`;
-  if (row.error) return String(row.error);
-  return 'EVA-12 did not return P(onset). The number above is the NOAA Kp rule only.';
 }
