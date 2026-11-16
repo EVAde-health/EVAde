@@ -4,9 +4,11 @@
 -- staff_threads / staff_messages into conversations / conversation_messages.
 -- daily_rollups is also empty. v_daily_trend only reads it, and chart series already
 -- come from observations, so both go. v_crew_overview, v_escalations, v_therapist_feed,
--- and v_daily_intake stay: the Worker still queries them.
+-- and v_daily_intake stay: the Worker still queries them. v_daily_nutrition (0006) has no reader in either
+-- Worker, the web app or the voice agent (v_daily_intake replaced it), so it goes too.
 
 DROP VIEW IF EXISTS v_daily_trend;
+DROP VIEW IF EXISTS v_daily_nutrition;
 DROP TABLE IF EXISTS daily_rollups;
 DROP TABLE IF EXISTS metric_forecasts;
 DROP TABLE IF EXISTS agent_jobs;

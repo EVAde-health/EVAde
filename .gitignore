@@ -72,3 +72,6 @@ venv/
 # ---------- Local data ----------
 # SQLite and other runtime data for the local Python voice agent.
 /data/
+
+# Cloudflare edge settings: previous values saved by scripts/cloudflare-security.mjs for --revert
+scripts/.cloudflare-security-state.json

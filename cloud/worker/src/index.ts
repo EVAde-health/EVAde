@@ -24,10 +24,11 @@ import {
 } from "./models";
 import { deleteUserStatements } from "./deleteUser";
 import { assertDemoScope, DEMO_ID_PREFIX, resetDemo, scrubDemoResponse } from "./demo";
-import { evaWindows, parseForecast } from "./evaWindow";
-import { catalogById, catalogDocument, MODEL_CATALOG } from "./modelCatalog";
+import { EVA_WINDOW_MODEL_USER, evaWindows, parseForecast, planEvaWindows } from "./evaWindow";
+import { catalogById, catalogDocument, MODEL_CATALOG, modelArtifacts } from "./modelCatalog";
 import { metricModelInfo } from "./metricModels";
-import { analyzeSelfie, VISION_MODEL } from "./selfieAnalysis";
+import { isRunnable, MODEL_KIND, readResult, runModel, type RunContext, type RunnableModel } from "./modelRuns";
+import { analyzeSelfie, needsSurgeonAttention, VISION_FALLBACK_MODEL, VISION_MODEL } from "./selfieAnalysis";
 import { HttpError } from "./http";
 import { refreshSimulation, type SimulationPrediction } from "./simulation";
 import { simulatedEcgDeep, simulatedSleepDeep } from "./simulationSignals";
@@ -45,6 +46,7 @@ export interface Env extends AuthEnv, ModelEnv, WebAppEnv, PredictionEnv {
   MEDIA?: R2Bucket; // R2 bucket evade-media
   LIVE?: DurableObjectNamespace; // CrewFeed Durable Object
   AI?: Ai; // Workers AI binding for selfie assessment
+  MODEL_ARTIFACTS?: R2Bucket; // evade-models bucket, read-only here: manifest.json weight hashes for /model-transparency
   EVADE_API_KEY?: string;
   ALLOWED_ORIGINS?: string;
 }
@@ -1188,6 +1190,7 @@ route("POST", "/media", async (req, env, _p, url, ctx, who) => {
     const assessment = await aiAllowed(env, "vision", userId)
       ? await analyzeSelfie(env.AI, buf, ct)
       : { status: "unavailable" as const, model: VISION_MODEL, mood: null, explanation: null, confidence: null, raw: null,
+          fatigue: null, stress: null, observations: null, follow_up: null,
           reason: "Too many selfies in the last minute, so this one was saved without an assessment." };
     const analyzedAt = now();
     await env.DB.prepare(
@@ -1197,9 +1200,16 @@ route("POST", "/media", async (req, env, _p, url, ctx, who) => {
     const bodyText = assessment.status === "ok"
       ? `Mood ${assessment.mood} (${Math.round((assessment.confidence ?? 0) * 100)}% confidence). ${assessment.explanation}`
       : `A selfie was saved. ${assessment.reason ?? "The vision model did not return an assessment."}`;
-    await env.DB.prepare(
+    const writes = [env.DB.prepare(
       "INSERT INTO user_notifications (user_id, kind, title, body, created_at) VALUES (?, 'message', ?, ?, ?)"
-    ).bind(userId, "Selfie sent to the flight surgeon", bodyText, analyzedAt).run();
+    ).bind(userId, "Selfie sent to the flight surgeon", bodyText, analyzedAt)];
+    // Tired, stressed, sad or unwell (or moderate+ fatigue/stress) also raises a yellow alert on the surgeon console.
+    if (needsSurgeonAttention(assessment)) {
+      writes.push(env.DB.prepare("INSERT INTO alerts (user_id,ts,level,metric,message,action,escalate) VALUES (?,?,'yellow','selfie_mood',?,?,0)")
+        .bind(userId, analyzedAt, `Selfie check: looks ${assessment.mood}${assessment.fatigue && assessment.fatigue !== "none" ? `, ${assessment.fatigue} fatigue` : ""}. ${assessment.explanation}`.slice(0, 500),
+          "Open the astronaut's Selfies tab and view the analysis. AI read of one photo, not a diagnosis."));
+    }
+    await env.DB.batch(writes);
   }
   publish(env, ctx, { type: "media", user_id: userId, data: media });
   return json(media, 201);
@@ -1291,9 +1301,44 @@ const sha256Hex = async (text: string) => {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 };
 
-// Next EVA window: NOAA Kp rule (labeled) plus EVA-12 only when the gateway actually returns it.
+// Latest heart rate and sleep for a person: the synthetic waveforms are built from these.
+async function runContext(env: Env, userId: string, seizure: boolean): Promise<RunContext> {
+  const { results } = await env.DB.prepare(
+    `SELECT metric, value FROM observations o WHERE user_id=? AND metric IN ('heart_rate','sleep_hours')
+       AND ts = (SELECT MAX(ts) FROM observations WHERE user_id=o.user_id AND metric=o.metric)`
+  ).bind(userId).all<{ metric: string; value: number }>();
+  const latest = (metric: string) => results.find((row) => row.metric === metric)?.value ?? null;
+  return { heartRate: latest("heart_rate"), sleepHours: latest("sleep_hours"), seizure };
+}
+
+// Runs one of Michael's served models for a person and stores what came back in model_results (with provenance).
+async function runAndStore(env: Env, userId: string, model: RunnableModel, seizure: boolean) {
+  const result = await runModel(env, userId, model, await runContext(env, userId, seizure));
+  if (result.ran) {
+    const out = result.output as Record<string, unknown>;
+    const sum = summarize(result.kind, out);
+    const stored = {
+      ...out,
+      provenance: { endpoint: `/v1/predict/${result.kind}`, model_ids: result.served_model_ids, request_id: result.request_id,
+        source: "evade-gateway", input: result.input, latency_ms: result.latency_ms },
+      readable: { headline: result.headline, probabilities: result.probabilities },
+    };
+    await env.DB.prepare(
+      "INSERT INTO model_results (user_id,endpoint,model_id,ts,output,flag,confidence,source,latency_ms) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING"
+    ).bind(userId, `/v1/predict/${result.kind}`, result.served_model_ids[0] ?? model, now(), JSON.stringify(stored),
+      (sum.flag ?? result.flag)?.slice(0, 64) ?? null, sum.confidence,
+      result.input.source === "live NOAA SWPC" ? "model" : "simulated", result.latency_ms).run();
+  }
+  return result;
+}
+
+const notConnected = "evade-gateway is not connected here, so Michael's models did not run. Nothing was filled in.";
+
+// Next EVA window: NOAA Kp forecast blocks, adjusted by EVA-12's P(solar particle event within 24 h). Cached 10 minutes.
 route("GET", "/eva/window", async (_r, env) => {
-  const started = Date.now();
+  const cacheKey = "eva-window:v2";
+  const cached = await env.SESSIONS.get(cacheKey, "json").catch(() => null);
+  if (cached) return json(cached);
   let forecast: unknown = null;
   let protons: unknown = [];
   try {
@@ -1306,103 +1351,124 @@ route("GET", "/eva/window", async (_r, env) => {
   } catch {
     forecast = null;
   }
-  const points = parseForecast(forecast);
   const list = Array.isArray(protons) ? protons as Record<string, unknown>[] : [];
   const latest = [...list].reverse().find((row) => String(row.energy ?? "").replace(/\s/g, "") === ">=10MeV");
-  const proton = latest ? Number(latest.flux) : null;
+  const proton = latest ? Number(latest.flux) : NaN;
   const protonPfu = Number.isFinite(proton) ? proton : null;
-  const windows = evaWindows(points, { protonPfu });
-  let spe: Record<string, unknown>;
+  const windows = evaWindows(parseForecast(forecast), { protonPfu });
+  let model: Record<string, unknown>;
+  let pOnset: number | null = null;
   if (!modelsConfigured(env)) {
-    spe = {
-      model_id: "EVA-12", ok: false, status: 503, latency_ms: 0, model_sha256: null,
-      output: { error: "evade-gateway is not connected. EVA-12 weights live in the evade-models R2 bucket and were not run. No probability was invented." },
-    };
+    model = { model_id: "EVA-12", ran: false, headline: notConnected };
   } else {
-    const t0 = Date.now();
     try {
-      const r = await callModelApi(env, "POST", "/v1/predict/space-weather", { transparency: false, source: "eva-window" });
-      const sha = r.out?.sha256 ?? r.out?.data?.sha256 ?? null;
-      spe = { model_id: "EVA-12", ok: r.ok, status: r.status, latency_ms: Date.now() - t0, model_sha256: typeof sha === "string" ? sha : null, output: r.out };
+      const run = await runModel(env, EVA_WINDOW_MODEL_USER, "EVA-12", { heartRate: null, sleepHours: null, seizure: false });
+      pOnset = run.probabilities[0]?.value ?? null;
+      model = { model_id: "EVA-12", ran: run.ran, headline: run.headline, request_id: run.request_id, served_model_ids: run.served_model_ids,
+        latency_ms: run.latency_ms, http_status: run.http_status, nowcast: (run.output as any)?.data?.nowcast?.scales ?? null };
     } catch (e) {
-      spe = { model_id: "EVA-12", ok: false, status: e instanceof ModelApiError ? e.status : 502, latency_ms: Date.now() - t0, model_sha256: null, output: { error: e instanceof Error ? e.message : "Model service unreachable" } };
+      model = { model_id: "EVA-12", ran: false, headline: e instanceof Error ? e.message : "Model service unreachable" };
     }
   }
-  return json({
-    rule: {
-      source: "noaa-kp-rule",
-      note: "Contiguous hours with forecast Kp under 5, from NOAA SWPC. This is not Michael's trained model.",
-      proton_10mev_pfu: protonPfu,
-      windows,
-      best: windows[0] ?? null,
-    },
-    spe_model: spe,
-    fetched_ms: Date.now() - started,
-  });
+  const plan = planEvaWindows(windows, pOnset);
+  const payload = {
+    generated_at: now(),
+    proton_10mev_pfu: protonPfu,
+    recommended: plan.recommended,
+    windows: plan.windows,
+    decision: plan.decision,
+    model,
+    rule: "Kp blocks under 5 from the NOAA SWPC 3-day forecast (3 h steps, at least 6 h long). EVA-12's probability then moves or downgrades blocks in the next 24 h.",
+  };
+  // A failed EVA-12 run is cached only briefly so the planner picks the model back up as soon as it answers.
+  await env.SESSIONS.put(cacheKey, JSON.stringify(payload), { expirationTtl: model.ran ? 600 : 60 }).catch(() => undefined);
+  return json(payload);
 });
 
+// What a dashboard vital maps to in Michael's registry, with the newest stored run of each matching model.
 route("GET", "/users/:id/metric-models", async (_r, env, p, url) => {
   await requireUser(env, p.id);
   const metric = (url.searchParams.get("metric") ?? "").slice(0, 64);
   if (!metric) throw new HttpError(422, "metric is required");
-  return json(metricModelInfo(metric));
+  const info = metricModelInfo(metric);
+  const matches = await Promise.all(info.matches.map(async (match) => {
+    if (!isRunnable(match.id)) return { ...match, runnable: false, latest: null };
+    const row = await env.DB.prepare(
+      "SELECT ts, source, output FROM model_results WHERE user_id=? AND endpoint=? ORDER BY ts DESC, id DESC LIMIT 1"
+    ).bind(p.id, `/v1/predict/${MODEL_KIND[match.id]}`).first<{ ts: string; source: string; output: string }>();
+    let latest = null;
+    if (row) {
+      let out: any = null;
+      try { out = JSON.parse(row.output); } catch { /* unreadable row */ }
+      const readable = out?.readable ?? (out ? readResult(match.id, out) : null);
+      if (readable) latest = { ts: row.ts, source: row.source, headline: readable.headline, probabilities: readable.probabilities,
+        input: out?.provenance?.input ?? null, request_id: out?.provenance?.request_id ?? out?.request_id ?? null };
+    }
+    return { ...match, runnable: true, latest };
+  }));
+  return json({ ...info, matches, gateway_connected: modelsConfigured(env) });
 });
 
+// Run one of Michael's served models for a person now (synthetic waveform from their latest reading, or live NOAA).
+route("POST", "/users/:id/models/:model/run", async (req, env, p, _url, _ctx, who) => {
+  await requireUser(env, p.id);
+  if (!isRunnable(p.model)) throw new HttpError(404, "That model is not served, so it cannot be run");
+  if (!modelsConfigured(env)) throw new HttpError(503, notConnected);
+  if (!(await aiAllowed(env, "model-run", who.user_id ?? who.kind))) throw new HttpError(429, "Too many model runs. Try again in a minute");
+  await enforceModelQuota(env, who);
+  const b = await body<{ seizure?: boolean }>(req).catch(() => ({} as { seizure?: boolean }));
+  try {
+    return json(await runAndStore(env, p.id, p.model, b.seizure === true));
+  } catch (e) {
+    throw modelError(e);
+  }
+});
+
+// Model transparency: the registry, the live gateway listing (sha256 checks), and the weight hashes in R2 manifests.
 route("GET", "/model-transparency", async (_r, env) => {
   const document = catalogDocument();
-  const catalog_sha256 = await sha256Hex(document);
-  let gateway: { status: number; body: unknown };
+  let gateway: { status: number; models: unknown[]; error?: string };
   if (!modelsConfigured(env)) {
-    gateway = { status: 503, body: { error: "evade-gateway is not connected. Weight hashes are checked inside the gateway when it loads R2 artifacts. This response does not include a weight hash." } };
+    gateway = { status: 503, models: [], error: notConnected };
   } else {
     try {
       const r = await callModelApi(env, "GET", "/v1/models");
-      gateway = { status: r.status, body: r.out };
+      const d = r.out?.data ?? {};
+      const pick = (m: any) => ({
+        model_id: m.model_id ?? null, task: m.task, state: m.state ?? (m.available ? "available" : "unavailable"),
+        sha256_verified: m.sha256_verified === true, format: m.format ?? null, code_commit: m.code_commit ?? null,
+        trained_at: m.trained_at ?? null, headline: m.headline ?? null, data: m.data ?? null,
+      });
+      gateway = { status: r.status, models: [...(d.models ?? []), ...(d.deep_models ?? [])].map(pick) };
+      if (!r.ok) gateway.error = r.out?.error?.message ?? `HTTP ${r.status}`;
     } catch (e) {
-      gateway = { status: e instanceof ModelApiError ? e.status : 502, body: { error: e instanceof Error ? e.message : "Model service unreachable" } };
+      gateway = { status: e instanceof ModelApiError ? e.status : 502, models: [], error: e instanceof Error ? e.message : "Model service unreachable" };
     }
   }
   return json({
     catalog: MODEL_CATALOG,
-    catalog_sha256,
-    catalog_note: "SHA-256 of the catalog JSON in cloud/worker/src/modelCatalog.ts. It is not a hash of the weight files.",
-    vision: { model: VISION_MODEL, binding: Boolean(env.AI), note: "Selfie assessment runs on Workers AI. The image is not sent to the browser's model and the key never leaves the Worker." },
+    catalog_sha256: await sha256Hex(document),
     gateway,
+    artifacts: await modelArtifacts(env.MODEL_ARTIFACTS),
+    vision: { model: VISION_MODEL, fallback: VISION_FALLBACK_MODEL, binding: Boolean(env.AI) },
   });
 });
 
 route("POST", "/model-transparency/run", async (req, env, _p, _url, _ctx, who) => {
-  const b = await body<{ id?: string }>(req);
+  const b = await body<{ id?: string; seizure?: boolean }>(req);
   const model = catalogById(String(b.id ?? ""));
   if (!model) throw new HttpError(404, "Unknown model id");
-  const started = Date.now();
-  if (model.runnable_here !== "gateway" || !model.served_as) {
-    return json({ id: model.id, ran: false, latency_ms: Date.now() - started, input: null, output: { error: model.why }, model_sha256: null, weights: model.weights });
+  if (!isRunnable(model.id)) {
+    return json({ model_id: model.id, ran: false, headline: model.why, probabilities: [], input: null, output: null });
   }
-  if (!modelsConfigured(env)) {
-    return json({
-      id: model.id, ran: false, latency_ms: 0, input: null, model_sha256: null, weights: model.weights,
-      output: { error: "evade-gateway is not connected, so this model was not run. No output was fabricated." },
-    });
-  }
-  if (!(await aiAllowed(env, "model-run", who.user_id ?? who.kind))) throw new HttpError(429, "Too many model runs. Try again in a minute");
+  if (!who.user_id) throw new HttpError(403, "Sign in to run a model");
+  if (!modelsConfigured(env)) throw new HttpError(503, notConnected);
+  if (!(await aiAllowed(env, "model-run", who.user_id))) throw new HttpError(429, "Too many model runs. Try again in a minute");
   await enforceModelQuota(env, who);
-  const input = {
-    transparency_sample: true,
-    note: "Synthetic probe from the model transparency page. Not a crew recording and not stored as a prediction.",
-  };
   try {
-    const r = await callModelApi(env, "POST", model.served_as, input);
-    const sha = r.out?.sha256 ?? r.out?.data?.sha256 ?? null;
-    return json({
-      id: model.id, ran: true, latency_ms: Date.now() - started, input, output: r.out, http_status: r.status,
-      model_sha256: typeof sha === "string" ? sha : null, weights: model.weights,
-    });
+    return json(await runAndStore(env, who.user_id, model.id, b.seizure === true));
   } catch (e) {
-    return json({
-      id: model.id, ran: false, latency_ms: Date.now() - started, input, model_sha256: null, weights: model.weights,
-      output: { error: e instanceof Error ? e.message : "Model service unreachable" },
-    });
+    throw modelError(e);
   }
 });
 
@@ -1432,8 +1498,8 @@ async function predictFor(env: Env, kind: PredictKind, userId: string, payload: 
   try {
     // space-weather is not per-user; everything else is sent under the model service's own id for this user
     const forward = { ...payload };
-    if (kind === "space-weather") delete forward.user_id;
-    else forward.user_id = simulation?.modelUserId ?? await modelUserId(env, userId);
+    // Every endpoint, space-weather included, needs a user_id registered with POST /v1/users (schemas.py).
+    forward.user_id = simulation?.modelUserId ?? await modelUserId(env, userId);
     const r = await callModelApi(env, "POST", `/v1/predict/${kind}`, forward);
     const out = r.out ?? { error: { code: "bad_response", message: "non-JSON response from model service" } };
     const placeholder = isMock(out);

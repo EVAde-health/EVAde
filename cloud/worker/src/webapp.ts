@@ -137,17 +137,30 @@ const macro = (v: unknown) => {
   return Number.isFinite(n) && n >= 0 && n < 10000 ? Math.round(n * 10) / 10 : null;
 };
 
+/** Thrown with a short status so /foods/search can report which source failed (never the key or the URL). */
+class FoodSourceError extends Error {}
+
+// Workers only accept redirect "follow" or "manual" ("error" throws). Manual: a redirect is a non-2xx, so it fails closed.
+async function foodFetch(url: URL, headers?: Record<string, string>) {
+  const r = await fetch(url, { signal: AbortSignal.timeout(FOOD_TIMEOUT_MS), redirect: "manual", headers });
+  if (!r.ok) throw new FoodSourceError(`http_${r.status}`);
+  return r;
+}
+
 async function usdaFoods(key: string, q: string): Promise<FoodRow[]> {
   const url = new URL("https://api.nal.usda.gov/fdc/v1/foods/search");
   url.search = new URLSearchParams({ query: q, pageSize: "8", dataType: "Foundation,SR Legacy,Branded", api_key: key }).toString();
-  const r = await fetch(url, { signal: AbortSignal.timeout(FOOD_TIMEOUT_MS), redirect: "error" });
-  if (!r.ok) return [];
+  const r = await foodFetch(url);
   const { foods = [] } = await r.json<{ foods?: any[] }>();
-  return foods.flatMap((f) => {
+  // Generic foods first ("Bananas, raw"), then branded products, whose labels USDA stores in capitals.
+  const rank = (f: any) => ({ Foundation: 0, "SR Legacy": 1 } as Record<string, number>)[f.dataType] ?? 2;
+  const label = (text: string) => text === text.toUpperCase() ? text.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()) : text;
+  return [...foods].sort((a, b) => rank(a) - rank(b)).flatMap((f) => {
     const n = (num: string) => macro(f.foodNutrients?.find((x: any) => x.nutrientNumber === num)?.value);
-    const [kcal, protein, carbs, fat] = [n("208"), n("203"), n("205"), n("204")];
+    // Foundation foods often report energy only as Atwater general (957) or specific (958) factors, not 208.
+    const [kcal, protein, carbs, fat] = [n("208") ?? n("957") ?? n("958"), n("203"), n("205"), n("204")];
     if (kcal === null || protein === null || carbs === null || fat === null || !f.fdcId || !f.description) return [];
-    return [{ id: `usda-${f.fdcId}`, label: String(f.description).slice(0, 200), brand: f.brandOwner ? String(f.brandOwner).slice(0, 120) : null,
+    return [{ id: `usda-${f.fdcId}`, label: label(String(f.description)).slice(0, 200), brand: f.brandOwner ? String(f.brandOwner).slice(0, 120) : null,
       source: "usda" as const, kcal_100g: kcal, protein_100g: protein, carbs_100g: carbs, fat_100g: fat }];
   });
 }
@@ -155,8 +168,7 @@ async function usdaFoods(key: string, q: string): Promise<FoodRow[]> {
 async function openFoodFacts(q: string): Promise<FoodRow[]> {
   const url = new URL("https://world.openfoodfacts.org/cgi/search.pl");
   url.search = new URLSearchParams({ search_terms: q, search_simple: "1", json: "1", page_size: "8", fields: "code,product_name,brands,nutriments" }).toString();
-  const r = await fetch(url, { signal: AbortSignal.timeout(FOOD_TIMEOUT_MS), redirect: "error", headers: { "User-Agent": "EVAde/1.0 (hackathon)" } });
-  if (!r.ok) return [];
+  const r = await foodFetch(url, { "User-Agent": "EVAde/1.0 (hackathon)" });
   const { products = [] } = await r.json<{ products?: any[] }>();
   return products.flatMap((p) => {
     const m = p.nutriments ?? {};
@@ -388,8 +400,12 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
     const { results: local } = await env.DB.prepare(
       "SELECT * FROM foods WHERE label LIKE ? ESCAPE '\\' ORDER BY source='space_pantry' DESC, length(label) LIMIT 8"
     ).bind(like).all<FoodRow>();
-    const remote = (await Promise.allSettled([env.USDA_API_KEY ? usdaFoods(env.USDA_API_KEY, q) : Promise.resolve([]), openFoodFacts(q)]))
-      .flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+    const settled = await Promise.allSettled([env.USDA_API_KEY ? usdaFoods(env.USDA_API_KEY, q) : Promise.resolve([]), openFoodFacts(q)]);
+    const remote = settled.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+    // Per-source outcome for debugging in the browser's network tab: "usda=ok:8, off=http_503". No key, no URL.
+    const outcome = (r: PromiseSettledResult<FoodRow[]>) => r.status === "fulfilled" ? `ok:${r.value.length}`
+      : r.reason instanceof FoodSourceError ? r.reason.message : r.reason instanceof Error && r.reason.name === "TimeoutError" ? "timeout" : "error";
+    const sources = `pantry=ok:${local.length}, usda=${env.USDA_API_KEY ? outcome(settled[0]) : "no_key"}, off=${outcome(settled[1])}`;
     if (remote.length) {
       await env.DB.batch(remote.map((f) => env.DB.prepare(
         `INSERT INTO foods (id,label,brand,source,kcal_100g,protein_100g,carbs_100g,fat_100g) VALUES (?,?,?,?,?,?,?,?)
@@ -399,7 +415,9 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
     }
     const seen = new Set<string>();
     const merged = [...local, ...remote].filter((f) => !seen.has(f.id) && seen.add(f.id)).slice(0, 16);
-    return json(merged.map(foodResponse));
+    const res = json(merged.map(foodResponse));
+    res.headers.set("X-Food-Sources", sources);
+    return res;
   });
 
   // Deletes one of your files (selfies) from R2 and D1. Ownership is checked in authorize().

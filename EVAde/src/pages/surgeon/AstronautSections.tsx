@@ -28,6 +28,7 @@ import { useResource } from '../../services/useResource';
 import { apiBlob } from '../../services/api';
 import type { ApiMedia } from '../../services/healthApi';
 import MetricModelDialog from '../../components/MetricModelDialog';
+import SelfieAnalysisDialog from '../../components/SelfieAnalysisDialog';
 import DeepModelResults, { type StaffDeepModelResults } from './DeepModelResults';
 import type { ModelCatalog } from '../../services/modelCatalog';
 import {
@@ -663,31 +664,15 @@ export function SelfiesSection({ id }: { id: string }) {
         {photos.map(photo => (
           <Card key={photo.id} padding={3}>
             <VStack gap={2}>
-              {urls[photo.id] ? <img src={urls[photo.id]} alt={photo.note || 'Astronaut selfie'} style={{ width: '100%', borderRadius: '8px' }} /> : <Loading height={140} />}
+              {urls[photo.id] ? <img src={urls[photo.id]} alt={photo.note || 'Astronaut selfie'} className="selfie-analysis__photo" /> : <Loading height={140} />}
               <Text type="supporting">{new Date(photo.ts).toLocaleString()}</Text>
-              <Text type="supporting">{photo.mood_label ? `Mood: ${photo.mood_label}` : 'No mood label'}</Text>
+              <Text type="supporting">{photo.analysis?.status === 'ok' && photo.analysis.mood ? `Model read: ${photo.analysis.mood}` : photo.mood_label ? `Mood: ${photo.mood_label}` : 'No mood label'}</Text>
               <Button label="View analysis" size="sm" onClick={() => setOpen(photo)} />
             </VStack>
           </Card>
         ))}
       </Grid>
-      {open && (
-        <Dialog isOpen onOpenChange={next => { if (!next) setOpen(null); }} purpose="info" width={520}>
-          <VStack gap={3} padding={4}>
-            <Heading level={3}>Selfie analysis</Heading>
-            <Text type="supporting">{open.analysis?.model ?? open.analysis_model ?? 'No model recorded'}</Text>
-            {open.analysis?.status === 'ok' ? (
-              <VStack gap={2}>
-                <Text type="label">{open.analysis.mood} · {open.analysis.confidence != null ? `${Math.round(open.analysis.confidence * 100)}% confidence` : 'confidence not reported'}</Text>
-                <Text>{open.analysis.explanation}</Text>
-              </VStack>
-            ) : (
-              <Text>{open.analysis?.reason ?? 'This selfie has no assessment. The vision model was not available, and no mood was invented.'}</Text>
-            )}
-            <HStack hAlign="end"><Button label="Close" onClick={() => setOpen(null)} /></HStack>
-          </VStack>
-        </Dialog>
-      )}
+      {open && <SelfieAnalysisDialog photo={open} imageUrl={urls[open.id]} onClose={() => setOpen(null)} />}
     </VStack>
   );
 }

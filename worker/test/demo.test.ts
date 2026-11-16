@@ -76,7 +76,8 @@ describe("DEMO_OPEN access and spending guards", () => {
 
     const start = await call(new Request("https://evade.health/api/voice/start", { method: "POST" }), env);
     expect(start.status).toBe(429);
-    expect(await start.json()).toEqual({ detail: "too many people talking" });
+    // shared/abuse rateLimited() adds `error` next to the existing `detail` field; clients read `detail`.
+    expect(await start.json()).toMatchObject({ detail: "too many people talking" });
 
     const second = await open("https://evade.health/api/voice/ws", env);
     expect(second.status).toBe(101);

@@ -171,15 +171,70 @@ export interface ApiJournalMessage {
   ts: string;
 }
 
+export type SignLevel = 'none' | 'mild' | 'moderate' | 'marked';
+
 export interface SelfieAnalysis {
   status: 'ok' | 'unparsed' | 'unavailable';
   model: string;
   mood: string | null;
   explanation: string | null;
   confidence: number | null;
+  fatigue?: SignLevel | null;
+  stress?: SignLevel | null;
+  observations?: { eyes: string | null; expression: string | null; posture: string | null; skin: string | null } | null;
+  follow_up?: string | null;
   raw: string | null;
   reason?: string;
 }
+
+// ---------- Michael's models (via evade-gateway) ----------
+export interface ModelProbability { label: string; value: number; note?: string }
+
+export interface ModelRunResult {
+  model_id: string;
+  ran: boolean;
+  http_status?: number;
+  latency_ms?: number;
+  request_id: string | null;
+  served_model_ids?: string[];
+  input: { source: string; description: string } | null;
+  headline: string;
+  probabilities: ModelProbability[];
+  warnings?: string[];
+  output: unknown;
+}
+
+export interface MetricModelMatch {
+  id: string;
+  name: string;
+  task: string;
+  input: string;
+  reason: string;
+  runnable: boolean;
+  latest: {
+    ts: string;
+    source: string;
+    headline: string;
+    probabilities: ModelProbability[];
+    input: { source: string; description: string } | null;
+    request_id: string | null;
+  } | null;
+}
+
+export interface MetricModelInfo {
+  metric: string;
+  label: string;
+  matches: MetricModelMatch[];
+  note: string;
+  gateway_connected: boolean;
+}
+
+export const metricModelsPath = (userId: string, metric: string) =>
+  `${userPath(userId, 'metric-models')}?metric=${encodeURIComponent(metric)}`;
+
+// Runs one of Michael's served models for a person now; the Worker stores the result in model_results.
+export const runModelFor = (userId: string, modelId: string, seizure = false) =>
+  api<ModelRunResult>(`${userPath(userId, 'models')}/${encodeURIComponent(modelId)}/run`, { method: 'POST', body: { seizure } });
 
 export interface ApiMedia {
   id: string;

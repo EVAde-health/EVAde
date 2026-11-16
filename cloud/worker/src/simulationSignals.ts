@@ -1,8 +1,9 @@
-// Synthetic ECG and sleep EEG for the demo, ported from pi-sim/evade_sim/signals.py and payloads.py.
+// Demo waveforms for Michael's ECG and sleep models: ECG from a real PTB-XL normal recording scaled to a heart rate,
+// sleep EEG ported from pi-sim/evade_sim/signals.py and payloads.py.
+import { PTBXL_NORMAL_BEATS, PTBXL_NORMAL_LEADS, PTBXL_NORMAL_UV } from "./ptbxlNormal.generated";
+
 const FS = 100;
 const TAU = 2 * Math.PI;
-const ECG_LEADS = ["I", "II", "III", "AVR", "AVL", "AVF", "V1", "V2", "V3", "V4", "V5", "V6"];
-const LEAD_GAIN = [0.6, 1, 0.45, -0.8, 0.25, 0.7, -0.5, 0.3, 0.8, 1.2, 1.1, 0.9];
 const SLEEP_CHANNELS = ["Fpz-Cz", "Pz-Oz"];
 const SLEEP_CYCLE = [
   ...Array<string>(2).fill("W"), ...Array<string>(3).fill("N1"), ...Array<string>(12).fill("N2"),
@@ -26,25 +27,36 @@ const normal = (random: () => number) =>
 const wave = (seconds: number, center: number, width: number, gain: number) =>
   gain * Math.exp(-0.5 * ((seconds - center) / width) ** 2);
 
+/** 10 s, 12-lead ECG at `heartRate`, built from a real normal PTB-XL recording (held-out fold, ptbxlNormal.generated.ts).
+ * Beats are laid end to end from a seeded starting beat. Below the recording's own rate only the diastole after each
+ * P-QRS-T complex is stretched, so a slow heart is not mistaken for a wide QRS; above it the whole beat is scaled
+ * (QT shortens with rate). 10 uV of seeded noise is added. Michael's ECG models were trained on PTB-XL, so a healthy
+ * rhythm reads as normal and only the rate the astronaut logged changes. */
 export function simulatedEcgDeep(seed: string, heartRate: number) {
   const random = rng(seed + ":ecg");
-  const rr = 60 / heartRate;
-  const signal = Array<number>(10 * FS).fill(0);
-  for (let beat = (random() - 1) * rr; beat < 10.35;
-    beat += Math.max(0.25, rr + 0.04 * Math.sin(TAU * 0.25 * beat) + 0.04 / 3 * normal(random))) {
-    const start = Math.max(0, Math.ceil((beat - 0.35) * FS));
-    const end = Math.min(signal.length, Math.ceil((beat + 0.6) * FS));
-    for (let i = start; i < end; i++) {
-      const t = i / FS - beat;
-      signal[i] += wave(t, -0.20, 0.025, 0.12) + wave(t, -0.03, 0.010, -0.15) +
-        wave(t, 0, 0.012, 1.1) + wave(t, 0.03, 0.010, -0.25) + wave(t, 0.25, 0.045, 0.30);
+  const target = 60 * FS / Math.min(Math.max(heartRate, 30), 200);  // samples per beat
+  const complex = 70;                                                // 0.3 s before R to 0.4 s after: P, QRS and T
+  const beats = PTBXL_NORMAL_BEATS.length - 1;
+  const positions: number[] = [];                                    // fractional source index for each output sample
+  for (let beat = Math.floor(random() * beats); positions.length < 10 * FS + target; beat = (beat + 1) % beats) {
+    const start = PTBXL_NORMAL_BEATS[beat];
+    const length = PTBXL_NORMAL_BEATS[beat + 1] - start;
+    const out = Math.round(target);
+    for (let j = 0; j < out; j++) {
+      const k = out >= length
+        ? (j < complex ? j : complex + (j - complex) * (length - 1 - complex) / Math.max(out - 1 - complex, 1))
+        : j * (length - 1) / Math.max(out - 1, 1);
+      positions.push(start + k);
     }
   }
-  const samples = LEAD_GAIN.map((gain, lead) => signal.map((value, i) => {
-    const mv = gain * value + 0.05 * Math.sin(TAU * 0.25 * i / FS + lead) + 0.02 * normal(random);
-    return Math.round(mv * 1000) / 1000;
+  const skip = Math.floor(random() * target);
+  const samples = PTBXL_NORMAL_UV.map((lead) => positions.slice(skip, skip + 10 * FS).map((position) => {
+    const k = Math.floor(position);
+    const frac = position - k;
+    const uv = lead[k] * (1 - frac) + lead[Math.min(k + 1, lead.length - 1)] * frac;
+    return Math.round((uv / 1000 + 0.01 * normal(random)) * 1000) / 1000;
   }));
-  return { fs_hz: FS, leads: ECG_LEADS, samples, source: "simulated" };
+  return { fs_hz: FS, leads: [...PTBXL_NORMAL_LEADS], samples, source: "simulated" };
 }
 
 // Update noise bands at octave intervals to approximate the Python generator's 1/f background.
