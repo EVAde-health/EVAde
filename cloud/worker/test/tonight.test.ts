@@ -117,11 +117,12 @@ beforeEach(() => {
   } as unknown as Env;
 });
 
-async function call(method: string, path: string, opts: { cookie?: string; body?: unknown; headers?: Record<string, string> } = {}) {
+async function call(method: string, path: string, opts: { cookie?: string; body?: unknown; rawBody?: string; headers?: Record<string, string> } = {}) {
   const headers: Record<string, string> = { ...ORIGIN, ...(opts.headers ?? {}) };
   if (opts.cookie) headers.Cookie = `__Host-evade_session=${opts.cookie}`;
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
-  const req = new Request(API + path, { method, headers, body: opts.body === undefined ? undefined : JSON.stringify(opts.body), redirect: "manual" });
+  const body = opts.rawBody ?? (opts.body === undefined ? undefined : JSON.stringify(opts.body));
+  const req = new Request(API + path, { method, headers, body, redirect: "manual" });
   return worker.fetch(req, env, { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext);
 }
 
@@ -209,6 +210,22 @@ describe("GET /auth/demo", () => {
     expect(crew.map((u) => u.user_id)).not.toContain(real.uid);
     expect((await call("GET", `/admin/astronauts/${real.uid}`, cookie)).status).toBe(403);
     expect((await call("POST", "/chat/threads", { ...cookie, body: { astronaut_id: real.uid, body: "hi" } })).status).toBe(403);
+  });
+
+  it("refuses a real user id in the query string of a demo flight surgeon request", async () => {
+    env = { ...env, DEMO_LOGIN: "true", XAI_API_KEY: "test-key",
+      MEDIA: { put: async () => {}, delete: async () => {} } } as unknown as Env;
+    const real = await astronaut("Real");
+    const cookie = { cookie: await demoLogin("?as=surgeon") };
+    const upload = (path: string) => call("POST", path, { ...cookie, headers: { "Content-Type": "image/jpeg" }, rawBody: "jpeg" });
+    const mediaBefore = count("media", real.uid);
+    expect((await upload(`/media?user_id=${real.uid}&kind=photo`)).status).toBe(403);
+    expect((await upload(`/journal/voice?user_id=${real.uid}`)).status).toBe(403);
+    expect((await call("GET", `/admin/therapist-feed?user_id=${real.uid}`, cookie)).status).toBe(403);
+    expect(count("media", real.uid)).toBe(mediaBefore);
+    expect(count("journal_entries", real.uid)).toBe(0);
+    // The demo crew itself stays reachable.
+    expect((await upload(`/media?user_id=${DEMO_VEGA}&kind=photo`)).status).toBe(201);
   });
 
   it("keeps real astronauts and the demo astronaut on their own crews' staff", async () => {
