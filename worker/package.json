@@ -1,0 +1,29 @@
+{
+  "name": "evade-voice-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "wrangler types",
+    "dev": "wrangler dev",
+    "deploy": "node ../deploy/deploy.mjs",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "types": "wrangler types",
+    "typecheck": "wrangler types && tsc --noEmit",
+    "test": "vitest run",
+    "db:migrate:local": "wrangler d1 migrations apply evade --local",
+    "db:migrate:remote": "wrangler d1 migrations apply evade --remote"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.8.2",
+    "@vitest/runner": "^4.1.12",
+    "@vitest/snapshot": "^4.1.12",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.12",
+    "wrangler": "^4.162.0"
+  },
+  "allowScripts": {
+    "workerd@1.20261113.1": true,
+    "esbuild@0.28.2": true
+  }
+}

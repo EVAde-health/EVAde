@@ -1,0 +1,41 @@
+.login {
+  min-block-size: 100dvh;
+}
+
+.login__form-side {
+  min-block-size: 100dvh;
+}
+
+.login__form-wrap {
+  flex: 1;
+  inline-size: 100%;
+  max-inline-size: 28rem;
+  margin-inline: auto;
+}
+
+.login__card {
+  animation: rise-in 600ms var(--ease-entrance, ease-out) 120ms both;
+}
+
+.login__visual-side {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-block-size: 100dvh;
+  border-start-start-radius: var(--radius-page);
+  border-end-start-radius: var(--radius-page);
+}
+
+.login__visual-side > .nebula-canvas {
+  z-index: -1;
+}
+
+.login__visual-content {
+  flex: 1;
+}
+
+@media (max-width: 52rem) {
+  .login__visual-side {
+    display: none;
+  }
+}

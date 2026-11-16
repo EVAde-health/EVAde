@@ -1,14 +1,15 @@
-// Admin, emergency, and chat routes. Sessions follow the Cloudflare Access rules:
-// only provider cloudflare_access_staff with a matching ACCESS_STAFF_AUD and D1 role is staff.
+// Admin, emergency, and chat routes. One Cloudflare Access sign-in for everyone: the current D1 role decides
+// whether a session is staff.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
+// 0008 and 0011_seed_surgeon_demo are data-only (demo rows, applied on live); the tests seed their own data.
+const DATA_ONLY = new Set(["0008_remove_demo_data.sql", "0011_seed_surgeon_demo.sql"]);
 
 vi.mock("../src/live", () => ({ CrewFeed: class {} }));
 
-const STAFF_AUD = "aud-staff-456";
 const API = "https://api.evade.health";
 const SURGEON = "11111111-1111-4111-8111-111111111111";
 const THERAPIST = "22222222-2222-4222-8222-222222222222";
@@ -18,7 +19,7 @@ const KEPLER = "44444444-4444-4444-8444-444444444444";
 function fakeD1() {
   const db = new DatabaseSync(":memory:");
   const dir = join(__dirname, "..", "migrations");
-  for (const file of readdirSync(dir).filter((name) => name.endsWith(".sql")).sort()) {
+  for (const file of readdirSync(dir).filter((name) => name.endsWith(".sql") && !DATA_ONLY.has(name)).sort()) {
     db.exec(readFileSync(join(dir, file), "utf8"));
   }
   const stmt = (sql: string, args: unknown[] = []) => ({
@@ -80,7 +81,6 @@ beforeEach(() => {
     AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) },
     ACCESS_TEAM_DOMAIN: "evade-health.cloudflareaccess.com",
     ACCESS_AUD: "aud-login-123",
-    ACCESS_STAFF_AUD: STAFF_AUD,
     ALLOWED_ORIGINS: "https://evade.health",
     FRONTEND_URL: "https://evade.health",
     DEMO_LOGIN: "true",
@@ -121,27 +121,21 @@ async function call(method: string, path: string, token: string | null, body?: u
   return { status: response.status, payload };
 }
 
-describe("Cloudflare Access staff gate", () => {
-  it("keeps a crew Access session as an astronaut even when D1 says staff", async () => {
-    db.prepare("UPDATE users SET role='flight_surgeon' WHERE user_id=?").run(NOVA);
+describe("one sign-in, D1 role decides", () => {
+  it("makes an Access session staff as soon as D1 says staff", async () => {
     const token = await session(NOVA, "astronaut", "cloudflare_access");
-    const response = await call("GET", "/admin/crew", token);
-    expect(response.status).toBe(403);
+    expect((await call("GET", "/admin/crew", token)).status).toBe(403);
+    db.prepare("UPDATE users SET role='flight_surgeon' WHERE user_id=?").run(NOVA);
+    expect((await call("GET", "/admin/crew", token)).status).toBe(200);
   });
 
-  it("rejects a staff session whose audience is not ACCESS_STAFF_AUD", async () => {
-    const token = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", "other-aud");
-    expect((await call("GET", "/admin/crew", token)).status).toBe(401);
-  });
-
-  it("rejects staff sessions when ACCESS_STAFF_AUD is not configured", async () => {
-    env.ACCESS_STAFF_AUD = "";
-    const token = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
-    expect((await call("GET", "/admin/crew", token)).status).toBe(401);
+  it("gives a session no staff rights when D1 says astronaut, whatever the session claims", async () => {
+    const token = await session(NOVA, "flight_surgeon", "cloudflare_access");
+    expect((await call("GET", "/admin/crew", token)).status).toBe(403);
   });
 
   it("lets a matching staff session read the crew", async () => {
-    const token = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
+    const token = await session(SURGEON, "flight_surgeon", "cloudflare_access");
     const response = await call("GET", "/admin/crew", token);
     expect(response.status).toBe(200);
     const names = (response.payload as { display_name: string }[]).map((row) => row.display_name);
@@ -152,7 +146,7 @@ describe("Cloudflare Access staff gate", () => {
 
 describe("daily goals", () => {
   it("lets staff set a goal, keeps history, and shows it to that astronaut", async () => {
-    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
     const nova = await session(NOVA, "astronaut", "cloudflare_access");
     expect((await call("POST", `/admin/astronauts/${NOVA}/goals`, nova, { metric: "kcal_intake", target: 2600 })).status).toBe(403);
     expect((await call("POST", `/admin/astronauts/${NOVA}/goals`, surgeon, { metric: "kcal_intake", target: 50 })).status).toBe(422);
@@ -173,8 +167,8 @@ describe("daily goals", () => {
 
 describe("surgeon console response contract", () => {
   it("keeps legacy crew fields and adds latest vitals, daily progress, emergencies and private unread counts", async () => {
-    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
-    const therapist = await session(THERAPIST, "therapist", "cloudflare_access_staff", STAFF_AUD);
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    const therapist = await session(THERAPIST, "therapist", "cloudflare_access");
     const day = new Date().toISOString().slice(0, 10);
     const ts = `${day}T15:00:00.000Z`;
     const yesterday = new Date(Date.parse(`${day}T00:00:00.000Z`) - 1000).toISOString();
@@ -235,7 +229,7 @@ describe("surgeon console response contract", () => {
   });
 
   it("serves the vitals chart shape and enforces the existing staff-only gate", async () => {
-    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
     const astronautToken = await session(NOVA, "astronaut", "cloudflare_access");
     const path = `/admin/astronauts/${NOVA}/vitals?days=7`;
     expect((await call("GET", path, null)).status).toBe(401);
@@ -254,7 +248,7 @@ describe("surgeon console response contract", () => {
   });
 
   it("serves the astronaut picker, journal, task board and typed goals for the same account", async () => {
-    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
     const day = new Date().toISOString().slice(0, 10);
     const ts = `${day}T12:00:00.000Z`;
     db.prepare("INSERT INTO self_reports (user_id,ts,mood,source,symptoms,note) VALUES (?,?,3,'voice_web',?,'Private check-in fixture')")
@@ -303,12 +297,12 @@ describe("surgeon console response contract", () => {
   });
 
   it("audits flight surgeon corrections and rejects therapist, admin and astronaut edits", async () => {
-    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
     const astronautToken = await session(NOVA, "astronaut", "cloudflare_access");
-    const therapist = await session(THERAPIST, "therapist", "cloudflare_access_staff", STAFF_AUD);
+    const therapist = await session(THERAPIST, "therapist", "cloudflare_access");
     const adminId = "55555555-5555-4555-8555-555555555555";
     db.prepare("INSERT INTO users (user_id,display_name,role) VALUES (?,'Fixture admin','admin')").run(adminId);
-    const admin = await session(adminId, "admin", "cloudflare_access_staff", STAFF_AUD);
+    const admin = await session(adminId, "admin", "cloudflare_access");
     const base = `/admin/astronauts/${NOVA}`;
     const observations = await call("GET", `${base}/observations?metric=heart_rate`, surgeon);
     expect(observations.status).toBe(200);
@@ -336,7 +330,7 @@ describe("surgeon console response contract", () => {
 describe("emergencies", () => {
   it("records an astronaut emergency and lets staff acknowledge and resolve it", async () => {
     const nova = await session(NOVA, "astronaut", "cloudflare_access");
-    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
     expect((await call("POST", "/emergencies", surgeon, { message: "no" })).status).toBe(403);
     const raised = await call("POST", "/emergencies", nova, { message: "Chest tightness during exercise" });
     expect(raised.status).toBe(201);
@@ -358,10 +352,10 @@ describe("staff chat", () => {
   it("keeps each conversation between one astronaut and one staff member", async () => {
     const nova = await session(NOVA, "astronaut", "cloudflare_access");
     const kepler = await session(KEPLER, "astronaut", "cloudflare_access");
-    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
-    const therapist = await session(THERAPIST, "therapist", "cloudflare_access_staff", STAFF_AUD);
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    const therapist = await session(THERAPIST, "therapist", "cloudflare_access");
+    // Staff who have never signed in are not offered as contacts.
     db.prepare("INSERT INTO users (user_id, display_name, role) VALUES (?, ?, 'admin')").run("unenrolled-staff", "Unenrolled staff");
-    db.prepare("INSERT INTO auth_identities (provider, subject, user_id) VALUES ('cloudflare_access', ?, ?)").run("unenrolled-fixture", "unenrolled-staff");
     const directory = await call("GET", "/staff", nova);
     expect((directory.payload as { display_name: string }[]).map((row) => row.display_name).sort()).toEqual(["Hale", "Moss"]);
     expect((await call("POST", "/chat/threads", nova, { staff_id: "unenrolled-staff", body: "hi" })).status).toBe(422);
@@ -391,8 +385,8 @@ describe("shared crew and staff messages", () => {
   it("exchanges messages and receipts on one conversation and isolates both participants", async () => {
     const nova = await session(NOVA, "astronaut", "cloudflare_access");
     const kepler = await session(KEPLER, "astronaut", "cloudflare_access");
-    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
-    const therapist = await session(THERAPIST, "therapist", "cloudflare_access_staff", STAFF_AUD);
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
+    const therapist = await session(THERAPIST, "therapist", "cloudflare_access");
     const crewPath = `/messages/with/${SURGEON}`;
     const staffPath = `/messages/with/${NOVA}`;
     expect((await call("GET", "/messages/contacts", null)).status).toBe(401);
@@ -442,7 +436,7 @@ describe("shared crew and staff messages", () => {
 
   it("enforces message length and a shared per-sender rate limit for both roles", async () => {
     const nova = await session(NOVA, "astronaut", "cloudflare_access");
-    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
     const keys = new Set<string>();
     env.AUTH_RATE_LIMITER = { limit: async ({ key }) => {
       const success = !keys.has(key);
@@ -464,7 +458,7 @@ describe("shared crew and staff messages", () => {
 
   it("reads a 0009 conversation copied by 0010 through both URL formats", async () => {
     const nova = await session(NOVA, "astronaut", "cloudflare_access");
-    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
     const threadId = db.prepare("INSERT INTO staff_threads (astronaut_id,staff_id) VALUES (?,?)").run(NOVA, SURGEON).lastInsertRowid;
     db.prepare("INSERT INTO staff_messages (thread_id,sender_id,body) VALUES (?,?,'Migrated fixture')").run(threadId, SURGEON);
     db.exec(readFileSync(join(__dirname, "..", "migrations", "0010_surgeon_console.sql"), "utf8"));
@@ -479,7 +473,7 @@ describe("shared crew and staff messages", () => {
 
 describe("astronaut health reads", () => {
   it("returns vitals from observations for staff only", async () => {
-    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
     const nova = await session(NOVA, "astronaut", "cloudflare_access");
     expect((await call("GET", `/admin/astronauts/${NOVA}/series?group=vitals&days=30`, nova)).status).toBe(403);
     const series = await call("GET", `/admin/astronauts/${NOVA}/series?group=vitals&days=30`, surgeon);
@@ -492,27 +486,24 @@ describe("astronaut health reads", () => {
 });
 
 describe("staff session enforcement", () => {
-  it("keeps the shared demo nutrition rows read-only", async () => {
+  it("rejects a demo session that points at a real account", async () => {
     const demo = await session(NOVA, "astronaut", "demo");
-    expect((await call("GET", `/users/${NOVA}/meals`, demo)).status).toBe(200);
-    expect((await call("POST", "/meals", demo, {})).status).toBe(403);
-    expect((await call("DELETE", `/meals/${KEPLER}`, demo)).status).toBe(403);
-    expect((await call("POST", "/hydration", demo, {})).status).toBe(403);
+    expect((await call("GET", `/users/${NOVA}/meals`, demo)).status).toBe(401);
+    expect((await call("POST", "/meals", demo, {})).status).toBe(401);
   });
 
   it("keeps the staff enrollment provider reserved for Access login", async () => {
-    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
     const response = await call("POST", "/auth/identities", surgeon, {
       provider: "cloudflare_access_staff", subject: "fixture", user_id: NOVA,
     });
     expect(response.status).toBe(403);
   });
 
-  it("denies demo and service credentials on staff routes", async () => {
+  it("denies demo sessions on real accounts and service credentials on staff routes", async () => {
     const demo = await session(NOVA, "admin", "demo");
-    expect((await call("GET", "/admin/crew", demo)).status).toBe(403);
-    expect((await call("GET", "/chat/threads", demo)).status).toBe(403);
-    expect((await call("POST", "/emergencies", demo, {})).status).toBe(403);
+    expect((await call("GET", "/admin/crew", demo)).status).toBe(401);
+    expect((await call("GET", "/chat/threads", demo)).status).toBe(401);
     const fixtureKey = crypto.randomUUID();
     env.EVADE_API_KEY = fixtureKey;
     const response = await worker.fetch(new Request(API + "/admin/crew", { headers: { "X-EVAde-Key": fixtureKey } }), env, ctx);
@@ -520,10 +511,10 @@ describe("staff session enforcement", () => {
   });
 
   it("checks the current D1 role on subsequent staff requests", async () => {
-    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access_staff", STAFF_AUD);
+    const surgeon = await session(SURGEON, "flight_surgeon", "cloudflare_access");
     expect((await call("GET", "/admin/crew", surgeon)).status).toBe(200);
     db.prepare("UPDATE users SET role='astronaut' WHERE user_id=?").run(SURGEON);
-    expect((await call("GET", "/admin/crew", surgeon)).status).toBe(401);
+    expect((await call("GET", "/admin/crew", surgeon)).status).toBe(403);
   });
 
   it("only grants credentialed CORS to the exact EVAde origins", async () => {

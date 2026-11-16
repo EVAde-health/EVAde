@@ -1,0 +1,75 @@
+# Repository-wide ignore rules. Patterns without a leading slash apply in every package
+# (EVAde/, worker/, cloud/worker/, cloud/model-gateway/, pi-sim/, ...). See SECURITY.md.
+
+# ---------- Secrets: real values live in Wrangler secrets or local, uncommitted files ----------
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+# Example files list variable names only and stay tracked.
+!*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+.npmrc
+# Personal Claude Code settings (may hold local permissions or paths)
+.claude/settings.local.json
+
+# ---------- Build output and tool state ----------
+# Staging area for the site assets produced by deploy/deploy.mjs
+.deploy/
+node_modules/
+dist/
+dist-ssr/
+build/
+.wrangler/
+coverage/
+*.tsbuildinfo
+
+# ---------- Logs, OS and editor files ----------
+logs/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+
+# ---------- Model weights and local databases ----------
+*.onnx
+*.joblib
+*.pt
+*.pth
+*.pkl
+*.h5
+*.safetensors
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# ---------- Stray Git artifacts ----------
+*.bundle
+*.patch
+*.orig
+*.rej
+
+# ---------- Python ----------
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# ---------- Local data ----------
+data/
+# The web app keeps source code in src/data/; only the voice agent's local data/ is ignored.
+!EVAde/src/data/

@@ -1,0 +1,55 @@
+.panel-card {
+  --panel-tone: var(--color-accent);
+  position: relative;
+  overflow: hidden;
+  block-size: 100%;
+}
+
+.panel-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  block-size: var(--spacing-1);
+  background: linear-gradient(90deg, var(--panel-tone), transparent 85%);
+  opacity: 0.85;
+}
+
+.panel-card--nominal { --panel-tone: var(--color-success); }
+.panel-card--caution { --panel-tone: var(--color-warning); }
+.panel-card--critical { --panel-tone: var(--color-error); }
+
+.panel-card__icon {
+  flex: none;
+  inline-size: var(--spacing-8);
+  block-size: var(--spacing-8);
+  border-radius: var(--radius-element);
+  color: var(--panel-tone);
+  background: color-mix(in oklab, var(--panel-tone) 16%, transparent);
+}
+
+.panel-card__actions {
+  margin-block-start: calc(var(--spacing-2) * -1);
+}
+
+/* Status bar shimmers; icon tile springs on card hover. */
+.panel-card::before {
+  background-size: 200% 100%;
+  animation: panel-bar 6s ease-in-out infinite;
+}
+
+.panel-card__icon {
+  transition: scale 350ms cubic-bezier(0.2, 0.9, 0.3, 1.6), rotate 350ms ease, box-shadow 350ms ease;
+}
+
+.panel-card:hover .panel-card__icon {
+  scale: 1.12;
+  rotate: -6deg;
+  box-shadow: 0 0 var(--spacing-4) color-mix(in oklab, var(--panel-tone) 45%, transparent);
+}
+
+@keyframes panel-bar {
+  50% {
+    opacity: 0.45;
+    background-position: 100% 0;
+  }
+}

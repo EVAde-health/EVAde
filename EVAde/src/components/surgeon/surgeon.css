@@ -1,0 +1,379 @@
+/* ---------- Flight-surgeon console ---------- */
+
+.surgeon-page {
+  inline-size: 100%;
+  max-inline-size: 96rem;
+  margin-inline: auto;
+}
+
+/* Emergency drop-down: pinned to the top of every surgeon page, slides down, pulses while open. */
+.emergency-drop {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 20;
+  display: grid;
+  gap: var(--spacing-2);
+  padding: var(--spacing-3) var(--spacing-4) var(--spacing-4);
+  background: linear-gradient(180deg, color-mix(in oklab, #b3261e 92%, black), color-mix(in oklab, #d93025 88%, black));
+  color: white;
+  box-shadow: 0 12px 32px -12px color-mix(in oklab, #d93025 70%, transparent);
+  border-block-end: 1px solid color-mix(in oklab, white 25%, transparent);
+  animation: emergency-drop-in 520ms cubic-bezier(0.2, 0.9, 0.25, 1.15) both;
+}
+
+.emergency-drop--calm {
+  background: linear-gradient(180deg, color-mix(in oklab, #8a5a00 92%, black), color-mix(in oklab, #b26a00 88%, black));
+  box-shadow: 0 12px 32px -12px color-mix(in oklab, #b26a00 60%, transparent);
+}
+
+.emergency-drop * {
+  color: inherit;
+}
+
+.emergency-drop__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-3);
+  padding: var(--spacing-2) var(--spacing-3);
+  border-radius: var(--radius-md, 10px);
+  background: color-mix(in oklab, black 18%, transparent);
+  animation: rise-in 420ms var(--ease-entrance, ease-out) both;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+
+.emergency-drop__row--open {
+  animation: rise-in 420ms var(--ease-entrance, ease-out) both, emergency-pulse 1.6s ease-in-out 420ms infinite;
+}
+
+.emergency-drop__text {
+  flex: 1 1 18rem;
+  min-inline-size: 0;
+  display: grid;
+  gap: var(--spacing-0-5, 2px);
+}
+
+.emergency-drop__siren {
+  inline-size: 0.75rem;
+  block-size: 0.75rem;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 0 0 0 color-mix(in oklab, white 70%, transparent);
+  animation: siren 1.2s ease-out infinite;
+  flex: none;
+}
+
+.emergency-drop__row .astryx-button {
+  --button-text: inherit;
+}
+
+@keyframes emergency-drop-in {
+  from {
+    transform: translateY(-110%);
+    opacity: 0;
+  }
+}
+
+@keyframes emergency-pulse {
+  50% {
+    background: color-mix(in oklab, white 14%, transparent);
+  }
+}
+
+@keyframes siren {
+  to {
+    box-shadow: 0 0 0 0.75rem transparent;
+  }
+}
+
+/* Crew grid */
+.crew-card {
+  block-size: 100%;
+  border-radius: var(--radius-lg, 14px);
+  animation: rise-in 520ms var(--ease-entrance, ease-out) both;
+  animation-delay: calc(min(var(--i, 0), 12) * 40ms);
+}
+
+/* Loading crew cards: same entrance as real cards plus a light sweep across each card. */
+.crew-card--loading {
+  position: relative;
+  overflow: hidden;
+}
+
+.crew-card--loading::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 30%, color-mix(in oklab, var(--color-accent) 14%, transparent) 50%, transparent 70%);
+  transform: translateX(-100%);
+  animation: crew-sweep 1.6s ease-in-out infinite;
+  animation-delay: calc(min(var(--i, 0), 12) * 90ms);
+}
+
+@keyframes crew-sweep {
+  to { transform: translateX(100%); }
+}
+
+.crew-sync {
+  animation: rise-in 320ms var(--ease-entrance, ease-out) both;
+}
+
+:root[data-motion='reduced'] .crew-card--loading::after {
+  animation: none;
+  opacity: 0;
+}
+
+.crew-card > a {
+  display: block;
+  block-size: 100%;
+  color: inherit;
+  text-decoration: none;
+  border-radius: inherit;
+}
+
+.crew-card > a:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.crew-card--critical .astryx-card {
+  border-color: color-mix(in oklab, #d93025 60%, transparent) !important;
+  box-shadow: 0 0 0 1px color-mix(in oklab, #d93025 40%, transparent), var(--shadow-med) !important;
+}
+
+.crew-vitals {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--spacing-2);
+}
+
+.crew-vital {
+  padding: var(--spacing-2);
+  border-radius: var(--radius-md, 10px);
+  background: color-mix(in oklab, var(--color-text-primary) 5%, transparent);
+}
+
+.crew-vital[data-level='yellow'] {
+  background: color-mix(in oklab, #f2a900 18%, transparent);
+}
+
+.crew-vital[data-level='red'] {
+  background: color-mix(in oklab, #d93025 20%, transparent);
+}
+
+.goal-ring {
+  --size: 3.25rem;
+  inline-size: var(--size);
+  block-size: var(--size);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex: none;
+  background:
+    radial-gradient(closest-side, var(--color-background-card) 76%, transparent 78%),
+    conic-gradient(var(--color-accent) calc(var(--p, 0) * 1%), color-mix(in oklab, var(--color-text-primary) 10%, transparent) 0);
+  transition: --p 600ms ease;
+  animation: goal-fill 900ms var(--ease-entrance, ease-out) both;
+  animation-delay: calc(min(var(--i, 0), 12) * 40ms + 200ms);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* Registered so the goal ring's conic gradient can animate (fills from 0 when a card appears). */
+@property --p {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
+@keyframes goal-fill {
+  from { --p: 0; }
+}
+
+:root[data-motion='reduced'] .goal-ring {
+  animation: none;
+}
+
+/* Messages */
+.messenger {
+  display: grid;
+  grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+  gap: var(--spacing-4);
+  min-block-size: min(72vh, 46rem);
+}
+
+@media (max-width: 860px) {
+  .messenger {
+    grid-template-columns: 1fr;
+  }
+}
+
+.messenger__contacts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-1);
+  overflow-y: auto;
+  max-block-size: min(64vh, 40rem);
+}
+
+.messenger__contact {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+  inline-size: 100%;
+  padding: var(--spacing-2) var(--spacing-3);
+  border: 0;
+  border-radius: var(--radius-md, 10px);
+  background: transparent;
+  color: inherit;
+  text-align: start;
+  font: inherit;
+  cursor: pointer;
+  transition: background 200ms ease, transform 200ms ease;
+  animation: rise-in 380ms var(--ease-entrance, ease-out) both;
+  animation-delay: calc(min(var(--i, 0), 12) * 30ms);
+}
+
+.messenger__contact:hover {
+  background: color-mix(in oklab, var(--color-text-primary) 6%, transparent);
+  transform: translateX(2px);
+}
+
+.messenger__contact[aria-current='true'] {
+  background: color-mix(in oklab, var(--color-accent) 16%, transparent);
+}
+
+.messenger__contact:focus-visible {
+  outline: 2px solid var(--color-accent);
+}
+
+.messenger__thread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-3);
+  min-block-size: 0;
+}
+
+.messenger__bubble-in {
+  animation: bubble-in 320ms cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+}
+
+.unread-dot {
+  min-inline-size: 1.25rem;
+  padding-inline: 0.35rem;
+  block-size: 1.25rem;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: var(--color-accent);
+  color: var(--color-background-body);
+  animation: pop-in 260ms cubic-bezier(0.2, 0.9, 0.3, 1.6) both;
+}
+
+@keyframes pop-in {
+  from {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+}
+
+/* Press-and-hold emergency button */
+.hold-button {
+  position: relative;
+  overflow: hidden;
+  inline-size: 100%;
+  padding: var(--spacing-3) var(--spacing-4);
+  border: 1px solid color-mix(in oklab, #d93025 70%, transparent);
+  border-radius: var(--radius-md, 10px);
+  background: color-mix(in oklab, #d93025 14%, transparent);
+  color: var(--color-text-primary);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+  transition: transform 150ms ease, background 200ms ease;
+}
+
+.hold-button:active {
+  transform: scale(0.98);
+}
+
+.hold-button:focus-visible {
+  outline: 2px solid #d93025;
+  outline-offset: 2px;
+}
+
+.hold-button__fill {
+  position: absolute;
+  inset: 0;
+  transform-origin: left center;
+  transform: scaleX(var(--fill, 0));
+  background: linear-gradient(90deg, #b3261e, #ff5a4f);
+  transition: transform 120ms linear;
+}
+
+.hold-button[data-holding='true'] .hold-button__fill {
+  transition: none;
+}
+
+.hold-button__label {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-2);
+}
+
+.hold-button[data-holding='true'] .hold-button__label,
+.hold-button[data-done='true'] .hold-button__label {
+  color: white;
+}
+
+.notice-stack {
+  display: grid;
+  gap: var(--spacing-2);
+}
+
+.notice-stack > * {
+  animation: rise-in 420ms var(--ease-entrance, ease-out) both;
+}
+
+.audit-strike {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+/* What is wrong with a critical astronaut, on their crew card. Pulses gently while an emergency is open. */
+.crew-issue {
+  padding: var(--spacing-2) var(--spacing-3);
+  border-radius: var(--radius-md, 10px);
+  border-inline-start: 3px solid var(--color-error, #d93025);
+  background: color-mix(in oklab, var(--color-error, #d93025) 16%, transparent);
+  animation: rise-in 420ms var(--ease-entrance, ease-out) both;
+}
+
+.crew-issue[data-kind='emergency'] {
+  animation: rise-in 420ms var(--ease-entrance, ease-out) both, issue-pulse 2s ease-in-out 420ms infinite;
+}
+
+@keyframes issue-pulse {
+  50% {
+    background: color-mix(in oklab, var(--color-error, #d93025) 26%, transparent);
+  }
+}
+
+:root[data-motion='reduced'] .crew-issue[data-kind='emergency'] {
+  animation: none;
+}

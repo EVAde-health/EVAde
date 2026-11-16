@@ -28,29 +28,16 @@ Python evade_space ──► /observations, /radiation, /space-weather (demo dat
 | Worker `evade-api` | built and tested locally, Cloudflare Access login included; serves at **https://api.evade.health** after deploy (workers.dev URL as fallback) |
 | KV `evade-sessions` | Live session namespace bound in `worker/wrangler.jsonc`. |
 | R2 `evade-media` | Private bucket bound as `MEDIA` for authenticated uploads. |
-| Workers AI, Durable Object `CrewFeed` | created automatically on deploy |
+| Durable Object `CrewFeed` | created automatically on deploy |
 | Python `evade_space` | done, 5 tests pass, standard library only |
 
 ## Deploy the backend
 
-From `cloud/worker` on merged `evade-cloud`, sign in to the EVAde account with Wrangler and check the live D1 binding in `wrangler.jsonc`. Apply the migrations before publishing the Worker. Set up the separate Access application before testing staff login. [Staff setup](../docs/STAFF_SETUP.md)
-
-```powershell
-npm ci
-npx.cmd wrangler d1 migrations list evade-db --remote
-npx.cmd wrangler d1 time-travel info evade-db
-npx.cmd wrangler d1 migrations apply evade-db --remote
-npx.cmd wrangler deploy
-```
-
-Verify `https://api.evade.health`, then deploy the website from merged `main`. Use synthetic data for the demo.
-`DEMO_LOGIN=true` advertises a read-only demo only when the seeded astronaut exists. Check the migration
-ledger for `0006_frontend_gaps.sql` and apply `0009_staff_console.sql` from this branch. The demo account
-setup is kept by this branch's migration chain.
+Follow the [root deployment runbook](../DEPLOY.md) from merged `main`. `DEMO_LOGIN=true` advertises a shared, writable demo (Cmdr. Vega, or Dr. Ortiz with `?as=surgeon`) once `0012_demo_logins_and_roles.sql` has created its logins. Demo sessions only reach the demo crew, and `POST /demo/reset` restores the 0011 seed (regenerate `src/demoSeed.generated.ts` with `python3 scripts/gen_demo_reset.py` after changing that seed).
 
 Set `EVADE_API_KEY` in `worker/.dev.vars` for local development. Git ignores this file. Keep the service key in server-side configuration. For local Python commands, set `EVADE_API_KEY` in the Python process environment to the same value.
 
-Local dev: `npx wrangler d1 migrations apply evade-db --local && npx wrangler dev`, which serves the API on http://localhost:8787.
+Local dev: `npx wrangler dev` from `cloud/worker`, which serves the API on http://localhost:8787. If you apply migrations locally, skip `0008_remove_demo_data.sql`.
 
 ## Login with Cloudflare Access
 
@@ -87,7 +74,7 @@ Optional direct OAuth fallbacks:
 1. **Google**: console.cloud.google.com → APIs & Services → Credentials → Create OAuth client ID → Web application. Authorized redirect URI: `https://api.evade.health/auth/callback/google`. Set up the OAuth consent screen as External/Testing and add the team as test users.
 2. **GitHub**: github.com/settings/developers → New OAuth App. Homepage `https://evade.health`, callback `https://api.evade.health/auth/callback/github`.
 3. **Turnstile**: Cloudflare dashboard → Turnstile → Add widget for `evade.health` and `api.evade.health`. Put the site key in `TURNSTILE_SITE_KEY` in `wrangler.jsonc`.
-4. Secrets: `npx wrangler secret put` for `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `TURNSTILE_SECRET`, then `npx wrangler deploy`.
+4. From `cloud/worker`, use `npx wrangler secret put` prompts for `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `TURNSTILE_SECRET`. Follow [DEPLOY.md](../DEPLOY.md) for deployment.
 
 Local testing: set `DEV_LOGIN=true`, `FRONTEND_URL=http://localhost:5173`, and `ALLOWED_ORIGINS=http://localhost:5173` in `worker/.dev.vars`. Open the local Worker's `/login` page for the loopback-only test sign-in. Keep `DEV_LOGIN` off in production.
 
@@ -102,8 +89,7 @@ Local testing: set `DEV_LOGIN=true`, `FRONTEND_URL=http://localhost:5173`, and `
 | Cron Triggers | NOAA space weather every 15 minutes, EVA go/no-go |
 | Custom Domains + DNS | `api.evade.health` on Daniel's domain |
 | Workers Observability | logs and traces for the API |
-| Workers AI | journal summary, mood and concern level for the psychologist; Whisper voice-to-text for voice journals; plain-language daily briefing |
-| AI Gateway (optional) | set `AI_GATEWAY` to log, cache and rate-limit every AI call |
+| Workers AI | journal analysis, companion replies, staff summaries, daily briefing, and voice journal transcription |
 | R2 | photos, ultrasound images, voice journal audio, PDFs (private, access-checked per astronaut) |
 | Durable Objects | live crew feed over WebSockets (hibernating), staff see the whole crew in real time |
 
@@ -140,13 +126,17 @@ Local testing: set `DEV_LOGIN=true`, `FRONTEND_URL=http://localhost:5173`, and `
 | GET / POST | `/users/:id/alerts`, `/alerts/escalated`, `/alerts/:id/ack` | alerts; escalated = needs the flight surgeon |
 | POST | `/predict/{ecg,eeg,radiation-risk,risk}` | proxy to FastAPI; the result is stored in `model_results` |
 | POST | `/model-results` | FastAPI can push results directly instead |
+| GET | `/models` | Live model catalog proxied from FastAPI |
+| GET | `/models/runs` | Model IDs, counts and latest stored run times. Staff see totals across accounts, demo sees seeded crew totals, and signed-in astronauts see their own totals. |
 | POST | `/auth/identities` | **server-side only (API key or staff)**: links an external login manually; `{provider, subject, email?, display_name?}`. Links a login to an astronaut and creates the astronaut on first login. Returns the user with `user_id` |
 | GET | `/auth/identities/:provider/:subject` | look up the astronaut behind a login |
 | GET | `/admin/crew`, `/admin/escalations`, `/admin/therapist-feed?user_id=` | doctor/therapist panel: crew overview with risk band and alert counts, escalations waiting for the flight surgeon, journal summaries with that day's mood |
-| POST | `/journal?analyze=sync` | same as `/journal` but waits for the Workers AI analysis and returns it (demo) |
-| POST | `/journal/voice` | raw audio body (`audio/webm`, `wav`, `mp3`, `m4a`, `ogg`) → stored in R2 → Whisper transcript → journal entry → AI analysis |
+| POST | `/journal?analyze=sync` | same as `/journal` but waits for the Grok analysis and returns it (demo) |
+| POST | `/journal/voice` | raw audio body (`audio/webm`, `wav`, `mp3`, `m4a`, `ogg`) → stored in R2 → xAI Grok speech-to-text → journal entry → AI analysis |
+| POST | `/journal/voice-sessions` | the web app's voice check-in: `{session_id, turns:[{sender,content,ts}], checkin?}` → one `voice` journal entry, the turns as journal messages, analysis + parser rows. Idempotent per user and `session_id` |
+| POST | `/journal/messages` | Journal chat: saves the message as a journal entry and replies as the EVA companion; analysis + parser run after the response |
 | POST | `/journal/:id/analyze` | staff: re-run the AI analysis |
-| GET | `/users/:id/briefing` | plain-language daily briefing from Workers AI (cached 30 min; `?refresh=1`), falls back to rules if AI is down |
+| GET | `/users/:id/briefing` | plain-language daily briefing from Grok (cached 30 min; `?refresh=1`), falls back to rules if AI is down |
 | POST | `/media?kind=photo\|ultrasound\|audio\|document&metric=&note=` | raw file body with its Content-Type, max 25 MB → R2 |
 | GET | `/users/:id/media`, `/media/:id` | list files, download a file (owner or staff only) |
 | GET (WebSocket) | `/live` | live feed: `observation`, `alert`, `risk`, `journal` (staff only), `media`, `task`, `space_weather` events. Staff get the whole crew, astronauts get their own |

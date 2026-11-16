@@ -1,0 +1,73 @@
+.score-ring {
+  position: relative;
+  flex: none;
+  inline-size: 7.5rem;
+  block-size: 7.5rem;
+  user-select: none;
+}
+
+.score-ring--lg {
+  inline-size: 10rem;
+  block-size: 10rem;
+}
+
+/* Soft radial bloom behind the ring; no box, so no square corners. */
+.score-ring::before {
+  content: '';
+  position: absolute;
+  inset: 12%;
+  border-radius: var(--radius-full);
+  background: radial-gradient(circle, color-mix(in oklab, var(--color-accent) 22%, transparent), transparent 70%);
+  animation: score-breathe 4.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.score-ring__svg {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  overflow: visible;
+  transform: rotate(-90deg);
+}
+
+.score-ring__track,
+.score-ring__value,
+.score-ring__halo {
+  fill: none;
+  stroke-width: 8;
+}
+
+.score-ring__track {
+  stroke: color-mix(in oklab, var(--color-text-primary) 8%, transparent);
+}
+
+.score-ring__value {
+  stroke-linecap: round;
+}
+
+/* Blurred twin of the arc; svg overflow is visible so it never clips. */
+.score-ring__halo {
+  stroke-linecap: round;
+  stroke-width: 10;
+  opacity: 0.45;
+  filter: blur(var(--spacing-1));
+  animation: score-halo 3s ease-in-out infinite;
+}
+
+.score-ring__label {
+  position: relative;
+}
+
+@keyframes score-breathe {
+  50% {
+    transform: scale(1.12);
+    opacity: 0.6;
+  }
+}
+
+@keyframes score-halo {
+  50% {
+    opacity: 0.2;
+  }
+}

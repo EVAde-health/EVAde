@@ -33,7 +33,6 @@ describe("live feed session checks", () => {
       SESSIONS: { get: async () => staffSession },
       ACCESS_TEAM_DOMAIN: "fixture.cloudflareaccess.com",
       ACCESS_AUD: "crew-fixture",
-      ACCESS_STAFF_AUD: "staff-fixture",
     } as unknown as AuthEnv);
     const publish = () => feed.fetch(new Request("https://live/publish", {
       method: "POST", body: JSON.stringify({ type: "task", staff_only: true, data: { fixture: true } }),

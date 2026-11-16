@@ -1,0 +1,115 @@
+{
+  "modeStrategy": "light-and-dark",
+  "families": [
+    {
+      "id": "accent",
+      "name": "Accent",
+      "seed": "#7c5cff",
+      "anchors": [
+        {
+          "mode": "light",
+          "stop": 55,
+          "color": "#7c5cff",
+          "policy": "exact"
+        }
+      ]
+    },
+    {
+      "id": "neutral",
+      "name": "Neutral",
+      "seed": "#5b6785",
+      "kind": "neutral",
+      "anchors": [
+        {
+          "mode": "light",
+          "stop": 45,
+          "color": "#5b6785",
+          "policy": "exact"
+        },
+        {
+          "mode": "dark",
+          "stop": 45,
+          "color": "#5b6785",
+          "policy": "exact"
+        }
+      ]
+    },
+    {
+      "id": "success",
+      "name": "Success",
+      "seed": "#22c55e",
+      "anchors": [
+        {
+          "mode": "light",
+          "stop": 65,
+          "color": "#22c55e",
+          "policy": "exact"
+        },
+        {
+          "mode": "dark",
+          "stop": 65,
+          "color": "#22c55e",
+          "policy": "exact"
+        }
+      ]
+    },
+    {
+      "id": "warning",
+      "name": "Warning",
+      "seed": "#f59e0b",
+      "anchors": [
+        {
+          "mode": "light",
+          "stop": 75,
+          "color": "#f59e0b",
+          "policy": "exact"
+        },
+        {
+          "mode": "dark",
+          "stop": 75,
+          "color": "#f59e0b",
+          "policy": "exact"
+        }
+      ]
+    },
+    {
+      "id": "danger",
+      "name": "Danger",
+      "seed": "#f43f5e",
+      "anchors": [
+        {
+          "mode": "light",
+          "stop": 60,
+          "color": "#f43f5e",
+          "policy": "exact"
+        },
+        {
+          "mode": "dark",
+          "stop": 60,
+          "color": "#f43f5e",
+          "policy": "exact"
+        }
+      ]
+    },
+    {
+      "id": "info",
+      "name": "Info",
+      "seed": "#38bdf8",
+      "anchors": [
+        {
+          "mode": "light",
+          "stop": 70,
+          "color": "#38bdf8",
+          "policy": "exact"
+        },
+        {
+          "mode": "dark",
+          "stop": 70,
+          "color": "#38bdf8",
+          "policy": "exact"
+        }
+      ]
+    }
+  ],
+  "vibrancy": 65
+}
