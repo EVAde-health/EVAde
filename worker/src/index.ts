@@ -15,14 +15,14 @@
  *   GET  /health
  */
 import { log } from "./agent";
-import { alertAuth, appAllowed } from "./auth";
+import { alertAuth, appAllowed, appPrivileged } from "./auth";
 import { envStr, publicBaseUrl } from "./config";
 import { errorResponse, json, preflight, withCors } from "./http";
 import { LANDING_HTML } from "./landing";
 import { acquireBrowserSlot, countBrowserSlots, maxConcurrentSessions, maxSessionSeconds, releaseSlot, TOO_MANY_TALKING } from "./slots";
 import { issueStreamToken, issueToken, WS_TICKET_PREFIX } from "./tokens";
 import { latestCheckin, listDownlink } from "./tools";
-import { alertTwiml, connectStreamTwiml, createCall, isValidTwilioRequest, parseForm, signatureCheckEnabled, TwilioError } from "./twilio";
+import { alertTwiml, connectStreamTwiml, createCall, isValidTwilioRequest, parseForm, signatureCheckEnabled, signatureTokenMissing, TwilioError } from "./twilio";
 
 export { VoiceSession } from "./session";
 
@@ -48,6 +48,10 @@ async function incomingCall(request: Request, env: Env): Promise<Response> {
   // Python: body.decode("utf-8", errors="replace")
   const body = new TextDecoder().decode(await request.arrayBuffer());
   const params = parseForm(body);
+  if (signatureTokenMissing(env, request)) {
+    log("error", "Rejected /voice/incoming: TWILIO_VALIDATE_SIGNATURE is on but TWILIO_AUTH_TOKEN is not set");
+    return errorResponse(503, "Twilio signature validation is not configured");
+  }
   if (signatureCheckEnabled(env) && !(await isValidTwilioRequest(env, request, params))) {
     log("warn", "Rejected /voice/incoming: bad or missing X-Twilio-Signature");
     return errorResponse(403, "Invalid Twilio signature");
@@ -145,15 +149,28 @@ async function voiceStart(request: Request, env: Env): Promise<Response> {
   });
 }
 
+// Phone check-ins are stored under the caller's number (Twilio "From"), or "unknown" when it is missing.
+const PHONE_CREW = /^(?:\+|client:|sip:)|^\d{5,}$|^(?:anonymous|restricted|unknown)$/i;
+
+/** DEMO_OPEN alone reads one named browser/app crew, never the crew-wide feed or a phone caller's data. */
+async function crewReadable(request: Request, env: Env, crew: string | null): Promise<boolean> {
+  if (await appPrivileged(env, request)) return true;
+  return Boolean(crew) && !PHONE_CREW.test(crew!.trim());
+}
+const crewRequired = () =>
+  errorResponse(403, "crew_id of a browser/app crew is required (other crews need Authorization: Bearer <EVADE_BROWSER_TOKEN>)");
+
 async function apiLatest(request: Request, env: Env): Promise<Response> {
   if (!(await appAllowed(env, request))) return forbidden();
   const crew = new URL(request.url).searchParams.get("crew_id");
+  if (!(await crewReadable(request, env, crew))) return crewRequired();
   return json({ checkin: await latestCheckin(env.DB, crew || null) });
 }
 
 async function apiDownlink(request: Request, env: Env): Promise<Response> {
   if (!(await appAllowed(env, request))) return forbidden();
   const sp = new URL(request.url).searchParams;
+  if (!(await crewReadable(request, env, sp.get("crew_id")))) return crewRequired();
   const raw = sp.get("limit");
   let limit = 10;
   if (raw !== null) {

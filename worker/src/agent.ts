@@ -204,7 +204,8 @@ export abstract class AgentSession {
       case "conversation.item.input_audio_transcription.completed": {
         const text = ev.transcript ?? "";
         const final = etype.endsWith("completed");
-        if (final) log("info", "user transcript", { session: this.label, text });
+        // Never log what the crew member said: transcripts are health data.
+        if (final) log("info", "user transcript", { session: this.label, chars: text.length });
         await this.notify({ type: "transcript", role: "user", id: ev.item_id ?? null, text, final });
         break;
       }
@@ -238,7 +239,7 @@ export abstract class AgentSession {
     if (!name || !callId || this.handledCallIds.has(String(callId))) return;
     this.handledCallIds.add(String(callId));
     const result = await runTool(this.tools, String(name), this.crewId, args);
-    log("info", "tool call", { session: this.label, tool: name, result });
+    log("info", "tool call", { session: this.label, tool: name }); // the result holds check-in data
     await this.sendXai({ type: "conversation.item.create", item: {
       type: "function_call_output", call_id: callId, output: JSON.stringify(result) } });
     await this.notify({ type: "tool_result", name, result });

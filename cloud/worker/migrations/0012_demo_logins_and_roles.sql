@@ -9,7 +9,8 @@ SELECT 'demo', 'ortiz', user_id, NULL FROM users WHERE user_id = '00000000-0000-
 
 -- Roles for two existing accounts (matched by their verified sign-in email). New sign-ins are covered by
 -- FLIGHT_SURGEON_EMAILS in wrangler.jsonc; astronaut is the default role.
+-- Applied on the live D1 on 2026-11-15. The real addresses were replaced with placeholders afterwards, so a replay matches no account.
 UPDATE users SET role = 'flight_surgeon'
-WHERE user_id IN (SELECT user_id FROM auth_identities WHERE lower(email) = 'ryana.bergmanamazon@gmail.com');
+WHERE user_id IN (SELECT user_id FROM auth_identities WHERE lower(email) = 'flight-surgeon@example.invalid');
 UPDATE users SET role = 'astronaut'
-WHERE user_id IN (SELECT user_id FROM auth_identities WHERE lower(email) = 'rbergman80@stuy.edu');
+WHERE user_id IN (SELECT user_id FROM auth_identities WHERE lower(email) = 'astronaut@example.invalid');

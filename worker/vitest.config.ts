@@ -12,7 +12,8 @@ export default defineConfig({
           bindings: {
             TEST_MIGRATIONS: migrations,
             XAI_API_KEY: "test-xai-key",
-            TWILIO_AUTH_TOKEN: "",
+            // Dummy value so the end-to-end phone test exercises real signature checks (makeEnv() clears it).
+            TWILIO_AUTH_TOKEN: "test-twilio-token",
             EVADE_BROWSER_TOKEN: "test-browser-token",
             EVADE_ALERT_TOKEN: "",
             // wrangler.jsonc has DEMO_OPEN=true for the live demo; tests default to closed access

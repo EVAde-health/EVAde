@@ -109,6 +109,7 @@ beforeEach(async () => {
 afterEach(() => {
   env.DB.raw.close();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 async function call(method: string, path: string, { token = "astro", body, origin = FRONTEND }: { token?: string | null; body?: unknown; origin?: string } = {}) {
@@ -318,6 +319,21 @@ describe("xAI Grok", () => {
     const { textModels } = await import("../src/ai");
     expect(textModels({})).toEqual(["grok-4.20-0309-non-reasoning", "grok-4.3"]);
     expect(textModels({ XAI_TEXT_MODEL: "grok-4.7", XAI_FALLBACK_TEXT_MODEL: "" })).toEqual(["grok-4.7"]);
+  });
+
+  it("caps paid xAI calls per account: over the budget entries still save, analysed by the rules", async () => {
+    env.XAI_API_KEY = XAI_KEY;
+    const requests = stubGrok(() => "{}");
+    const keys: string[] = [];
+    env.AUTH_RATE_LIMITER = { limit: async ({ key }: { key: string }) => (keys.push(key), { success: !key.startsWith("ai-") }) };
+    const entry = await call("POST", "/journal?analyze=sync", { body: { content: "Slept badly, headache this morning." } });
+    expect(entry.status).toBe(201);
+    expect(entry.data.id).toEqual(expect.any(Number));
+    const synced = await call("POST", "/sync", { body: { journal: [{ content: "One" }, { content: "Two" }, { content: "Three" }] } });
+    expect(synced.status).toBe(200);
+    await Promise.all(pending.splice(0));
+    expect(requests).toHaveLength(0);
+    expect(keys).toContain("ai-journal:" + ASTRONAUT);
   });
 
   it("makes no model call without XAI_API_KEY and keeps the rule-based replies and the safety net", async () => {
@@ -554,6 +570,9 @@ describe("food search", () => {
 
 describe("synthetic simulation", () => {
   it("checks the admin role and simulates only seeded or explicitly synthetic astronauts", async () => {
+    // Simulated meals and water only exist after their hour of the UTC day, so pin the clock to the afternoon.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.parse("2026-11-15T15:15:00Z"));
     const raw: DatabaseSync = env.DB.raw;
     const demo = "00000000-0000-4000-8000-00000000d001";
     const demoStaff = "00000000-0000-4000-8000-00000000d002";

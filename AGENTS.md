@@ -66,7 +66,7 @@ node deploy/deploy.mjs --gateway
 
 ## Local development
 
-- Web app: `cd EVAde && npm install && npm run dev`. Optional `VITE_USDA_API_KEY` in `EVAde/.env` (see `.env.example`).
+- Web app: `cd EVAde && npm install && npm run dev`. `EVAde/.env` holds public build settings only (see `.env.example`); the optional USDA key is server-side (`USDA_API_KEY` in `cloud/worker/.dev.vars`), never a `VITE_*` variable.
 - Voice Worker: `cd worker && npm install && npx wrangler dev` (copy `.dev.vars.example` to `.dev.vars`). Tests: `npm test`.
 
 ## Deploy history
