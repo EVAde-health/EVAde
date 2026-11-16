@@ -19,17 +19,37 @@ For production releases, follow [DEPLOY.md](DEPLOY.md) from `main`.
 ---
 
 ## Contents
-1. [At a glance](#-at-a-glance)
-2. [Radiation](#%EF%B8%8F-radiation)
-3. [Solar storms & space weather](#%EF%B8%8F-solar-storms--space-weather)
-4. [Body: bone, muscle, heart, sleep, brain, immune](#-body)
-5. [Datasets for training](#-datasets-for-training)
-6. [NASA data sources](#-nasa-data-sources)
-7. [Live feeds](#-live-feeds)
-8. [Data files in this repo](#-data-files-in-this-repo)
-9. [How we planned it](#-how-we-planned-it)
-10. [Caveats](#%EF%B8%8F-caveats)
-11. [Sources](#-sources)
+1. [Repository map](#%EF%B8%8F-repository-map)
+2. [At a glance](#-at-a-glance)
+3. [Radiation](#%EF%B8%8F-radiation)
+4. [Solar storms & space weather](#%EF%B8%8F-solar-storms--space-weather)
+5. [Body: bone, muscle, heart, sleep, brain, immune](#-body)
+6. [Datasets for training](#-datasets-for-training)
+7. [NASA data sources](#-nasa-data-sources)
+8. [Live feeds](#-live-feeds)
+9. [Data files in this repo](#-data-files-in-this-repo)
+10. [How we planned it](#-how-we-planned-it)
+11. [Caveats](#%EF%B8%8F-caveats)
+12. [Sources](#-sources)
+
+---
+
+## 🗂️ Repository map
+
+| Folder | What it is | Deployed as |
+|---|---|---|
+| [`EVAde/`](EVAde/README.md) | React 19 + Vite web app (dashboard, Journal, flight surgeon console) | Static assets of the `evade` Worker on evade.health |
+| [`worker/`](worker/README.md) | Voice Worker: Twilio phone line and browser voice check-ins with xAI Grok ([API](worker/API.md)) | Code of the `evade` Worker on evade.health |
+| [`deploy/`](deploy/wrangler.jsonc) | `deploy.mjs` and the Wrangler config that combines `EVAde/dist` with `worker/` | Used only by production deploys ([DEPLOY.md](DEPLOY.md)) |
+| [`cloud/worker/`](cloud/README.md) | `evade-api` backend: D1, KV sessions, R2 media, live feed, Cloudflare Access sign-in | `evade-api` Worker on api.evade.health |
+| [`cloud/model-gateway/`](cloud/model-gateway/SETUP.md) | Private gateway Worker and Cloudflare Container for the model API | `evade-gateway` (service binding only, no public URL) |
+| `backend-models/` | Git submodule (EVAde-backend-models) pinned for the gateway container image | Built into `evade-gateway` |
+| `cloud/python/` | `evade_space` Python client: space weather, radiation and synthetic data for the API | Not deployed |
+| `api/`, `models/`, `tests/` | Original Python (FastAPI) voice agent the voice Worker was ported from, with its tests ([VOICE_AGENT.md](VOICE_AGENT.md)) | Not deployed |
+| [`pi-sim/`](pi-sim/README.md) | Raspberry Pi wearable simulator that streams synthetic data | Not deployed |
+| [`docs/`](docs/STAFF_SETUP.md) | Staff sign-in setup | – |
+
+Start with [AGENTS.md](AGENTS.md) for how the pieces fit together, [DEPLOY.md](DEPLOY.md) for releases and [SECURITY.md](SECURITY.md) for reporting issues and handling secrets. The mobile app lives on the `ExpoApp` branch.
 
 ---
 
