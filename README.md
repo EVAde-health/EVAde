@@ -2,282 +2,150 @@
 
 # 🛰️ EVAde
 
-### Space health data for long-duration missions
+### Health monitoring for astronauts on long-duration missions
 
 **NASA Space Apps Challenge 2026 · NYU Tandon · Team EVAde**
 
 *EVA (spacewalk) + evade: dodge the hazards of deep space.*
 
+**[Open the live app → evade.health](https://evade.health)**
+
 </div>
 
-> **The challenge:** Long missions expose astronauts to radiation, isolation, altered gravity and a hostile closed environment, which can bring immune changes, bone loss, cardiovascular events and behavioral-health problems. Astronauts carry much of the responsibility for spotting these changes in themselves. Build health-monitoring software that gathers health indicators and helps astronauts evaluate and act on their health.
+> **The challenge:** Long missions expose astronauts to radiation, isolation, altered gravity and a closed environment, which can cause bone loss, heart and immune changes, poor sleep and behavioral-health problems. Astronauts have to notice these changes themselves. Build software that gathers health indicators and helps them evaluate and act on their health.
 
-This repo is our **data collection**: every dataset, published value and live feed we gathered to build EVAde, with sources and an evidence label on each number.
-
-For production releases, follow [DEPLOY.md](DEPLOY.md) from `main`.
+**EVAde is our answer:** astronauts check in by voice or text, sensors and simulated wearables feed in vitals, machine-learning models flag problems, and a flight-surgeon console watches the whole crew. Every model output is **a flag for human review, not a diagnosis**, and **all crew data in the demo is simulated** and labelled that way.
 
 ---
 
-## Contents
-1. [Repository map](#%EF%B8%8F-repository-map)
-2. [At a glance](#-at-a-glance)
-3. [Radiation](#%EF%B8%8F-radiation)
-4. [Solar storms & space weather](#%EF%B8%8F-solar-storms--space-weather)
-5. [Body: bone, muscle, heart, sleep, brain, immune](#-body)
-6. [Datasets for training](#-datasets-for-training)
-7. [NASA data sources](#-nasa-data-sources)
-8. [Live feeds](#-live-feeds)
-9. [Data files in this repo](#-data-files-in-this-repo)
-10. [How we planned it](#-how-we-planned-it)
-11. [Caveats](#%EF%B8%8F-caveats)
-12. [Sources](#-sources)
+## 🚀 Try it in 2 minutes
+
+1. Go to **[evade.health](https://evade.health)** and click **Try the demo**. No sign-up is needed.
+2. **As an astronaut** (Cmdr. Vega), look at:
+   - **Dashboard:** vitals, sleep, radiation dose and today's goals.
+   - **Journal:** talk or type to EVAde, the AI companion. Your words become mood, sleep and symptom data.
+   - **Tasks**, **Tutorials** and **Messages** to the flight surgeon.
+3. **As a flight surgeon** (switch persona in the demo), open the **staff console**:
+   - **Crew overview:** every astronaut, red alerts and emergencies, sorted by "needs attention".
+   - **An astronaut's page:** vitals, sleep, mood, nutrition, journal *summaries* (never the private text) and the model results (EVA-13 heart, EVA-14 sleep).
+4. Open **Models**, **Research**, **Roadmap** and **Bibliography** from the menu to see how it was built.
+
+The demo crew can be reset at any time, so feel free to click everything.
+
+---
+
+## ✨ What it does
+
+| Feature | What it means |
+|---|---|
+| 🎙️ **Voice and text check-ins** | Talk to EVAde in the browser or on the phone line. An xAI Grok voice agent asks about sleep, mood and symptoms, and a parser turns the answers into structured health data. |
+| 📊 **Astronaut dashboard** | Vitals, sleep, mood, nutrition, hydration, radiation dose and daily goals in one place, each compared with the astronaut's own baseline. |
+| 🩺 **Flight-surgeon console** | Crew overview, alerts, emergencies, messaging, goals, vital corrections and an AI summary of each astronaut. Staff see summaries, not private journals. |
+| 🧠 **Machine-learning models** | Five trained models flag heart, brain, sleep and space-weather risks (table below). |
+| ☀️ **Live space weather** | NOAA solar-storm data is pulled every 15 minutes and feeds the radiation risk. |
+| 📚 **Research grounding** | A Research page with NASA evidence on radiation, bone, sleep and heart, plus a full bibliography of the papers and datasets used. |
+| 🧪 **Simulated crew** | Eight synthetic astronauts get new vitals and model runs every hour, so the console is always live. |
+
+---
+
+## 🧠 The models
+
+Built, trained and evaluated by Michael. They run privately on Cloudflare, and every model file is checked against its SHA-256 hash when it loads.
+
+| ID | What it flags | Type | Headline result (held-out test) |
+|---|---|---|---|
+| **EVA-02** | Seizure-like EEG patterns | Gradient boosting | Subject AUROC 0.986 · 0.920 on an outside dataset (Siena) |
+| **EVA-06** | 5 heart-condition groups from a 12-lead ECG | Gradient boosting | Macro AUROC 0.867 |
+| **EVA-12** | Solar proton storm within 24 h | Logistic regression | AUROC 0.892 (persistence baseline 0.763) |
+| **EVA-13** | 5 heart-condition groups from a 12-lead ECG (deep) | 1D ResNet, ONNX | Macro AUROC 0.927 |
+| **EVA-14** | Sleep stages (W, N1, N2, N3, REM) from EEG | CNN + bidirectional GRU, ONNX | Cohen's kappa 0.756 |
+
+Fifteen models are registered (EVA-01 to EVA-15); the ten that aren't served are architecture specs, older versions or models that scored worse, and the **Models** page explains each one. Training data: PTB-XL, CHB-MIT, Siena, Sleep-EDF and NOAA GOES. All are public research datasets. No real astronaut data is used.
+
+---
+
+## 🏗️ How it's built
+
+Everything runs on **Cloudflare**: no servers to manage, HTTPS everywhere.
+
+```mermaid
+flowchart LR
+  U[Astronaut / flight surgeon<br/>browser] --> W[evade Worker<br/>evade.health<br/>website + voice]
+  P[Phone call] -->|Twilio| W
+  W -->|xAI Grok voice| X[(xAI)]
+  U --> A[evade-api Worker<br/>api.evade.health]
+  A --> D[(D1 database<br/>evade-db)]
+  A --> K[(KV sessions)]
+  A --> R[(R2 media)]
+  A -->|private service binding| G[evade-gateway Worker]
+  G --> C[Container:<br/>model API, FastAPI + ONNX]
+  C --> M[(R2 model files<br/>SHA-256 checked)]
+  A -->|every 15 min| N[NOAA space weather]
+  S[Cloudflare Access<br/>email-code sign-in] --> A
+```
+
+| Piece | Runs as | Uses |
+|---|---|---|
+| Website + voice agent | `evade` Worker on evade.health | Static React app, voice sessions (Durable Objects), Twilio phone line, xAI Grok realtime voice, D1 `evade` |
+| Backend API | `evade-api` Worker on api.evade.health | D1 `evade-db` (users, vitals, journals, tasks, alerts, model results…), KV sessions, R2 media, live crew feed (WebSockets), cron for NOAA data, Grok for journal analysis and summaries |
+| Model gateway | `evade-gateway` Worker + Cloudflare Container | Michael's FastAPI model service, R2 `evade-models`, D1 `evade-models`. No public address; only the backend can call it |
+| Sign-in | Cloudflare Access | Email one-time code. Roles: astronaut, flight surgeon, therapist, admin |
+
+---
+
+## 🔒 Safety and security
+
+- **Sign-in and roles:** Cloudflare Access email codes (no passwords to leak), and the backend verifies every token. Staff pages need a staff role; only flight surgeons can correct vitals.
+- **Privacy:** staff see journal summaries, never the private text. Logs contain no health data.
+- **Abuse limits:** rate limits on sign-in and on paid AI calls per account, caps on voice sessions, and a private model gateway with its own rate limit and key checks.
+- **Secrets:** stored only as Cloudflare secrets, never in the code. A Gitleaks scan runs on every pull request.
+- **Medical honesty:** results are flags for human review; models that aren't calibrated say "No calibrated flag" instead of guessing.
+
+Details: [SECURITY.md](SECURITY.md).
+
+---
+
+## 👩‍🚀 Team
+
+| Who | Built |
+|---|---|
+| **Daniel** | Voice agent (Twilio + Grok), browser voice check-ins, journal parser, EVA companion |
+| **Ryan B** | Website, flight-surgeon console, backend data layer, return forecast |
+| **Ryan L** | Research page, NASA data sets, live space-weather panel, database |
+| **Michael** | Machine-learning models, model API, training and evaluation, Raspberry Pi sensor simulator |
+| **Decong** | Sign-in and roles, hosting the models on Cloudflare, deployments, security |
 
 ---
 
 ## 🗂️ Repository map
 
-| Folder | What it is | Deployed as |
-|---|---|---|
-| [`EVAde/`](EVAde/README.md) | React 19 + Vite web app (dashboard, Journal, flight surgeon console) | Static assets of the `evade` Worker on evade.health |
-| [`worker/`](worker/README.md) | Voice Worker: Twilio phone line and browser voice check-ins with xAI Grok ([API](worker/API.md)) | Code of the `evade` Worker on evade.health |
-| [`deploy/`](deploy/wrangler.jsonc) | `deploy.mjs` and the Wrangler config that combines `EVAde/dist` with `worker/` | Used only by production deploys ([DEPLOY.md](DEPLOY.md)) |
-| [`cloud/worker/`](cloud/README.md) | `evade-api` backend: D1, KV sessions, R2 media, live feed, Cloudflare Access sign-in | `evade-api` Worker on api.evade.health |
-| [`cloud/model-gateway/`](cloud/model-gateway/SETUP.md) | Private gateway Worker and Cloudflare Container for the model API | `evade-gateway` (service binding only, no public URL) |
-| `backend-models/` | Git submodule (EVAde-backend-models) pinned for the gateway container image | Built into `evade-gateway` |
-| `cloud/python/` | `evade_space` Python client: space weather, radiation and synthetic data for the API | Not deployed |
-| `api/`, `models/`, `tests/` | Original Python (FastAPI) voice agent the voice Worker was ported from, with its tests ([VOICE_AGENT.md](VOICE_AGENT.md)) | Not deployed |
-| [`pi-sim/`](pi-sim/README.md) | Raspberry Pi wearable simulator that streams synthetic data | Not deployed |
-| [`docs/`](docs/STAFF_SETUP.md) | Staff sign-in setup | – |
-
-Start with [AGENTS.md](AGENTS.md) for how the pieces fit together, [DEPLOY.md](DEPLOY.md) for releases and [SECURITY.md](SECURITY.md) for reporting issues and handling secrets. The mobile app lives on the `ExpoApp` branch.
-
----
-
-## ✨ At a glance
-
-| | Number | Source |
-|---|---|---|
-| ☢️ Radiation on the ISS | **0.43 mSv/day** | NASA Twins Study |
-| ☢️ Radiation on the way to Mars | **1.84 mSv/day** (~4× the ISS) | Curiosity rover |
-| 🚫 NASA career radiation limit | **600 mSv** | NASA |
-| 🦴 Hip bone loss | **−0.5%/month** with exercise, **−1.56%** without | NASA Bone Evidence Report |
-| 😴 Sleep on the ISS | **6.1 h** vs 8.5 h scheduled | Barger 2014 |
-| 🧍 Can't stand 10 min on landing day | **60–80%** of crew | Lee 2020 |
-| 🦠 Crew shedding latent viruses | **61%** | Rooney 2019 |
-| 📡 Signal delay to Mars | **3–22 min** one way | NASA |
-
-**Evidence labels used throughout:** **backed** = value or direction from a study · **derived** = our arithmetic on a study's value · **modelled** = simulation from a study · **illustrative** = chosen for a demo (never presented as a result).
-
----
-
-## ☢️ Radiation
-
-![Radiation dose by destination](docs/images/radiation_by_destination.png)
-
-| Where | Dose per day | Detail | Evidence |
-|---|---|---|---|
-| Earth surface | ~0.008 mSv | ~3 mSv a year from all sources | measured |
-| Space station (ISS) | **0.43 mSv** (0.2–0.65) | Twins Study: 146 mSv in 340 days. Columbus module absorbed dose 195–360 µGy/day; peak 647 µSv/day (May 2016). About 44% cosmic rays, 56% South Atlantic Anomaly | measured / derived |
-| Mars surface | **0.64 mSv** | Curiosity at Gale Crater, first 300 sols (0.21 mGy/day absorbed) | measured |
-| Moon trip (Artemis I Orion) | **0.96–1.24 mSv** | 26.7–35.4 mSv over the 25.5-day mission; 1.8–3.9 mSv from the Van Allen belts | measured |
-| Mars transit | **1.84 mSv** | Inside the spacecraft; round-trip transit ≈ 0.66 Sv | measured |
-| Mars reference mission | **≈ 1.01 Sv total** | 180 days out + 500 on the surface + 180 back, about 1.7× NASA's limit | derived (RAD team) |
-
-![Cumulative radiation over six months](docs/images/cumulative_radiation.png)
-
-**Limits:** NASA career **600 mSv** · NASA per solar event **250 mSv** · ESA career **1 Sv**.
-
----
-
-## ☀️ Solar storms & space weather
-
-![Solar storm comparisons](docs/images/solar_storms.png)
-
-- **Sept 10, 2017 storm:** 67.8 µGy inside the ISS vs **418 µGy on Mars' surface**, about 6× more, because Earth's magnetic field shields the ISS.
-- **Aug 1972 storm** (between Apollo 16 and 17): an unshielded moonwalker could have received **~400 rem (4 Sv)**, versus **under 35 rem** inside the Apollo capsule.
-- **Shielding vest** (AstroRad, modelled on Artemis I data): Aug 1972 storm dose 233.6 → **89.4 mSv** (−62%); Oct 1989 storm 249.9 → **149.4 mSv** (−40%).
-- **Storm shelter:** in Orion, the Oct 1989 reference storm peaks at 414 µGy/min in the cabin vs **95 µGy/min** in the shelter.
-
-![NOAA solar radiation storm scale](docs/images/noaa_s_scale.png)
-
-| Level | ≥10 MeV proton flux | How often (per 11-year cycle) | What to do |
-|---|---|---|---|
-| S1 Minor | ≥ 10 pfu | ~50 | Keep dosimeter on, review shelter plan |
-| S2 Moderate | ≥ 100 pfu | ~25 | Postpone non-essential spacewalks |
-| S3 Strong | ≥ 1,000 pfu | ~10 | Cancel spacewalks, go to shelter |
-| S4 Severe | ≥ 10,000 pfu | ~3 | Shelter, log dose hourly |
-| S5 Extreme | ≥ 100,000 pfu | < 1 | Shelter until the all-clear |
-
-A storm starts when ≥10 MeV flux reaches 10 pfu. **Idea from our board:** use this feed to predict the next safe window for a spacewalk.
-
----
-
-## 🫀 Body
-
-### Bone & muscle
-
-![Bone loss with and without exercise](docs/images/bone_loss.png)
-
-| Indicator | Change in long-duration flight | Evidence |
-|---|---|---|
-| Hip bone density | **−0.5%/month** with ARED (range −1.34 to −0.07); **−1.56%/month** without | backed |
-| Spine bone density | **−0.32%/month** with ARED; **−1.06%/month** without | backed |
-| Bone recovery | Takes **6+ months** after landing; some deficits 2–4 years later | backed |
-| Calf muscle volume | **−10 to −18%** over ~6 months | backed |
-| Leg strength | **−6 to −17%** | backed |
-| Aerobic fitness (VO2peak) | **−17%** by flight day 14; −15% on landing day | backed |
-
-### Sleep
-
-![Sleep on the ISS](docs/images/sleep.png)
-
-| Indicator | Value | Evidence |
-|---|---|---|
-| Sleep on the ISS | **6.09 h/night** (n=21) vs 8.5 h scheduled | backed |
-| Used sleep medication | **75%** of crew | backed |
-| Sleep periods out of sync with the body clock | **19%**, costing about 1 h of sleep each | backed |
-| Mars-500 (520-day analog) | 7.12 → 7.71 h per 24 h across mission quarters | backed (analog) |
-
-### Heart & circulation
-
-| Indicator | Change | Evidence |
-|---|---|---|
-| Resting heart rate | **Unchanged** in flight | backed |
-| 24-h blood pressure | **−8 / −9 mmHg** | backed |
-| Cardiac output | **+41%** | backed |
-| HRV (RMSSD) | Dips by ~day 22, recovered by ~day 159. **Not** a steady decline | backed (preprint) |
-| Landing day | **60–80%** fail a 10-min tilt test; standing HR +10–15 bpm | backed |
-| Atrial arrhythmia in astronaut corps | 17 of 317 (~5%); no proof spaceflight raises it | review |
-
-### Brain, cognition, mood & immune
-
-| Indicator | Finding | Evidence |
-|---|---|---|
-| Resting EEG alpha power | **Drops** in flight (days 9 and 55), still low 20 days after landing | backed (direction only) |
-| EEG in bed rest | One-time drop in all bands, no further drift over 60 days | backed |
-| Cognition (n=25) | **No overall decline**; slower processing speed early in flight | backed |
-| "Third-quarter" mood slump | **Not supported** (meta-analysis of 21 Antarctic studies) | backed |
-| Latent virus shedding | **61%** of ISS crew (EBV 96%), mostly no symptoms; up to ~30 days after landing | backed |
-| Body mass (Twins Study, 340 days) | −7% (one person) | backed |
-
-### Communication
-| | Value |
+| Folder | What it is |
 |---|---|
-| Mars one-way signal delay | **3–22 minutes** |
-| Solar conjunction blackout | **~12 days** (9–16) |
+| [`EVAde/`](EVAde/README.md) | React 19 + Vite website (astronaut app and staff console) |
+| [`worker/`](worker/README.md) | Voice Worker: phone line and browser voice ([API](worker/API.md)) |
+| [`cloud/worker/`](cloud/README.md) | `evade-api` backend |
+| [`cloud/model-gateway/`](cloud/model-gateway/SETUP.md) | Private gateway and container for the model API |
+| `backend-models/` | Michael's model API (Git submodule) |
+| [`pi-sim/`](pi-sim/README.md) | Raspberry Pi simulator that streams synthetic sensor data |
+| `cloud/python/` | Python client for space weather and synthetic data |
+| `api/`, `models/`, `tests/` | Original Python voice agent ([VOICE_AGENT.md](VOICE_AGENT.md)) |
+| [`deploy/`](deploy/wrangler.jsonc) | Production deploy script and config |
+| [`docs/`](docs/) | Setup guides and [research data](docs/RESEARCH_DATA.md) |
+
+More: [AGENTS.md](AGENTS.md) (how the pieces fit) · [DEPLOY.md](DEPLOY.md) (releases) · [SECURITY.md](SECURITY.md) · [sources.md](sources.md). The mobile app lives on the `ExpoApp` branch.
 
 ---
 
-## 🧠 Datasets for training
+## 📖 Research and data
 
-| Dataset | What's in it | Labels | Access | Link |
-|---|---|---|---|---|
-| **SAM40** | EEG from 40 people (18–25), 32 channels, 128 Hz. Stroop, arithmetic, mirror-image and relax tasks; 25 s trials × 3 | Self-rated stress 1–10 | ✅ Free, instant | [Figshare](https://doi.org/10.6084/m9.figshare.14562090.v1) |
-| **WESAD** | 15 people. Chest sensor (ECG, skin conductance, EMG, breathing, temperature) at 700 Hz, plus wrist sensor | Baseline · stress · amusement · meditation | ✅ Free | [UCI](https://doi.org/10.24432/C57K5T) |
-| **DEAP** | 32 people × 40 music videos. 32-ch EEG (512 Hz) + body signals | Valence, arousal, dominance, liking 1–9 | ⚠️ Signed licence | [QMUL](https://www.eecs.qmul.ac.uk/mmv/datasets/deap) |
+The numbers behind EVAde (radiation by destination, bone and muscle loss, sleep, heart, NOAA storm scale, training datasets, live feeds and every source) are in **[docs/RESEARCH_DATA.md](docs/RESEARCH_DATA.md)**, and in the app's **Research** and **Bibliography** pages.
 
-> **No freely downloadable raw astronaut EEG or ECG exists.** Public lab datasets are the realistic starting point. Check each dataset's licence before redistributing.
+A few highlights: the ISS gives **0.43 mSv/day** of radiation and the trip to Mars **1.84 mSv/day**; hip bone density falls **0.5% a month** even with exercise; ISS crews sleep **about 6 hours** a night; and a message to Mars takes **3 to 22 minutes**, which is why EVAde has to help astronauts act on their own.
 
 ---
 
-## 🚀 NASA data sources
+<div align="center">
 
-| Source | What's in it | Access | Link |
-|---|---|---|---|
-| **NASA Human Research Program evidence reports** | The published values above (bone, muscle, sleep, cardiovascular…) | Free PDFs | see [Sources](#-sources) |
-| **NASA OSDR: Inspiration4** | Omics from blood, plasma, serum, swabs, skin, stool, urine, T-cells; pre-, in- and post-flight (also OSD-570 to 575, 630, 656, 687) | Processed data public; raw needs application | [OSD-569](https://osdr.nasa.gov/bio/repo/data/studies/OSD-569) |
-| **NASA Life Sciences Data Archive** | De-identified astronaut + analog data since 1961; open bed-rest datasets (UTMB Campaigns 1, 3, 11) | By request | [NASA portal](https://www.nasa.gov/?p=900029) |
+*Flags for human review, not diagnoses. All crew data in the demo is simulated.*
 
----
-
-## 📡 Live feeds
-
-| Feed | What it gives | Key? | URL |
-|---|---|---|---|
-| **NOAA GOES proton flux** | ≥1, ≥10, ≥100 MeV protons every 5 min, last 24 h | No | [JSON](https://services.swpc.noaa.gov/json/goes/primary/integral-protons-1-day.json) |
-| **NOAA space weather scales** | Current + forecast R/S/G storm levels | No | [JSON](https://services.swpc.noaa.gov/products/noaa-scales.json) |
-| **NASA DONKI SEP** | Catalogue of past solar particle events | `DEMO_KEY` (free key at api.nasa.gov) | [API](https://api.nasa.gov/DONKI/SEP?startDate=2024-01-01&endDate=2024-12-31&api_key=DEMO_KEY) |
-
-Each NOAA record looks like `{"time_tag": "…Z", "satellite": 18, "flux": 0.3, "energy": ">=10 MeV"}`. Negative flux means missing data.
-
----
-
-## 📁 Data files in this repo
-
-| File | Contents |
-|---|---|
-| [`missionTrendsRaw.ts`](EVAde/src/data/research/missionTrendsRaw.ts) | Published health values and mission-timeline events, with source URLs and evidence labels |
-| [`radiationRaw.ts`](EVAde/src/data/research/radiationRaw.ts) | Dose rates by destination, limits, solar-storm events, NOAA S-scale, and live feed URLs |
-| [`sources.md`](sources.md) | Source index for NASA reports, mission references, and other datasets |
-
----
-
-## 🧭 How we planned it
-
-<table>
-<tr>
-<td width="50%"><img src="docs/whiteboard/architecture-board.jpg" alt="Architecture whiteboard"/></td>
-<td width="50%"><img src="docs/whiteboard/task-board.jpg" alt="Task whiteboard"/></td>
-</tr>
-<tr>
-<td><b>Architecture board:</b> risks and indicators feed a frontend with AI, a database for tracking over time, Cloudflare, and Twilio voice AI.</td>
-<td><b>Task board:</b> who does what, tools and sponsors, environments, and questions for event leaders.</td>
-</tr>
-</table>
-
-**What we set out to collect (from the board):**
-- **Space-health risks:** radiation · immune changes · bone density loss · cardiovascular events · inadequate nutrition · behavioral health
-- **Indicators:** blood pressure · blood sugar · heart rate · body temperature · sleep hours · mood · EEG · ECG
-- **Data:** space radiation & weather · body data · NASA Human Research Program resources
-- **Environments:** space station · spacecraft · base on another planet · space rover
-
-**Questions we answered with the data:**
-
-| Question | Answer |
-|---|---|
-| Wi-Fi in space? | ISS has a ground link; Mars has a 3–22 min delay and ~2-week blackouts, so store locally and sync when possible |
-| Which measurements can be performed in space? | ECG, blood pressure, temperature, body mass, sleep tracking, cognition tests, saliva/blood samples, personal dosimeters; EEG in research |
-| How do spaceflight hazards affect these indicators? | See [Body](#-body) and [Radiation](#%EF%B8%8F-radiation) |
-| What changes across environments? | Radiation rises from 0.43 (ISS) to 1.84 mSv/day (Mars transit); the comms delay grows to 22 min; only the ISS is shielded by Earth's magnetic field |
-
----
-
-## ⚠️ Caveats
-- Spaceflight studies are small (n = 1–25) and individuals vary a lot, so compare each astronaut with their **own** baseline.
-- The HRV trend comes from a non-peer-reviewed preprint.
-- EEG papers give the **direction** of change, not its size.
-- Radiation varies with the solar cycle, shielding and orbit altitude; 1.84 mSv/day was measured near solar maximum.
-- Some numbers come from NASA reports or press releases summarising the original papers (noted in [`missionTrendsRaw.ts`](EVAde/src/data/research/missionTrendsRaw.ts)).
-
----
-
-## 📚 Sources
-
-**Radiation & space weather**
-- [NASA Twins Study (Science, 2019)](https://lsom.uthscsa.edu/nephrology/wp-content/uploads/sites/38/2019/04/NASA-twin-study_Science.pdf)
-- [DOSIS 3D, ISS Columbus (Space Weather & Space Climate, 2016)](https://www.swsc-journal.org/articles/swsc/pdf/2016/01/swsc160033.pdf)
-- [DOSIS 3D peak dose (2017)](https://www.swsc-journal.org/articles/swsc/abs/2017/01/swsc160046/swsc160046.html)
-- [Artemis I radiation (Nature, 2024)](https://doi.org/10.1038/s41586-024-07927-7)
-- [Curiosity: Mars transit](https://phys.org/news/2013-12-scientists-publish-surface-mars.amp)
-- [Curiosity: Mars surface](https://www.sciencedaily.com/releases/2013/12/131209181133.htm)
-- [Mars reference mission](https://www.space.com/23875-mars-radiation-life-manned-mission.html)
-- [DLR: Sept 2017 storm](https://elib.dlr.de/120788/1/ME-SBA-2018-Berger-Matthi%C3%A4_et%20al-DOSIS-3D_Space%20Weather.pdf)
-- [August 1972 storm](https://www.space.com/749-bad-week-moon.html)
-- [AstroRad vest (IAC 2024)](https://iafastro.directory/iac/paper/id/90503/abstract-pdf/IAC-24,A1,5,7,x90503.brief.pdf)
-- [NASA radiation limits (OCHMO)](https://www.nasa.gov/sites/default/files/atoms/files/radiation_protection_technical_brief_ochmo.pdf)
-- [NOAA S-scale](https://spaceweather.live/en/help/what-is-a-solar-radiation-storm)
-
-**Body**
-- [NASA Bone Evidence Report](https://ntrs.nasa.gov/api/citations/20170004597/downloads/20170004597.pdf)
-- [NASA Muscle & Aerobic Evidence Report](https://ntrs.nasa.gov/api/citations/20220019338/downloads/Evidence%20report%20aerobic%20and%20muscle_FINAL%209-21-22%20Pubpress%20accepted_v2.pdf)
-- [NASA Sleep Evidence Report](https://ntrs.nasa.gov/api/citations/20160003864/downloads/20160003864.pdf)
-- [Barger 2014 (sleep)](https://www.eurekalert.org/news-releases/595450)
-- [Norsk 2015 (heart & BP)](https://synapsesocial.com/papers/W1944333689)
-- [Otsuka (HRV, preprint)](https://www.researchsquare.com/article/rs-2106983/v1)
-- [Lee 2020 (landing)](https://www.frontiersin.org/article/10.3389/fphys.2020.00784)
-- [Pusil 2023 (EEG)](https://www.nature.com/articles/s41598-023-34744-1.pdf)
-- [Dev 2024 (cognition)](https://frontiersin.org/journals/physiology/articles/10.3389/fphys.2024.1451269/full)
-- [Rooney 2019 (viruses)](https://pmc.ncbi.nlm.nih.gov/articles/PMC6374706)
-- [Hawkes & Norris 2017 (mood)](https://www.cambridge.org/core/services/aop-cambridge-core/content/view/S003224741700050X)
-- [Basner 2013 (Mars-500)](https://www.med.upenn.edu/uep/assets/user-content/documents/PNAS2013Basner1212646110withSupportingAppendix.pdf)
-- [NASA: Mars comms delay](https://science.nasa.gov/missions/mars-2020-perseverance/speaking-percys-language-how-to-talk-so-perseverance-will-listen/)
+</div>
