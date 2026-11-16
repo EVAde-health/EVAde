@@ -20,6 +20,7 @@ const JournalPage = lazy(() => import('./pages/JournalPage'));
 const SelfiesPage = lazy(() => import('./pages/SelfiesPage'));
 const MessagesPage = lazy(() => import('./pages/MessagesPage'));
 const ResearchPage = lazy(() => import('./pages/ResearchPage'));
+const ModelsPage = lazy(() => import('./pages/ModelsPage'));
 const CrewPage = lazy(() => import('./pages/surgeon/CrewPage'));
 const AstronautPage = lazy(() => import('./pages/surgeon/AstronautPage'));
 const SurgeonMessagesPage = lazy(() => import('./pages/surgeon/SurgeonMessagesPage'));
@@ -32,7 +33,7 @@ export default function App() {
   return (
     <ColorModeContext.Provider value={colorMode}>
       <Theme theme={themes[defaultThemeSlug]} mode={colorMode.mode}>
-        <ToastViewport position="bottomEnd" maxVisible={3} inset={{ bottom: 64 }}>
+        <ToastViewport position="topEnd" maxVisible={4} inset={{ top: 24, end: 24, start: 24 }}>
         <ToastCenter>
         <BrowserRouter>
           <LinkProvider component={RouterLink}>
@@ -47,6 +48,7 @@ export default function App() {
                     <Route path="/journal" element={<JournalPage />} />
                     <Route path="/selfies" element={<SelfiesPage />} />
                     <Route path="/research" element={<ResearchPage />} />
+                    <Route path="/models" element={<ModelsPage />} />
                     <Route path="/messages" element={<MessagesPage />} />
                     <Route path="/messages/:id" element={<MessagesPage />} />
                     <Route path="/chat/*" element={<Navigate to="/messages" replace />} />

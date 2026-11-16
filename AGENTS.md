@@ -66,7 +66,7 @@ node deploy/deploy.mjs --gateway
 
 ## Local development
 
-- Web app: `cd EVAde && npm install && npm run dev`. Optional `VITE_USDA_API_KEY` in `EVAde/.env` (see `.env.example`).
+- Web app: `cd EVAde && npm install && npm run dev`. Food search calls the API Worker. Set the `USDA_API_KEY` secret on the `evade-api` Worker (`cloud/worker`); do not put that key in the browser.
 - Voice Worker: `cd worker && npm install && npx wrangler dev` (copy `.dev.vars.example` to `.dev.vars`). Tests: `npm test`.
 
 ## Deploy history

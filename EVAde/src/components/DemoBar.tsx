@@ -9,9 +9,9 @@ import { resetDemo } from '../services/healthApi';
 
 type Persona = 'astronaut' | 'surgeon';
 
-const COPY: Record<Persona, { title: string; switchLabel: string; other: Persona }> = {
-  astronaut: { title: 'Demo: Cmdr. Vega (astronaut)', switchLabel: 'Switch to flight surgeon', other: 'surgeon' },
-  surgeon: { title: 'Demo: Dr. Ortiz (flight surgeon)', switchLabel: 'Switch to astronaut', other: 'astronaut' },
+const COPY: Record<Persona, { title: string; other: Persona }> = {
+  astronaut: { title: 'Demo Astronaut', other: 'surgeon' },
+  surgeon: { title: 'Demo Flight Surgeon', other: 'astronaut' },
 };
 
 // Shared-demo controls on every page: reset the demo crew or switch persona.
@@ -32,16 +32,18 @@ export default function DemoBar({ persona }: { persona: Persona }) {
   }
 
   return (
-    <Banner
-      status="info"
-      title={copy.title}
-      description="Everything you do here is saved to the shared demo crew, AI included. Reset puts the seeded data back."
-      endContent={
-        <HStack gap={1} wrap="wrap">
-          <Button label="Reset demo data" size="sm" variant="secondary" icon={<Icon icon={ArrowPathIcon} />} clickAction={handleReset} />
-          <Button label={copy.switchLabel} size="sm" variant="primary" icon={<Icon icon={ArrowsRightLeftIcon} />} href={demoLoginUrl(copy.other)} />
-        </HStack>
-      }
-    />
+    <HStack className="demo-bar">
+      <Banner
+        status="info"
+        title={copy.title}
+        description="Changes stay on this shared demo until you reset. Switch users to see the other role. Nothing is checked until you check it."
+        endContent={
+          <HStack gap={1} wrap="wrap">
+            <Button label="Reset database" size="sm" variant="secondary" icon={<Icon icon={ArrowPathIcon} />} clickAction={handleReset} />
+            <Button label="Switch users" size="sm" variant="primary" icon={<Icon icon={ArrowsRightLeftIcon} />} href={demoLoginUrl(copy.other)} />
+          </HStack>
+        }
+      />
+    </HStack>
   );
 }

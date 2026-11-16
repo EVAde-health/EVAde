@@ -236,7 +236,8 @@ describe("GET /auth/demo", () => {
     const seededObservations = count("observations", DEMO_VEGA);
     const unread = row("SELECT COUNT(*) n FROM user_notifications WHERE user_id=? AND read_at IS NULL", DEMO_VEGA).n;
     expect(seededObservations).toBeGreaterThan(100);
-    expect(unread).toBeGreaterThan(0);
+    // The reset seed starts with no unread notices and no checked missions.
+    expect(unread).toBe(0);
     expect((await call("POST", "/me/notifications/read", { ...cookie, body: {} })).status).toBe(204);
     expect(row("SELECT COUNT(*) n FROM user_notifications WHERE user_id=? AND read_at IS NULL", DEMO_VEGA).n).toBe(0);
     const water = count("hydration", DEMO_VEGA);

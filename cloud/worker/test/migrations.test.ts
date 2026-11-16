@@ -47,6 +47,7 @@ it("applies every migration in the order the live evade-db applied them", () => 
     "0006_frontend_gaps.sql", "0006_voice_messages_phone.sql", "0007_seed_demo_astronaut.sql", "0009_staff_console.sql",
     "0008_remove_demo_data.sql", "0010_surgeon_console.sql", "0011_seed_surgeon_demo.sql", "0011_simulated_data.sql",
     "0012_demo_logins_and_roles.sql",
+    "0013_selfie_analysis.sql",
   ];
   expect([...order].sort()).toEqual(readdirSync(path).filter(name => name.endsWith(".sql")).sort());
   const db = new DatabaseSync(":memory:");

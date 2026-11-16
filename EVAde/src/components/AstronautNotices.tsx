@@ -21,8 +21,20 @@ export default function AstronautNotices() {
     return () => window.removeEventListener('evade:emergency-sent', reload);
   }, [reload]);
 
+  const [emergencyHidden, setEmergencyHidden] = useState(false);
   const active = emergencies.data?.emergencies.find(item => item.status !== 'resolved');
   const unread = (notes.data?.notifications ?? []).filter(item => !hidden.includes(item.id) && item.kind !== 'emergency_acknowledged').slice(0, 3);
+  const unreadIds = unread.map(item => item.id).join(',');
+
+  useEffect(() => {
+    if (!unreadIds) return undefined;
+    const ids = unreadIds.split(',').map(Number);
+    const timer = window.setTimeout(() => {
+      setHidden(previous => [...previous, ...ids]);
+      markNotificationsRead(ids).then(notes.reload, () => undefined);
+    }, 12000);
+    return () => window.clearTimeout(timer);
+  }, [unreadIds, notes.reload]);
 
   const allUnread = (notes.data?.notifications ?? []).filter(item => !hidden.includes(item.id));
 
@@ -38,7 +50,7 @@ export default function AstronautNotices() {
     markNotificationsRead().then(notes.reload, () => undefined);
   }
 
-  if (!active && !unread.length) return null;
+  if ((!active || emergencyHidden) && !unread.length) return null;
   return (
     <div className="notice-stack">
       {unread.length >= 2 && (
@@ -46,13 +58,16 @@ export default function AstronautNotices() {
           <Button label={`Mark all ${allUnread.length} as read`} size="sm" variant="ghost" icon={<Icon icon={CheckIcon} />} onClick={dismissAll} />
         </HStack>
       )}
-      {active && (
+      {active && !emergencyHidden && (
         <Banner
           status={active.status === 'open' ? 'error' : 'warning'}
           title={active.status === 'open' ? 'Emergency sent. Waiting for a flight surgeon…' : 'A flight surgeon is responding'}
           description={active.status === 'open'
             ? 'Every flight surgeon on duty can see your alert. Stay where you are if it is safe; use your backup channel if you need to.'
             : `${active.acknowledged_by_name ?? 'Your flight surgeon'} acknowledged your emergency${active.acknowledged_at ? ` at ${new Date(active.acknowledged_at).toLocaleTimeString()}` : ''}.`}
+          isDismissable
+          dismissLabel="Dismiss"
+          onDismiss={() => setEmergencyHidden(true)}
         />
       )}
       {unread.map(item => (

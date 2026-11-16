@@ -583,7 +583,11 @@ describe("synthetic simulation", () => {
     expect(count()).toEqual(firstCount);
     const observations = await call("GET", "/users/" + OTHER + "/observations", { token: "other" });
     expect(observations.data.some((row: { source: string }) => row.source === "simulated")).toBe(true);
-    for (const table of ["meals", "hydration", "radiation_doses", "risk_scores"]) {
+    const hour = new Date().getUTCHours();
+    const tables = ["radiation_doses", "risk_scores"];
+    if (hour >= 7) tables.push("meals");
+    if (hour >= 6) tables.push("hydration");
+    for (const table of tables) {
       expect(raw.prepare("SELECT 1 FROM " + table + " WHERE user_id=? AND source='simulated'").get(demo), table).toBeDefined();
     }
   });

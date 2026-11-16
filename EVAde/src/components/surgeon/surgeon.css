@@ -341,9 +341,19 @@
   color: white;
 }
 
-.notice-stack {
+.notice-stack,
+.demo-bar {
   display: grid;
-  gap: var(--spacing-2);
+  gap: var(--spacing-3);
+  margin-block: var(--spacing-4) var(--spacing-2);
+  margin-inline: max(var(--spacing-4), env(safe-area-inset-left)) max(var(--spacing-4), env(safe-area-inset-right));
+  max-inline-size: 72rem;
+}
+
+.notice-stack .astryx-banner,
+.demo-bar .astryx-banner {
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: var(--shadow-med);
 }
 
 .notice-stack > * {

@@ -23,13 +23,14 @@ import { ago, formatValue, missionDayOf, personName, responseRows, type Astronau
 import { api } from '../../services/api';
 import { hasSimulatedData } from '../../services/simulation';
 import { usePoll } from '../../hooks/usePoll';
-import { GoalsSection, JournalSection, TasksSection, VitalsSection } from './AstronautSections';
+import { GoalsSection, JournalSection, SelfiesSection, TasksSection, VitalsSection } from './AstronautSections';
 
 const SECTIONS = [
   { value: 'vitals', label: 'Vitals & metrics' },
   { value: 'journal', label: 'Journal & check-ins' },
   { value: 'tasks', label: 'Tasks & XP' },
   { value: 'goals', label: 'Goals' },
+  { value: 'selfies', label: 'Selfies' },
 ] as const;
 type Section = (typeof SECTIONS)[number]['value'];
 
@@ -125,6 +126,7 @@ function Record({ id, section, onSection }: { id: string; section: Section; onSe
         {section === 'journal' && <JournalSection id={id} />}
         {section === 'tasks' && <TasksSection id={id} />}
         {section === 'goals' && <GoalsSection id={id} name={user ? personName(user) : 'this astronaut'} />}
+        {section === 'selfies' && <SelfiesSection id={id} />}
       </VStack>
     </VStack>
   );

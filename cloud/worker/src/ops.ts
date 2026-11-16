@@ -3,7 +3,7 @@
 // Callers are already authenticated. These handlers still check the role before reading another person.
 import { triageUrgent, type AiEnv } from "./ai";
 import { Principal, STAFF_ROLES } from "./auth";
-import { DEMO_ID_PREFIX, sameCrewSql } from "./demo";
+import { DEMO_ASTRONAUT_ID, DEMO_ID_PREFIX, sameCrewSql } from "./demo";
 import { HttpError } from "./http";
 import { levelFromThresholds, type MetricDef } from "./health";
 import { limitMessageSend, recordMessage } from "./messages";
@@ -481,12 +481,14 @@ export function registerOps(route: (method: string, path: string, handler: Handl
 }) {
   const { json, body, now } = deps;
 
-  route("GET", "/admin/astronauts", async (_r, env) => {
+  route("GET", "/admin/astronauts", async (_r, env, _p, _u, _c, who) => {
+    // The shared demo has exactly one astronaut. Extra seeded crew from older demos stay hidden until Reset deletes them.
+    const demoOnly = who?.demo;
     const { results } = await env.DB.prepare(
       `SELECT u.user_id, u.display_name, u.full_name, u.crew_role, u.mission_name,
               (SELECT status FROM emergencies e WHERE e.user_id=u.user_id AND e.status!='resolved') AS emergency_status
-       FROM users u WHERE u.role='astronaut' ORDER BY u.display_name`
-    ).all();
+       FROM users u WHERE u.role='astronaut' ${demoOnly ? "AND u.user_id=?" : ""} ORDER BY u.display_name`
+    ).bind(...(demoOnly ? [DEMO_ASTRONAUT_ID] : [])).all();
     return json(results);
   });
 

@@ -13,12 +13,14 @@ import {
   ExclamationTriangleIcon,
   IdentificationIcon,
   UserGroupIcon,
+  CpuChipIcon,
 } from '@heroicons/react/24/outline';
 import {
   ChatBubbleLeftRightIcon as ChatSolid,
   ExclamationTriangleIcon as ExclamationSolid,
   IdentificationIcon as IdentificationSolid,
   UserGroupIcon as UserGroupSolid,
+  CpuChipIcon as CpuChipSolid,
 } from '@heroicons/react/24/solid';
 import { SurgeonContext } from '../../context/SurgeonContext';
 import { usePoll } from '../../hooks/usePoll';
@@ -40,6 +42,7 @@ const NAV = [
   { href: '/admin/astronauts', label: 'Astronaut', icon: IdentificationIcon, selectedIcon: IdentificationSolid },
   { href: '/admin/messages', label: 'Messages', icon: ChatBubbleLeftRightIcon, selectedIcon: ChatSolid },
   { href: '/admin/emergencies', label: 'Emergencies', icon: ExclamationTriangleIcon, selectedIcon: ExclamationSolid },
+  { href: '/models', label: 'Models', icon: CpuChipIcon, selectedIcon: CpuChipSolid },
 ];
 
 function selected(href: string, pathname: string) {

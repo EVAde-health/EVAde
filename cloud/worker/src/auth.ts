@@ -3,7 +3,7 @@
 
 import { accessAssertion, accessConfigured, accessLogoutUrl, verifyAccessJwt, type AccessEnv } from "./access";
 import { handleLocalAccess } from "./localAccess";
-import { DEMO_PERSONAS, isDemoId, type DemoPersona } from "./demo";
+import { DEMO_PERSONAS, ensureCurrentDemo, isDemoId, type DemoPersona } from "./demo";
 
 export interface AuthEnv extends AccessEnv {
   DB: D1Database;
@@ -493,6 +493,7 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
   // inside the demo crew (demo.ts) and can't delete the account. Switching persona replaces the current session.
   if (path === "/auth/demo" && req.method === "GET") {
     if (env.DEMO_LOGIN !== "true") return Response.json({ error: "Demo sign-in is off" }, { status: 404 });
+    await ensureCurrentDemo(env);
     const redirect = safeRedirect(env, url.searchParams.get("redirect"), url);
     const persona: DemoPersona = url.searchParams.get("as") === "surgeon" ? "surgeon" : "astronaut";
     const user = await demoUser(env, persona);
