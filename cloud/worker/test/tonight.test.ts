@@ -7,6 +7,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
 import { sha256hex } from "../src/auth";
 import { DELETE_USER_SQL } from "../src/deleteUser";
+// 0008 and 0011_seed_surgeon_demo are data-only (demo rows, applied on live); the tests seed their own data.
+const DATA_ONLY = new Set(["0008_remove_demo_data.sql", "0011_seed_surgeon_demo.sql"]);
 
 vi.mock("../src/live", () => ({ CrewFeed: class {} }));
 
@@ -15,7 +17,7 @@ function fakeD1() {
   const db = new DatabaseSync(":memory:");
   db.exec("PRAGMA foreign_keys=ON");
   const dir = join(__dirname, "..", "migrations");
-  for (const f of readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) db.exec(readFileSync(join(dir, f), "utf8"));
+  for (const f of readdirSync(dir).filter((f) => f.endsWith(".sql") && !DATA_ONLY.has(f)).sort()) db.exec(readFileSync(join(dir, f), "utf8"));
   const stmt = (sql: string, args: unknown[] = []) => ({
     execute: () => {
       if (/\bRETURNING\b/i.test(sql)) return { success: true, results: db.prepare(sql).all(...(args as any[])), meta: {} };
@@ -115,11 +117,12 @@ beforeEach(() => {
   } as unknown as Env;
 });
 
-async function call(method: string, path: string, opts: { cookie?: string; body?: unknown; headers?: Record<string, string> } = {}) {
+async function call(method: string, path: string, opts: { cookie?: string; body?: unknown; rawBody?: string; headers?: Record<string, string> } = {}) {
   const headers: Record<string, string> = { ...ORIGIN, ...(opts.headers ?? {}) };
   if (opts.cookie) headers.Cookie = `__Host-evade_session=${opts.cookie}`;
   if (opts.body !== undefined) headers["Content-Type"] = "application/json";
-  const req = new Request(API + path, { method, headers, body: opts.body === undefined ? undefined : JSON.stringify(opts.body), redirect: "manual" });
+  const body = opts.rawBody ?? (opts.body === undefined ? undefined : JSON.stringify(opts.body));
+  const req = new Request(API + path, { method, headers, body, redirect: "manual" });
   return worker.fetch(req, env, { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext);
 }
 
@@ -136,6 +139,15 @@ async function astronaut(name = "Lee") {
 }
 
 // ---------- demo login ----------
+const DEMO_VEGA = "00000000-0000-4000-8000-00000000d001";
+const DEMO_ORTIZ = "00000000-0000-4000-8000-00000000d002";
+
+/** Signs in through "Try the demo" (optionally replacing a session) and returns the new session token. */
+async function demoLogin(query = "", previous?: string) {
+  const res = await call("GET", `/auth/demo${query}`, previous ? { cookie: previous } : {});
+  return /__Host-evade_session=([^;]+)/.exec(res.headers.get("Set-Cookie")!)![1];
+}
+
 describe("GET /auth/demo", () => {
   it("is off unless DEMO_LOGIN=true", async () => {
     expect((await call("GET", "/auth/demo")).status).toBe(404);
@@ -157,6 +169,18 @@ describe("GET /auth/demo", () => {
     expect(me.role).toBe("astronaut");
   });
 
+  it("refuses a cross-site demo sign-in and keeps the visitor's own session", async () => {
+    env = { ...env, DEMO_LOGIN: "true" } as Env;
+    const real = await astronaut("Real");
+    const crossSite = await call("GET", "/auth/demo", { cookie: real.token, headers: { "Sec-Fetch-Site": "cross-site" } });
+    expect(crossSite.status).toBe(403);
+    expect(crossSite.headers.get("Set-Cookie")).toBeNull();
+    expect((await call("GET", "/auth/me", { cookie: real.token })).status).toBe(200);
+    // A link on evade.health (same-site) or a typed address still opens the demo.
+    expect((await call("GET", "/auth/demo", { headers: { "Sec-Fetch-Site": "same-site" } })).status).toBe(302);
+    expect((await call("GET", "/auth/demo", { headers: { "Sec-Fetch-Site": "none" } })).status).toBe(302);
+  });
+
   it("demo user cannot read staff data or another astronaut", async () => {
     env = { ...env, DEMO_LOGIN: "true" } as Env;
     const token = /__Host-evade_session=([^;]+)/.exec((await call("GET", "/auth/demo")).headers.get("Set-Cookie")!)![1];
@@ -164,22 +188,95 @@ describe("GET /auth/demo", () => {
     expect((await call("GET", "/users/00000000-0000-4000-8000-00000000d002/tasks", { cookie: token })).status).toBe(403);
   });
 
-  it("advertises the demo when available and keeps the shared account read-only", async () => {
+  it("advertises the demo and lets it write, but not reach crew-wide feeds", async () => {
     env = { ...env, DEMO_LOGIN: "true" } as Env;
     expect((await (await call("GET", "/auth/providers")).json<any>()).providers).toContain("demo");
-    const login = await call("GET", "/auth/demo");
-    const token = /__Host-evade_session=([^;]+)/.exec(login.headers.get("Set-Cookie")!)![1];
-    const cookie = { cookie: token };
-    const userId = "00000000-0000-4000-8000-00000000d001";
-    const today = await call("GET", `/users/${userId}/today`, cookie);
+    const cookie = { cookie: await demoLogin() };
+    const today = await call("GET", `/users/${DEMO_VEGA}/today`, cookie);
     expect(today.status).toBe(200);
-    expect((await today.json<any>()).tasks).toHaveLength(4);
-    expect(count("tasks", userId)).toBe(4);
-    expect((await call("POST", "/journal/messages", { ...cookie, body: {} })).status).toBe(403);
+    expect((await call("POST", "/hydration", { ...cookie, body: { amount_ml: 250 } })).status).toBe(201);
+    expect(count("hydration", DEMO_VEGA)).toBeGreaterThan(0);
     expect((await call("GET", "/leaderboard", cookie)).status).toBe(403);
     expect((await call("GET", "/live", cookie)).status).toBe(403);
     env.DEMO_LOGIN = "false";
     expect((await call("GET", "/auth/me", cookie)).status).toBe(401);
+  });
+
+  it("switches to the demo flight surgeon and replaces the astronaut session", async () => {
+    env = { ...env, DEMO_LOGIN: "true" } as Env;
+    const astronautToken = await demoLogin();
+    const surgeonToken = await demoLogin("?as=surgeon", astronautToken);
+    const me = await (await call("GET", "/auth/me", { cookie: surgeonToken })).json<any>();
+    expect(me.user.user_id).toBe(DEMO_ORTIZ);
+    expect(me.role).toBe("flight_surgeon");
+    expect(me.demo).toBe(true);
+    expect((await call("GET", "/auth/me", { cookie: astronautToken })).status).toBe(401);
+  });
+
+  it("keeps the demo flight surgeon inside the demo crew", async () => {
+    env = { ...env, DEMO_LOGIN: "true" } as Env;
+    const real = await astronaut("Real");
+    const cookie = { cookie: await demoLogin("?as=surgeon") };
+    const crew = await (await call("GET", "/admin/astronauts", cookie)).json<any[]>();
+    expect(crew.map((u) => u.user_id)).toContain(DEMO_VEGA);
+    expect(crew.map((u) => u.user_id)).not.toContain(real.uid);
+    expect((await call("GET", `/admin/astronauts/${real.uid}`, cookie)).status).toBe(403);
+    expect((await call("POST", "/chat/threads", { ...cookie, body: { astronaut_id: real.uid, body: "hi" } })).status).toBe(403);
+  });
+
+  it("refuses a real user id in the query string of a demo flight surgeon request", async () => {
+    env = { ...env, DEMO_LOGIN: "true", XAI_API_KEY: "test-key",
+      MEDIA: { put: async () => {}, delete: async () => {} } } as unknown as Env;
+    const real = await astronaut("Real");
+    const cookie = { cookie: await demoLogin("?as=surgeon") };
+    const upload = (path: string) => call("POST", path, { ...cookie, headers: { "Content-Type": "image/jpeg" }, rawBody: "jpeg" });
+    const mediaBefore = count("media", real.uid);
+    expect((await upload(`/media?user_id=${real.uid}&kind=photo`)).status).toBe(403);
+    expect((await upload(`/journal/voice?user_id=${real.uid}`)).status).toBe(403);
+    expect((await call("GET", `/admin/therapist-feed?user_id=${real.uid}`, cookie)).status).toBe(403);
+    expect(count("media", real.uid)).toBe(mediaBefore);
+    expect(count("journal_entries", real.uid)).toBe(0);
+    // The demo crew itself stays reachable.
+    expect((await upload(`/media?user_id=${DEMO_VEGA}&kind=photo`)).status).toBe(201);
+  });
+
+  it("keeps real astronauts and the demo astronaut on their own crews' staff", async () => {
+    env = { ...env, DEMO_LOGIN: "true" } as Env;
+    const surgeonId = crypto.randomUUID();
+    db.raw.prepare("INSERT INTO users (user_id, display_name, role) VALUES (?, 'Real Surgeon', 'flight_surgeon')").run(surgeonId);
+    db.raw.prepare("INSERT INTO auth_identities (provider, subject, user_id, email) VALUES ('cloudflare_access', 'sub-real-surgeon', ?, 'doc@e.com')").run(surgeonId);
+    const real = await astronaut("Real");
+    const demoCookie = { cookie: await demoLogin() };
+    const demoContacts = (await (await call("GET", "/messages/contacts", demoCookie)).json<any[]>()).map((c) => c.user_id);
+    expect(demoContacts).toContain(DEMO_ORTIZ);
+    expect(demoContacts).not.toContain(surgeonId);
+    const realContacts = (await (await call("GET", "/messages/contacts", { cookie: real.token })).json<any[]>()).map((c) => c.user_id);
+    expect(realContacts).toContain(surgeonId);
+    expect(realContacts).not.toContain(DEMO_ORTIZ);
+    expect((await call("POST", `/messages/with/${surgeonId}`, { ...demoCookie, body: { body: "hello" } })).status).toBe(403);
+  });
+
+  it("resets the demo crew to its seed without touching real accounts", async () => {
+    env = { ...env, DEMO_LOGIN: "true" } as Env;
+    const real = await astronaut("Real");
+    const cookie = { cookie: await demoLogin() };
+    expect((await call("POST", "/demo/reset", { cookie: real.token })).status).toBe(403);
+    expect((await call("POST", "/demo/reset", cookie)).status).toBe(200);
+    const seededObservations = count("observations", DEMO_VEGA);
+    const unread = row("SELECT COUNT(*) n FROM user_notifications WHERE user_id=? AND read_at IS NULL", DEMO_VEGA).n;
+    expect(seededObservations).toBeGreaterThan(100);
+    expect(unread).toBeGreaterThan(0);
+    expect((await call("POST", "/me/notifications/read", { ...cookie, body: {} })).status).toBe(204);
+    expect(row("SELECT COUNT(*) n FROM user_notifications WHERE user_id=? AND read_at IS NULL", DEMO_VEGA).n).toBe(0);
+    const water = count("hydration", DEMO_VEGA);
+    expect((await call("POST", "/hydration", { ...cookie, body: { amount_ml: 250 } })).status).toBe(201);
+    expect((await call("POST", "/demo/reset", cookie)).status).toBe(200);
+    expect(count("hydration", DEMO_VEGA)).toBe(water);
+    expect(count("observations", DEMO_VEGA)).toBe(seededObservations);
+    expect(row("SELECT COUNT(*) n FROM user_notifications WHERE user_id=? AND read_at IS NULL", DEMO_VEGA).n).toBe(unread);
+    expect((await call("GET", "/auth/me", cookie)).status).toBe(200);
+    expect(count("meals", real.uid)).toBe(1);
+    expect(row("SELECT COUNT(*) n FROM auth_identities WHERE provider='demo'").n).toBe(2);
   });
 });
 

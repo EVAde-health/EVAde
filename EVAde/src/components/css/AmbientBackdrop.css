@@ -1,0 +1,98 @@
+.ambient {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--color-background-body);
+}
+
+.ambient__orb {
+  position: absolute;
+  inline-size: 46vmax;
+  block-size: 46vmax;
+  border-radius: var(--radius-full);
+  opacity: 0.5;
+  will-change: transform;
+  animation: orb-drift 26s ease-in-out infinite alternate;
+}
+
+.ambient__orb--violet {
+  inset: -14vmax auto auto 8vw;
+  background: radial-gradient(circle, color-mix(in oklab, var(--color-accent) 55%, transparent), transparent 68%);
+}
+
+.ambient__orb--cyan {
+  inset: auto -12vmax -16vmax auto;
+  background: radial-gradient(circle, color-mix(in oklab, var(--color-data-categorical-cyan) 45%, transparent), transparent 68%);
+  animation-duration: 32s;
+  animation-delay: -8s;
+}
+
+.ambient__orb--pink {
+  inset: 30vh auto auto 45vw;
+  inline-size: 34vmax;
+  block-size: 34vmax;
+  background: radial-gradient(circle, color-mix(in oklab, var(--color-data-categorical-pink) 35%, transparent), transparent 68%);
+  animation-duration: 38s;
+  animation-delay: -16s;
+}
+
+.ambient__orb--blue {
+  inset: auto auto -20vmax -10vmax;
+  background: radial-gradient(circle, color-mix(in oklab, var(--color-data-categorical-blue) 40%, transparent), transparent 68%);
+  animation-duration: 30s;
+  animation-delay: -4s;
+}
+
+.ambient__stars {
+  position: absolute;
+  inset: -50% 0 0;
+  opacity: 0.55;
+  background-image:
+    radial-gradient(1px 1px at 12% 22%, var(--color-text-primary), transparent),
+    radial-gradient(1px 1px at 68% 8%, var(--color-text-primary), transparent),
+    radial-gradient(1.5px 1.5px at 38% 62%, var(--color-text-primary), transparent),
+    radial-gradient(1px 1px at 86% 44%, var(--color-text-primary), transparent),
+    radial-gradient(1px 1px at 22% 84%, var(--color-text-primary), transparent),
+    radial-gradient(1.5px 1.5px at 54% 34%, var(--color-text-primary), transparent);
+  background-size: 22rem 22rem;
+  animation: stars-rise 90s linear infinite;
+}
+
+.ambient__grid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.35;
+  background-image:
+    linear-gradient(color-mix(in oklab, var(--color-text-primary) 5%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in oklab, var(--color-text-primary) 5%, transparent) 1px, transparent 1px);
+  background-size: var(--spacing-12, 3rem) var(--spacing-12, 3rem);
+  mask-image: radial-gradient(ellipse at 50% 0%, black, transparent 70%);
+}
+
+:root[data-theme='light'] .ambient__orb {
+  opacity: 0.32;
+}
+
+:root[data-theme='light'] .ambient__stars {
+  opacity: 0.18;
+}
+
+@keyframes orb-drift {
+  33% {
+    transform: translate(6vw, 8vh) scale(1.1);
+  }
+  66% {
+    transform: translate(-4vw, 12vh) scale(0.92);
+  }
+  to {
+    transform: translate(8vw, -6vh) scale(1.05);
+  }
+}
+
+@keyframes stars-rise {
+  to {
+    transform: translateY(50%);
+  }
+}

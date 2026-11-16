@@ -1,0 +1,13 @@
+# Gitleaks configuration: the default rules plus an allowlist for identifiers that are public by design
+# (see SECURITY.md, "Public by design"). Keep this list short and specific; never allowlist a real secret.
+title = "EVAde"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Cloudflare Access application AUD tags in the Wrangler configs (public identifiers, not credentials)"
+regexTarget = "line"
+regexes = [
+  '''"ACCESS(?:_STAFF)?_AUD"\s*:\s*"[0-9a-f]{64}"''',
+]

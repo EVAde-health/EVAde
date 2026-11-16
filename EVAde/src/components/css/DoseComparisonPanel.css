@@ -1,0 +1,5 @@
+.dose-panel__key {
+  inline-size: var(--spacing-4);
+  block-size: 2px;
+  border-radius: var(--radius-full);
+}

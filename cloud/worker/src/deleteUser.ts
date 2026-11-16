@@ -42,7 +42,8 @@ const DELETE_ACCOUNT = "DELETE FROM users WHERE user_id = ?1";
 
 export const DELETE_USER_SQL = [...REQUIRED_SQL, ...HISTORICAL_TABLES.map(historicalDelete), DELETE_ACCOUNT];
 
-export async function deleteUserStatements(db: D1Database, userId: string) {
+/** The delete statements (?1 = user id) for the tables this database actually has. */
+export async function deleteUserSql(db: D1Database) {
   // Some deployed databases already ran the historical frontend migration.
   // Only names from our static allowlist can appear in a delete statement.
   const placeholders = HISTORICAL_TABLES.map(() => "?").join(",");
@@ -51,5 +52,9 @@ export async function deleteUserStatements(db: D1Database, userId: string) {
   ).bind(...HISTORICAL_TABLES).all<{ name: string }>();
   const existing = new Set(results.map(({ name }) => name));
   const historical = HISTORICAL_TABLES.filter((table) => existing.has(table)).map(historicalDelete);
-  return [...REQUIRED_SQL, ...historical, DELETE_ACCOUNT].map((statement) => db.prepare(statement).bind(userId));
+  return [...REQUIRED_SQL, ...historical, DELETE_ACCOUNT];
+}
+
+export async function deleteUserStatements(db: D1Database, userId: string) {
+  return (await deleteUserSql(db)).map((statement) => db.prepare(statement).bind(userId));
 }

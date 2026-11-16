@@ -4,9 +4,12 @@
 // filled in (or rejected) from the session, and cookie writes must come from an allowed origin.
 // Points are always read from D1 (task_templates, tutorials), never from the request.
 
+import { triageUrgent, type AiEnv } from "./ai";
 import type { Principal } from "./auth";
+import { companionReply, SUPPORT_LINE, type ChatTurn } from "./evaCompanion";
+import { ASKS_FOR_SURGEON, deliverSurgeonRequest, describesEmergency } from "./ops";
 
-export interface WebAppEnv {
+export interface WebAppEnv extends AiEnv {
   DB: D1Database;
   MEDIA?: R2Bucket;
   USDA_API_KEY?: string; // optional server-side FoodData Central key; Open Food Facts + the pantry work without it
@@ -21,9 +24,8 @@ export interface WebAppDeps<E extends WebAppEnv> {
   fail: (status: number, message: string) => Error;
   requireUser: (env: E, userId: string | undefined) => Promise<any>;
   isStaff: (who: Principal) => boolean;
-  journal: (env: E, ctx: ExecutionContext, id: number, userId: string, content: string) => Promise<{
-    summary: string | null; mood_label: string | null; needs_human_review: boolean; model: string | null;
-  }>;
+  /** Journal analysis + health-data parser for one entry. parseText adds conversation context for the parser only. */
+  journal: (env: E, ctx: ExecutionContext, id: number, userId: string, content: string, opts?: { parseText?: string }) => Promise<unknown>;
 }
 
 const DAY_MS = 864e5;
@@ -192,12 +194,20 @@ export async function awardDaily(env: WebAppEnv, userId: string, action: keyof t
   return points;
 }
 
-/** Supportive reply shown in the journal chat. Concern scores are never shown to the astronaut. */
-export function journalReply(a: { summary: string | null; mood_label: string | null; needs_human_review: boolean } | null) {
-  const parts = [a?.summary ? a.summary : "Saved to your journal."];
-  if (a?.mood_label) parts.push(`Mood: ${a.mood_label}`);
-  if (a?.needs_human_review) parts.push("You don't have to carry this alone. Your crew support team is available to talk with you today.");
-  return parts.join("\n\n");
+/** The reply after a saved voice session: an acknowledgement, never a summary or score. */
+export function voiceSavedReply(needsSupport: boolean) {
+  return needsSupport ? `Your voice check-in is saved to your journal.\n\n${SUPPORT_LINE}` : "Your voice check-in is saved to your journal.";
+}
+
+/**
+ * What the parser reads for one chat message: the companion's previous message (so a short answer such as "about 7"
+ * keeps its question) plus the new message. Only the new message counts as the astronaut's words, so values from
+ * earlier messages are never parsed twice.
+ */
+export function parseTextFor(history: ChatTurn[], content: string) {
+  let prev: ChatTurn | undefined;
+  for (let i = history.length - 2; i >= 0; i--) if (history[i].sender === "assistant") { prev = history[i]; break; } else break;
+  return prev ? `EVAde: ${prev.content.replace(/\s*\n\s*/g, " ").slice(0, 1000)}\nMe: ${content}` : content;
 }
 
 export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
@@ -243,16 +253,10 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
   });
 
   // Today's mission list: materialized from task_templates for the client's local day, plus the streak.
-  route("GET", "/users/:id/today", async (_r, env, p, url, _c, who) => {
+  route("GET", "/users/:id/today", async (_r, env, p, url) => {
     const user = await requireUser(env, p.id);
     let day: string;
     try { day = trackingDay(url.searchParams.get("day")); } catch (e) { throw fail(422, (e as Error).message); }
-    if (who.demo) {
-      const { results: tasks } = await env.DB.prepare(
-        "SELECT t.*, CASE WHEN category='advanced' THEN 'protocol' ELSE 'basic' END AS kind FROM tasks t WHERE user_id=? AND id BETWEEN 900001 AND 900004 ORDER BY id"
-      ).bind(p.id).all();
-      return json({ day, week: weekStart(day), tasks, streak_days: user.streak_days, points: user.points });
-    }
     const week = await materializeTasks(env, p.id, day);
     const [tasks, done] = await env.DB.batch<any>([
       env.DB.prepare(
@@ -314,7 +318,9 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
     return json(results.reverse());
   });
 
-  // Astronaut message -> journal entry -> AI analysis (safety keywords always alert a human) -> stored reply.
+  // Astronaut message -> journal entry -> the EVA companion's conversational reply (evaCompanion.ts). The journal
+  // analysis (summary, sentiment, concern, staff alerts) and the health-data parser run after the response, on this
+  // message only, with ids derived from the message id, so a re-post or re-run never writes anything twice.
   route("POST", "/journal/messages", async (req, env, _p, _u, ctx, who) => {
     const b = await body(req);
     const userId = userOf(who, b?.user_id);
@@ -343,25 +349,45 @@ export function registerWebAppRoutes<E extends WebAppEnv>(d: WebAppDeps<E>) {
         AND title LIKE 'Journal%' AND (due_at IS NULL OR due_at >= ?) ORDER BY due_at LIMIT 1) RETURNING points`)
       .bind(ts, userId, since).first<{ points: number | null }>();
     if (journalTask?.points) await env.DB.prepare("UPDATE users SET points=points+? WHERE user_id=?").bind(journalTask.points, userId).run();
-    let analysis = null;
+    // The conversation so far: the last day of the main thread (typed and voice turns), oldest first, ending with this message.
+    const { results: recent } = await env.DB.prepare(
+      "SELECT sender, content FROM journal_messages WHERE user_id=? AND thread_id IS NULL AND sender IN ('user','assistant') AND ts>=? ORDER BY ts DESC, rowid DESC LIMIT 30"
+    ).bind(userId, since).all<ChatTurn>();
+    const history = recent.reverse();
     if (entry?.id) {
-      try { analysis = await d.journal(env, ctx, entry.id, userId, content); } catch (e) { console.error("journal analysis", e instanceof Error ? e.name : "Error"); }
+      ctx.waitUntil(d.journal(env, ctx, entry.id, userId, content, { parseText: parseTextFor(history, content) })
+        .then(() => {}, (e) => console.error("journal analysis", e instanceof Error ? e.name : "Error")));
     }
-    const reply = { id: crypto.randomUUID(), sender: "assistant", content: journalReply(analysis), ts: new Date(Date.parse(ts) + 1).toISOString() };
+    // Asking for the flight surgeon, or describing an emergency, forwards the message to the surgeon console now.
+    const forward = who.kind === "user" && who.role === "astronaut" && (ASKS_FOR_SURGEON.test(content) || describesEmergency(content));
+    // Forward first, so the companion is told what actually happened and never claims a contact that didn't occur.
+    const forwarded = forward
+      ? await deliverSurgeonRequest(env.DB, userId, {
+        clientId: `journal:${id}`, message: content.slice(0, 1000), priority: describesEmergency(content) ? "urgent" : "routine", source: "journal",
+      }, (message) => triageUrgent(env, message))
+      : null;
+    const note = forwarded
+      ? `The app has just forwarded this message to the flight surgeon${forwarded.urgent ? " as urgent" : ""}. A confirmation line is added after your reply; don't repeat it.`
+      : "This message was NOT forwarded to the flight surgeon. If they want the surgeon, tell them to ask you to contact the flight surgeon, or to use Messages.";
+    const answer = await companionReply(env, history, note);
+    const confirmation = forwarded
+      ? forwarded.urgent ? "I've alerted the flight surgeon as urgent with what you wrote." : "I've sent what you wrote to the flight surgeon's inbox."
+      : null;
+    const replyText = confirmation ? `${answer.content}\n\n${confirmation}` : answer.content;
+    const reply = { id: crypto.randomUUID(), sender: "assistant", content: replyText, ts: new Date(Date.parse(ts) + 1).toISOString() };
     await env.DB.prepare("INSERT INTO journal_messages (id,user_id,sender,content,ts,entry_id,model) VALUES (?,?,?,?,?,?,?)")
-      .bind(reply.id, userId, reply.sender, reply.content, reply.ts, entry?.id ?? null, analysis?.model ?? "rules").run();
+      .bind(reply.id, userId, reply.sender, reply.content, reply.ts, entry?.id ?? null, answer.model ?? "rules").run();
     return json({ message: { id, sender: "user", content, ts }, reply }, 201);
   });
 
   // Food search: the offline pantry and cached foods from D1, then USDA (server key) and Open Food Facts.
-  route("GET", "/foods/search", async (_r, env, _p, url, _c, who) => {
+  route("GET", "/foods/search", async (_r, env, _p, url) => {
     const q = (url.searchParams.get("q") ?? "").trim().replace(/\s+/g, " ");
     if (q.length < 2 || q.length > 80) throw fail(422, "q must be 2-80 characters");
     const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
     const { results: local } = await env.DB.prepare(
       "SELECT * FROM foods WHERE label LIKE ? ESCAPE '\\' ORDER BY source='space_pantry' DESC, length(label) LIMIT 8"
     ).bind(like).all<FoodRow>();
-    if (who.demo) return json(local.map(foodResponse));
     const remote = (await Promise.allSettled([env.USDA_API_KEY ? usdaFoods(env.USDA_API_KEY, q) : Promise.resolve([]), openFoodFacts(q)]))
       .flatMap((r) => (r.status === "fulfilled" ? r.value : []));
     if (remote.length) {

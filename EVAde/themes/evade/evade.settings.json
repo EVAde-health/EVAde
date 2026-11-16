@@ -1,0 +1,79 @@
+{
+  "name": "evade",
+  "like": "neutral",
+  "mode": "both",
+  "settings": [
+    {
+      "thing": "accent",
+      "value": "#7c5cff",
+      "source": "dial"
+    },
+    {
+      "thing": "neutral",
+      "value": "#5b6785",
+      "source": "dial"
+    },
+    {
+      "thing": "success",
+      "value": "#22c55e",
+      "source": "dial"
+    },
+    {
+      "thing": "warning",
+      "value": "#f59e0b",
+      "source": "dial"
+    },
+    {
+      "thing": "danger",
+      "value": "#f43f5e",
+      "source": "dial"
+    },
+    {
+      "thing": "info",
+      "value": "#38bdf8",
+      "source": "dial"
+    },
+    {
+      "thing": "corners",
+      "value": "large",
+      "source": "dial"
+    },
+    {
+      "thing": "vibrancy",
+      "value": "65",
+      "source": "dial"
+    },
+    {
+      "thing": "font",
+      "value": "space-grotesk",
+      "source": "dial",
+      "on": "heading"
+    },
+    {
+      "thing": "font",
+      "value": "inter",
+      "source": "dial",
+      "on": "body"
+    },
+    {
+      "thing": "headings",
+      "value": "tight",
+      "source": "dial",
+      "axis": "tracking"
+    },
+    {
+      "thing": "--color-background-body",
+      "value": "#060912",
+      "source": "token",
+      "mode": "dark"
+    },
+    {
+      "thing": "--color-background-body",
+      "value": "#f4f6fb",
+      "source": "token",
+      "mode": "light"
+    }
+  ],
+  "lifted": [],
+  "palette": "b70a3163f7d626565f21130d4361e3b8893a38f1c69d39fe0f2148e630c556cc"
+}

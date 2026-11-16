@@ -1,0 +1,194 @@
+.landing {
+  min-block-size: 100dvh;
+  overflow-x: clip;
+}
+
+.landing__hero {
+  --progress: 0;
+  position: relative;
+  min-block-size: 100dvh;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.landing__hero::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0;
+  block-size: 30%;
+  background: linear-gradient(transparent, var(--color-background-body));
+  pointer-events: none;
+  z-index: -1;
+}
+
+.landing__grain {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.06;
+  background-image: radial-gradient(var(--color-text-primary) 0.5px, transparent 0.5px);
+  background-size: var(--spacing-1) var(--spacing-1);
+  pointer-events: none;
+}
+
+.landing__hero > .nebula-canvas {
+  z-index: -2;
+}
+
+.landing__nav {
+  position: relative;
+  z-index: 2;
+  animation: nav-drop 800ms cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+
+/* Parallax: copy drifts up faster than the orbital, both fade into depth. */
+.landing__parallax {
+  opacity: calc(1 - var(--progress) * 1.6);
+}
+
+.landing__depth-copy {
+  translate: 0 calc(var(--progress) * -30vh);
+  filter: blur(calc(var(--progress) * var(--spacing-2)));
+}
+
+.landing__depth-visual {
+  translate: 0 calc(var(--progress) * -8vh);
+  scale: calc(1 + var(--progress) * 0.35);
+  rotate: calc(var(--progress) * -6deg);
+}
+
+.landing__hero > .nebula-canvas {
+  scale: calc(1 + var(--progress) * 0.25);
+}
+
+.landing__hero-grid {
+  flex: 1;
+  align-items: center;
+  inline-size: 100%;
+  max-inline-size: 90rem;
+  margin-inline: auto;
+  padding: var(--spacing-6);
+}
+
+.landing__copy {
+  max-inline-size: 40rem;
+}
+
+.landing__title {
+  font-size: clamp(2.6rem, 6vw, 5.2rem);
+  line-height: 1.02;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+
+.landing__title-accent {
+  display: inline-block;
+  font-variant-ligatures: none;
+}
+
+.landing__lede {
+  max-inline-size: 34rem;
+  text-wrap: pretty;
+}
+
+.landing__cta {
+  box-shadow: 0 0 var(--spacing-8) color-mix(in oklab, var(--color-accent) 55%, transparent);
+  animation: cta-glow 3.5s ease-in-out infinite;
+}
+
+@keyframes cta-glow {
+  50% {
+    box-shadow: 0 0 var(--spacing-12) color-mix(in oklab, var(--color-accent) 80%, transparent);
+  }
+}
+
+.landing__visual {
+  min-inline-size: 0;
+}
+
+.landing__scroll-cue {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: calc(var(--spacing-12, 3rem) + var(--spacing-12, 3rem));
+  z-index: 1;
+  pointer-events: none;
+  opacity: calc(0.8 - var(--progress) * 4);
+  animation: cue-bob 2.4s ease-in-out infinite;
+}
+
+/* Infinite signals ticker with frosted, blurred edges. */
+.landing__marquee {
+  position: relative;
+  overflow: hidden;
+  padding-block: var(--spacing-5);
+  -webkit-mask-image: linear-gradient(90deg, transparent, black 22%, black 78%, transparent);
+  mask-image: linear-gradient(90deg, transparent, black 22%, black 78%, transparent);
+}
+
+.landing__marquee-track {
+  inline-size: max-content;
+  padding-inline-end: var(--spacing-3);
+  animation: marquee 45s linear infinite;
+  will-change: transform;
+}
+
+.landing__marquee-edge {
+  position: absolute;
+  inset-block: 0;
+  inline-size: 28%;
+  z-index: 1;
+  pointer-events: none;
+  backdrop-filter: blur(var(--spacing-2));
+  -webkit-backdrop-filter: blur(var(--spacing-2));
+}
+
+.landing__marquee-edge--start {
+  inset-inline-start: 0;
+  -webkit-mask-image: linear-gradient(90deg, black, transparent);
+  mask-image: linear-gradient(90deg, black, transparent);
+}
+
+.landing__marquee-edge--end {
+  inset-inline-end: 0;
+  -webkit-mask-image: linear-gradient(270deg, black, transparent);
+  mask-image: linear-gradient(270deg, black, transparent);
+}
+
+.landing__section-head {
+  max-inline-size: 44rem;
+  text-align: center;
+}
+
+.landing__finale {
+  min-block-size: 90vh;
+  justify-content: center;
+  text-align: center;
+}
+
+@keyframes marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes nav-drop {
+  from {
+    opacity: 0;
+    translate: 0 -100%;
+  }
+}
+
+@keyframes cue-bob {
+  50% {
+    translate: 0 var(--spacing-2);
+  }
+}
+
+:root[data-motion='reduced'] .landing__depth-copy,
+:root[data-motion='reduced'] .landing__depth-visual,
+:root[data-motion='reduced'] .landing__hero > .nebula-canvas {
+  translate: none;
+  scale: none;
+  rotate: none;
+  filter: none;
+}

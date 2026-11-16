@@ -1,0 +1,25 @@
+.immune-bullet {
+  position: relative;
+  inline-size: 100%;
+  max-inline-size: 14rem;
+  block-size: var(--spacing-2);
+  margin-block-start: var(--spacing-1);
+  border-radius: var(--radius-full);
+  background: var(--color-background-muted);
+}
+
+.immune-bullet__band {
+  position: absolute;
+  inset-block: 0;
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--color-success) 30%, transparent);
+}
+
+.immune-bullet__value {
+  position: absolute;
+  inset-block: calc(var(--spacing-1) * -1);
+  inline-size: var(--spacing-1);
+  border-radius: var(--radius-full);
+  transform: translateX(-50%);
+  box-shadow: 0 0 0 2px var(--color-background-card);
+}

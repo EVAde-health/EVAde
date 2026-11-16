@@ -1,0 +1,24 @@
+.word-reveal {
+  --progress: 0;
+  max-inline-size: 60rem;
+  font-size: clamp(2rem, 5vw, 4.2rem);
+  line-height: 1.08;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+
+/* Each word brightens once scroll progress passes its threshold. */
+.word-reveal__word {
+  --lit: clamp(0, calc((var(--progress) * 2.2 - 0.35 - var(--w)) * 8), 1);
+  display: inline-block;
+  white-space: pre;
+  opacity: calc(0.12 + var(--lit) * 0.88);
+  filter: blur(calc((1 - var(--lit)) * var(--spacing-1)));
+  translate: 0 calc((1 - var(--lit)) * var(--spacing-3));
+}
+
+:root[data-motion='reduced'] .word-reveal__word {
+  opacity: 1;
+  filter: none;
+  translate: none;
+}

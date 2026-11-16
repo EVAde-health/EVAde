@@ -1,0 +1,394 @@
+.sequence {
+  --progress: 0;
+  position: relative;
+  block-size: 420vh;
+}
+
+.sequence__stage {
+  position: sticky;
+  inset-block-start: 0;
+  block-size: 100dvh;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* ---------- Parallax star layers ---------- */
+
+.sequence__stars {
+  position: absolute;
+  inset: -60% 0 0;
+  z-index: -3;
+  background-image:
+    radial-gradient(1px 1px at 10% 20%, var(--color-text-primary), transparent),
+    radial-gradient(1px 1px at 40% 70%, var(--color-text-primary), transparent),
+    radial-gradient(1.5px 1.5px at 75% 35%, var(--color-text-primary), transparent),
+    radial-gradient(1px 1px at 90% 85%, var(--color-text-primary), transparent),
+    radial-gradient(1px 1px at 60% 10%, var(--color-text-primary), transparent);
+  background-size: 18rem 18rem;
+  will-change: transform;
+}
+
+.sequence__stars--far {
+  opacity: 0.35;
+  transform: translateY(calc(var(--progress) * 20%));
+}
+
+.sequence__stars--near {
+  opacity: 0.6;
+  background-size: 30rem 30rem;
+  transform: translateY(calc(var(--progress) * 45%)) scale(1.1);
+}
+
+/* ---------- Earth arc rising and turning with scroll ---------- */
+
+.sequence__earth {
+  position: absolute;
+  inset-inline-start: 50%;
+  inset-block-start: 100%;
+  z-index: -2;
+  inline-size: 160vmax;
+  aspect-ratio: 1;
+  border-radius: var(--radius-full);
+  translate: -50% calc(-8% - var(--progress) * 11%);
+  box-shadow:
+    0 0 var(--spacing-12) var(--spacing-4) color-mix(in oklab, var(--color-data-categorical-cyan) 55%, transparent),
+    0 0 10rem 4rem color-mix(in oklab, var(--color-accent) 35%, transparent);
+  overflow: hidden;
+  will-change: translate;
+}
+
+.sequence__earth-surface {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    radial-gradient(ellipse 12% 6% at 30% 6%, color-mix(in oklab, var(--color-data-categorical-green, var(--color-success)) 55%, transparent), transparent),
+    radial-gradient(ellipse 16% 5% at 62% 4%, color-mix(in oklab, var(--color-data-categorical-green, var(--color-success)) 45%, transparent), transparent),
+    radial-gradient(ellipse 20% 4% at 48% 9%, color-mix(in oklab, white 35%, transparent), transparent),
+    radial-gradient(circle at 50% 0%, var(--color-data-categorical-blue), color-mix(in oklab, var(--color-data-categorical-blue) 40%, black) 40%, black 70%);
+  rotate: calc(var(--progress) * 40deg);
+  will-change: rotate;
+}
+
+/* ---------- Progress rail ---------- */
+
+.sequence__rail {
+  position: absolute;
+  inset-block: 30%;
+  inset-inline-start: var(--spacing-6);
+  z-index: 2;
+  justify-content: space-between;
+  align-items: center;
+  inline-size: var(--spacing-3);
+}
+
+.sequence__rail::before,
+.sequence__rail-fill {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 50%;
+  inline-size: 2px;
+  translate: -50% 0;
+  background: color-mix(in oklab, var(--color-text-primary) 15%, transparent);
+}
+
+.sequence__rail-fill {
+  background: linear-gradient(180deg, var(--color-data-categorical-cyan), var(--color-accent), var(--color-data-categorical-pink));
+  transform-origin: top;
+  transform: scaleY(var(--progress));
+}
+
+.sequence__rail-dot {
+  position: relative;
+  inline-size: var(--spacing-3);
+  block-size: var(--spacing-3);
+  border-radius: var(--radius-full);
+  background: var(--color-background-body);
+  border: 2px solid color-mix(in oklab, var(--color-text-primary) 25%, transparent);
+  transition: background-color 400ms ease, border-color 400ms ease, box-shadow 400ms ease, scale 400ms cubic-bezier(0.2, 0.9, 0.3, 1.6);
+}
+
+.sequence__rail-dot.is-lit {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  box-shadow: 0 0 var(--spacing-3) var(--color-accent);
+  scale: 1.25;
+}
+
+/* ---------- Chapters ---------- */
+
+.sequence__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--spacing-10);
+  block-size: 100%;
+  inline-size: 100%;
+  max-inline-size: 80rem;
+  margin-inline: auto;
+  padding: var(--spacing-8) var(--spacing-12);
+}
+
+.sequence__copy,
+.sequence__visuals {
+  display: grid;
+  min-inline-size: 0;
+}
+
+.sequence__chapter,
+.sequence__visual {
+  grid-area: 1 / 1;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 700ms ease,
+    translate 900ms cubic-bezier(0.2, 0.9, 0.25, 1),
+    filter 700ms ease,
+    scale 900ms cubic-bezier(0.2, 0.9, 0.25, 1),
+    visibility 0s 700ms;
+}
+
+.sequence__chapter {
+  translate: 0 var(--spacing-10);
+  filter: blur(var(--spacing-2));
+}
+
+.sequence__chapter.is-past {
+  translate: 0 calc(var(--spacing-10) * -1);
+}
+
+.sequence__visual {
+  scale: 0.85;
+  translate: 0 var(--spacing-12);
+  filter: blur(var(--spacing-3));
+}
+
+.sequence__visual.is-past {
+  scale: 1.1;
+  translate: 0 calc(var(--spacing-12) * -1);
+}
+
+.sequence__chapter.is-active,
+.sequence__visual.is-active {
+  opacity: 1;
+  visibility: visible;
+  translate: 0 0;
+  scale: 1;
+  filter: none;
+  transition-delay: 0s;
+}
+
+.sequence__title {
+  text-wrap: balance;
+  letter-spacing: -0.03em;
+}
+
+/* ---------- Chapter mock-ups ---------- */
+
+.sequence__panel {
+  inline-size: 100%;
+  max-inline-size: 26rem;
+  margin-inline: auto;
+  border-radius: var(--radius-container);
+  transform: perspective(60rem) rotateY(-10deg) rotateX(4deg);
+  animation: panel-float 7s ease-in-out infinite;
+}
+
+.sequence__push {
+  margin-inline-start: auto;
+}
+
+.sequence__bars {
+  align-items: flex-end;
+  gap: var(--spacing-1);
+  block-size: 5rem;
+}
+
+.sequence__bar {
+  flex: 1;
+  border-radius: var(--radius-inner) var(--radius-inner) 0 0;
+  background: linear-gradient(180deg, var(--color-data-categorical-purple), color-mix(in oklab, var(--color-data-categorical-purple) 30%, transparent));
+  transform-origin: bottom;
+}
+
+.sequence__visual.is-active .sequence__bar {
+  animation: bar-grow 800ms cubic-bezier(0.2, 0.9, 0.3, 1.3) both;
+}
+
+.sequence__video {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-element);
+  background:
+    radial-gradient(circle at 30% 30%, color-mix(in oklab, var(--color-data-categorical-pink) 45%, transparent), transparent 60%),
+    radial-gradient(circle at 80% 80%, color-mix(in oklab, var(--color-accent) 40%, transparent), transparent 60%),
+    var(--color-background-muted);
+}
+
+.sequence__play {
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--spacing-16, 4rem);
+  block-size: var(--spacing-16, 4rem);
+  border-radius: var(--radius-full);
+  color: var(--color-on-dark);
+  background: color-mix(in oklab, var(--color-accent) 80%, transparent);
+  animation: play-pulse 2s ease-out infinite;
+}
+
+.sequence__step {
+  flex: 1;
+  block-size: var(--spacing-1);
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--color-text-primary) 15%, transparent);
+}
+
+.sequence__visual.is-active .sequence__step {
+  animation: step-fill 600ms ease both;
+}
+
+.sequence__xp {
+  block-size: var(--spacing-2);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  background: color-mix(in oklab, var(--color-text-primary) 12%, transparent);
+}
+
+.sequence__xp-fill {
+  block-size: 100%;
+  inline-size: 72%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--color-data-categorical-cyan), var(--color-accent), var(--color-data-categorical-pink));
+  transform-origin: left;
+}
+
+.sequence__visual.is-active .sequence__xp-fill {
+  animation: xp-fill 1.4s cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+.sequence__visual.is-active .sequence__xp-pop {
+  animation: xp-pop 1.6s 600ms ease-out both;
+}
+
+.sequence__visual.is-active .sequence__task {
+  animation: task-in 500ms cubic-bezier(0.2, 0.9, 0.3, 1.4) both;
+}
+
+.sequence__mood {
+  opacity: 0.4;
+  transition: opacity 300ms ease;
+}
+
+.sequence__mood--picked {
+  opacity: 1;
+}
+
+.sequence__visual.is-active .sequence__mood--picked {
+  animation: mood-picked 900ms 300ms cubic-bezier(0.2, 0.9, 0.3, 1.6) both;
+}
+
+.sequence__bubble {
+  max-inline-size: 85%;
+  padding: var(--spacing-2) var(--spacing-3);
+  border-radius: var(--radius-container);
+  background: color-mix(in oklab, var(--color-text-primary) 8%, transparent);
+}
+
+.sequence__bubble--me {
+  align-self: flex-end;
+  background: color-mix(in oklab, var(--color-accent) 30%, transparent);
+}
+
+.sequence__visual.is-active .sequence__bubble {
+  animation: task-in 500ms 700ms cubic-bezier(0.2, 0.9, 0.3, 1.3) both;
+}
+
+.sequence__visual.is-active .sequence__bubble--me {
+  animation-delay: 200ms;
+}
+
+@keyframes panel-float {
+  50% {
+    translate: 0 calc(var(--spacing-3) * -1);
+  }
+}
+
+@keyframes bar-grow {
+  from {
+    transform: scaleY(0);
+  }
+}
+
+@keyframes play-pulse {
+  from {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-accent) 60%, transparent);
+  }
+  to {
+    box-shadow: 0 0 0 var(--spacing-6) transparent;
+  }
+}
+
+@keyframes step-fill {
+  to {
+    background: var(--color-accent);
+  }
+}
+
+@keyframes xp-fill {
+  from {
+    transform: scaleX(0.35);
+  }
+}
+
+@keyframes xp-pop {
+  from {
+    opacity: 0;
+    translate: 0 var(--spacing-3);
+  }
+  30% {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+@keyframes task-in {
+  from {
+    opacity: 0;
+    translate: calc(var(--spacing-6) * -1) 0;
+  }
+}
+
+@keyframes mood-picked {
+  40% {
+    scale: 1.5;
+    rotate: -10deg;
+  }
+}
+
+@media (max-width: 60rem) {
+  .sequence__grid {
+    grid-template-columns: minmax(0, 1fr);
+    align-content: center;
+    gap: var(--spacing-6);
+    padding-inline: var(--spacing-10) var(--spacing-5);
+  }
+
+  .sequence__panel {
+    max-inline-size: 20rem;
+  }
+}
+
+:root[data-motion='reduced'] .sequence__stars,
+:root[data-motion='reduced'] .sequence__earth,
+:root[data-motion='reduced'] .sequence__earth-surface {
+  transform: none;
+  translate: -50% -14%;
+  rotate: none;
+}
+
+:root[data-motion='reduced'] .sequence__stars {
+  translate: none;
+}

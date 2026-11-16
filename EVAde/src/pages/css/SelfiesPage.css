@@ -1,0 +1,93 @@
+.selfie__stage {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: var(--radius-container);
+  background:
+    radial-gradient(circle at 50% 40%, color-mix(in oklab, var(--color-accent) 20%, transparent), transparent 65%),
+    var(--color-background-muted);
+}
+
+.selfie__stage::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: white;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.selfie__stage--flash::after {
+  animation: flash 450ms ease-out;
+}
+
+@keyframes flash {
+  from {
+    opacity: 0.9;
+  }
+}
+
+.selfie__video {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+}
+
+video.selfie__video {
+  transform: scaleX(-1);
+}
+
+.selfie__preview {
+  animation: rise-in 350ms var(--ease-entrance, ease-out) both;
+}
+
+.selfie__placeholder {
+  position: absolute;
+  inset: 0;
+}
+
+.selfie__guide {
+  position: absolute;
+  inset: 12% 30%;
+  border-radius: 50%;
+  border: 2px dashed color-mix(in oklab, var(--color-on-dark) 70%, transparent);
+  box-shadow: 0 0 0 100vmax color-mix(in oklab, black 25%, transparent);
+  animation: guide-pulse 2.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes guide-pulse {
+  50% {
+    border-color: var(--color-accent);
+  }
+}
+
+.selfie__countdown {
+  position: absolute;
+  inset: 0;
+  color: var(--color-on-dark);
+  text-shadow: 0 0 var(--spacing-6) var(--color-accent);
+  animation: countdown-pop 1s ease-out both;
+}
+
+@keyframes countdown-pop {
+  from {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+  30% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.selfie__thumbnail {
+  inline-size: 100%;
+  block-size: auto;
+  aspect-ratio: 1;
+}

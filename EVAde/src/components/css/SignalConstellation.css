@@ -1,0 +1,177 @@
+.constellation {
+  --px: 0;
+  --py: 0;
+  position: relative;
+  inline-size: min(100%, 40rem);
+  aspect-ratio: 1;
+  margin-inline: auto;
+  perspective: 80rem;
+}
+
+.constellation__tilt {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  transform: rotateX(calc(var(--py) * -16deg)) rotateY(calc(var(--px) * 16deg));
+  transition: transform 700ms cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+
+.constellation__orbit {
+  position: absolute;
+  inset: 0;
+  animation: constellation-spin 80s linear infinite;
+}
+
+.constellation:hover .constellation__orbit,
+.constellation:focus-within .constellation__orbit {
+  animation-play-state: paused;
+}
+
+.constellation__lines {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  overflow: visible;
+}
+
+.constellation__lines line {
+  stroke: color-mix(in oklab, var(--color-text-primary) 12%, transparent);
+  stroke-width: 0.25;
+  stroke-dasharray: 1 1.4;
+  animation: line-flow 3s linear infinite;
+  transition: stroke 300ms ease, stroke-width 300ms ease;
+}
+
+.constellation__lines line.is-active {
+  stroke: var(--color-accent);
+  stroke-width: 0.5;
+}
+
+.constellation__ring {
+  fill: none;
+  stroke: color-mix(in oklab, var(--color-text-primary) 10%, transparent);
+  stroke-width: 0.2;
+}
+
+.constellation__ring--inner {
+  stroke-dasharray: 0.6 1.2;
+  animation: line-flow 12s linear infinite reverse;
+}
+
+/* Nodes sit on the orbit and counter-rotate to stay upright. */
+.constellation__node {
+  --tone: var(--color-data-categorical-blue);
+  position: absolute;
+  inset-inline-start: var(--x);
+  inset-block-start: var(--y);
+  align-items: center;
+  justify-content: center;
+  inline-size: var(--spacing-12, 3rem);
+  block-size: var(--spacing-12, 3rem);
+  margin: calc(var(--spacing-12, 3rem) / -2) 0 0 calc(var(--spacing-12, 3rem) / -2);
+  border: 1px solid color-mix(in oklab, var(--tone) 50%, transparent);
+  border-radius: var(--radius-full);
+  color: var(--color-text-primary);
+  background: color-mix(in oklab, var(--color-background-surface) 55%, transparent);
+  backdrop-filter: blur(var(--spacing-2));
+  -webkit-backdrop-filter: blur(var(--spacing-2));
+  cursor: pointer;
+  animation:
+    constellation-spin 80s linear infinite reverse,
+    node-in 700ms var(--d) cubic-bezier(0.2, 0.9, 0.3, 1.5) both;
+  transition: scale 300ms cubic-bezier(0.2, 0.9, 0.3, 1.6), box-shadow 300ms ease, background-color 300ms ease;
+}
+
+.constellation:hover .constellation__node,
+.constellation:focus-within .constellation__node {
+  animation-play-state: paused;
+}
+
+.constellation__node--orange { --tone: var(--color-data-categorical-orange); }
+.constellation__node--teal { --tone: var(--color-data-categorical-teal); }
+.constellation__node--purple { --tone: var(--color-data-categorical-purple); }
+
+.constellation__node:hover,
+.constellation__node.is-active {
+  scale: 1.25;
+  background: color-mix(in oklab, var(--tone) 35%, var(--color-background-surface));
+  box-shadow: 0 0 var(--spacing-6) color-mix(in oklab, var(--tone) 70%, transparent);
+}
+
+.constellation__node:focus-visible {
+  outline: 2px solid var(--focus-outline-color);
+  outline-offset: 3px;
+}
+
+.constellation__core {
+  position: absolute;
+  inset: 27%;
+  justify-content: center;
+  padding: var(--spacing-5);
+  border-radius: var(--radius-full);
+  text-align: center;
+  transform: translateZ(3rem);
+  box-shadow: var(--shadow-high), 0 0 var(--spacing-12) color-mix(in oklab, var(--color-accent) 30%, transparent);
+  animation: core-swap 500ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+.constellation__name {
+  letter-spacing: -0.02em;
+}
+
+.constellation__why {
+  max-inline-size: 16rem;
+  text-wrap: balance;
+}
+
+.constellation__pip {
+  inline-size: var(--spacing-1);
+  block-size: var(--spacing-1);
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--color-text-primary) 25%, transparent);
+  transition: inline-size 300ms ease, background-color 300ms ease;
+}
+
+.constellation__pip.is-active {
+  inline-size: var(--spacing-4);
+  background: var(--color-accent);
+}
+
+@keyframes constellation-spin {
+  to {
+    rotate: 360deg;
+  }
+}
+
+@keyframes line-flow {
+  to {
+    stroke-dashoffset: -4.8;
+  }
+}
+
+@keyframes node-in {
+  from {
+    opacity: 0;
+    scale: 0;
+  }
+}
+
+@keyframes core-swap {
+  from {
+    opacity: 0.4;
+    filter: blur(var(--spacing-1));
+    scale: 0.94;
+  }
+}
+
+@media (max-width: 40rem) {
+  .constellation__core {
+    inset: 22%;
+    padding: var(--spacing-3);
+  }
+
+  .constellation__why {
+    display: none;
+  }
+}

@@ -1,5 +1,5 @@
 // evade-gateway: Michael's gateway Worker + Durable Object that runs ONE container of the EVAde model API.
-// Source: EVAde-backend-models docs/cloudflare-containers-setup.md (step 3), unchanged except this header.
+// Based on backend-models/docs/cloudflare-containers-setup.md (step 3).
 // No public container endpoint; the API key never leaves Cloudflare; mock results are handled by evade-api.
 import { DurableObject } from "cloudflare:workers";
 
@@ -17,7 +17,7 @@ interface Env {
 
 const PORT = 8000;
 const IDLE_MS = 60 * 60 * 1000;          // sleep after 1 h without requests (max 6 h)
-const INSTANCE = "evade-api";            // ONE fixed name -> one container. Never derive it from the request.
+const INSTANCE = "evade-api-2";          // ONE fixed name -> one container. Never derive it from the request.
 const MAX_BODY = 1_000_000;              // the API's own cap is 1 MB
 const READY_WAIT_MS = 45_000;
 const FORWARD_HEADERS = ["content-type", "accept", "idempotency-key"];

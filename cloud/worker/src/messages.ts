@@ -1,26 +1,32 @@
-import { STAFF_ACCESS_PROVIDER, STAFF_ROLES, type AuthEnv, type Principal } from "./auth";
+import { STAFF_ROLES, type AuthEnv, type Principal } from "./auth";
+import { sameCrewSql } from "./demo";
 import { HttpError } from "./http";
 
 type MessagingEnv = Pick<AuthEnv, "DB" | "AUTH_RATE_LIMITER">;
 type Handler = (req: Request, env: MessagingEnv, params: Record<string, string>, url: URL, ctx: ExecutionContext, who: Principal) => Promise<Response>;
-type Participant = { id: string; staff: boolean };
+type Participant = { id: string; staff: boolean; demo: boolean };
 type Contact = { user_id: string; display_name: string; full_name: string | null; role: string; crew_role: string | null };
 type Conversation = { id: number; astronaut_id: string; surgeon_id: string; created_at: string; updated_at: string };
 type Message = { id: number; conversation_id: number; sender_id: string; body: string; created_at: string; read_at: string | null };
 
 const CONTACT_FIELDS = "u.user_id, u.display_name, u.full_name, u.role, u.crew_role";
+// One sign-in for everyone: a staff contact has a staff D1 role and has signed in at least once.
 const STAFF_FILTER = `u.role IN (${[...STAFF_ROLES].map(() => "?").join(",")})
-  AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id AND a.provider=?)`;
+  AND EXISTS (SELECT 1 FROM auth_identities a WHERE a.user_id=u.user_id)`;
 
 function participant(who: Principal): Participant {
-  if (who.kind !== "user" || !who.user_id || who.demo) throw new HttpError(403, "Use your own account to see conversations");
+  if (who.kind !== "user" || !who.user_id) throw new HttpError(403, "Use your own account to see conversations");
   const staff = STAFF_ROLES.has(who.role ?? "");
   if (!staff && who.role !== "astronaut") throw new HttpError(403, "Use your own account to see conversations");
-  return { id: who.user_id, staff };
+  return { id: who.user_id, staff, demo: who.demo === true };
 }
 
+// Who a participant may message. Astronauts and the shared demo only reach their own crew (demo or real).
 function contactFilter(self: Participant) {
-  return self.staff ? { sql: "u.role='astronaut'", params: [] } : { sql: STAFF_FILTER, params: [...STAFF_ROLES, STAFF_ACCESS_PROVIDER] };
+  const base = self.staff ? { sql: "u.role='astronaut'", params: [] as string[] } : { sql: STAFF_FILTER, params: [...STAFF_ROLES] };
+  if (self.staff && !self.demo) return base;
+  const crew = sameCrewSql("u.user_id", self.id);
+  return { sql: `${base.sql} AND ${crew.sql}`, params: [...base.params, ...crew.params] };
 }
 
 async function pairWith(db: D1Database, self: Participant, otherId: string) {
