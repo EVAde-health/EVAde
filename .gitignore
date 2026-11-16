@@ -70,6 +70,5 @@ venv/
 *.egg-info/
 
 # ---------- Local data ----------
-data/
-# The web app keeps source code in src/data/; only the voice agent's local data/ is ignored.
-!EVAde/src/data/
+# SQLite and other runtime data for the local Python voice agent.
+/data/
