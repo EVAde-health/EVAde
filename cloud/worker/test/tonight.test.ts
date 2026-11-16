@@ -240,6 +240,31 @@ describe("GET /auth/demo", () => {
     expect((await upload(`/media?user_id=${DEMO_VEGA}&kind=photo`)).status).toBe(201);
   });
 
+  it("lets the demo read space weather but not write the global feed", async () => {
+    env = { ...env, DEMO_LOGIN: "true" } as Env;
+    const cookie = { cookie: await demoLogin("?as=surgeon") };
+    expect((await call("GET", "/space-weather/latest", cookie)).status).toBe(200);
+    const rows = [{ ts: "2026-11-16T00:00:00Z", kp_index: 9, eva_status: "no-go" }];
+    expect((await call("POST", "/space-weather", { ...cookie, body: { rows } })).status).toBe(403);
+    expect((await call("POST", "/space-weather/refresh", cookie)).status).toBe(403);
+    expect(row("SELECT COUNT(*) n FROM space_weather").n).toBe(0);
+  });
+
+  it("caps Workers AI selfie checks and gateway model runs per account", async () => {
+    let aiRuns = 0;
+    env = { ...env, DEMO_LOGIN: "true", MEDIA: { put: async () => {}, delete: async () => {} },
+      AI: { run: async () => (aiRuns++, { description: '{"mood":"calm","explanation":"Relaxed.","confidence":0.8}' }) },
+      AUTH_RATE_LIMITER: { limit: async ({ key }: { key: string }) => ({ success: !key.startsWith("ai-") }) } } as unknown as Env;
+    const cookie = { cookie: await demoLogin() };
+    const upload = await call("POST", "/media?kind=photo", { ...cookie, headers: { "Content-Type": "image/jpeg" }, rawBody: "jpeg" });
+    expect(upload.status).toBe(201);
+    expect((await upload.json<any>()).analysis.status).toBe("unavailable");
+    expect(aiRuns).toBe(0);
+    const before = calls.length;
+    expect((await call("POST", "/model-transparency/run", { ...cookie, body: { id: "EVA-12" } })).status).toBe(429);
+    expect(calls.length).toBe(before);
+  });
+
   it("keeps real astronauts and the demo astronaut on their own crews' staff", async () => {
     env = { ...env, DEMO_LOGIN: "true" } as Env;
     const surgeonId = crypto.randomUUID();

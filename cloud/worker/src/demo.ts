@@ -30,6 +30,8 @@ const BLOCKED: [string, RegExp][] = [
   ["*", /^\/auth\/identities/],
   ["*", /^\/admin\/simulate$/],
   ["*", /^\/model-results$/],
+  // The demo may read space weather, but writes change the global feed every real crew member sees.
+  ["POST", /^\/space-weather/],
   ["POST", /^\/users$/],
   ["DELETE", /^\/me$/],
 ];

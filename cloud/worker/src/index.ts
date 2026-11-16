@@ -339,7 +339,8 @@ interface JournalProcessOpts {
   parseText?: string; // what the parser reads, when it differs from the entry (a chat message plus the question it answers)
 }
 
-/** Paid xAI calls per account and kind: AUTH_RATE_LIMITER allows 20 a minute. The shared demo counts as one account. */
+/** Paid AI calls (xAI, Workers AI, model-gateway runs) per account and kind: AUTH_RATE_LIMITER allows 20 a minute.
+ * The shared demo counts as one account. */
 async function aiAllowed(env: Env, kind: string, account: string) {
   return (await env.AUTH_RATE_LIMITER.limit({ key: `ai-${kind}:${account}` })).success;
 }
@@ -1177,7 +1178,10 @@ route("POST", "/media", async (req, env, _p, url, ctx, who) => {
   const note = url.searchParams.get("note")?.slice(0, 500) ?? null;
   const { media, buf, ct } = await storeMedia(env, req, userId, kind, metric, note);
   if (kind === "photo") {
-    const assessment = await analyzeSelfie(env.AI, buf, ct);
+    const assessment = await aiAllowed(env, "vision", userId)
+      ? await analyzeSelfie(env.AI, buf, ct)
+      : { status: "unavailable" as const, model: VISION_MODEL, mood: null, explanation: null, confidence: null, raw: null,
+          reason: "Too many selfies in the last minute, so this one was saved without an assessment." };
     const analyzedAt = now();
     await env.DB.prepare(
       "UPDATE media SET analysis=?, analysis_model=?, analyzed_at=?, mood_label=?, analysis_confidence=? WHERE id=?"
@@ -1354,7 +1358,7 @@ route("GET", "/model-transparency", async (_r, env) => {
   });
 });
 
-route("POST", "/model-transparency/run", async (req, env) => {
+route("POST", "/model-transparency/run", async (req, env, _p, _url, _ctx, who) => {
   const b = await body<{ id?: string }>(req);
   const model = catalogById(String(b.id ?? ""));
   if (!model) throw new HttpError(404, "Unknown model id");
@@ -1368,6 +1372,7 @@ route("POST", "/model-transparency/run", async (req, env) => {
       output: { error: "evade-gateway is not connected, so this model was not run. No output was fabricated." },
     });
   }
+  if (!(await aiAllowed(env, "model-run", who.user_id ?? who.kind))) throw new HttpError(429, "Too many model runs. Try again in a minute");
   const input = {
     transparency_sample: true,
     note: "Synthetic probe from the model transparency page. Not a crew recording and not stored as a prediction.",
