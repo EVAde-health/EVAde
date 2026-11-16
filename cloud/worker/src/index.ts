@@ -334,6 +334,16 @@ interface JournalProcessOpts {
   parseText?: string; // what the parser reads, when it differs from the entry (a chat message plus the question it answers)
 }
 
+/** Paid xAI calls per account and kind: AUTH_RATE_LIMITER allows 20 a minute. The shared demo counts as one account. */
+async function aiAllowed(env: Env, kind: string, account: string) {
+  return (await env.AUTH_RATE_LIMITER.limit({ key: `ai-${kind}:${account}` })).success;
+}
+
+/** `?refresh=1` skips the cached AI answer, within the caller's xAI budget. */
+async function refreshRequested(env: Env, url: URL, who: Principal) {
+  return url.searchParams.get("refresh") === "1" && aiAllowed(env, "refresh", who.user_id ?? who.kind);
+}
+
 async function processJournal(env: Env, ctx: ExecutionContext, id: number, userId: string, content: string, opts: JournalProcessOpts = {}) {
   return (await analyzeAndExtract(env, ctx, id, userId, content, opts)).analysis;
 }
@@ -344,9 +354,11 @@ async function processJournal(env: Env, ctx: ExecutionContext, id: number, userI
  * it for the same entry (re-posts, /journal/:jid/analyze) never duplicates rows. A parser failure never fails the entry.
  */
 async function analyzeAndExtract(env: Env, ctx: ExecutionContext, id: number, userId: string, content: string, opts: JournalProcessOpts = {}) {
+  // Over the per-account budget (e.g. a POST /sync batch) the entry is still analysed, by the rule-based fallback.
+  const ai: Env = await aiAllowed(env, "journal", userId) ? env : { ...env, XAI_API_KEY: undefined };
   const [a, extraction] = await Promise.all([
-    analyzeJournal(env, content),
-    extractHealth(env, opts.parseText ?? content, opts.checkin).catch((e) => { console.error("journal extraction", e instanceof Error ? e.name : "Error"); return null; }),
+    analyzeJournal(ai, content),
+    extractHealth(ai, opts.parseText ?? content, opts.checkin).catch((e) => { console.error("journal extraction", e instanceof Error ? e.name : "Error"); return null; }),
   ]);
   const ts = now();
   const stmts = [
@@ -660,6 +672,7 @@ route("POST", "/journal/voice", async (req, env, _p, url, ctx, who) => {
   const userId = targetUser(who, url);
   await requireUser(env, userId);
   if (!aiConfigured(env)) throw new HttpError(503, "Speech-to-text is not configured (XAI_API_KEY)");
+  if (!(await aiAllowed(env, "voice", userId))) throw new HttpError(429, "Too many voice entries. Try again in a minute");
   const audioType = req.headers.get("Content-Type")?.split(";")[0].trim() || "application/octet-stream";
   let audio: ArrayBuffer;
   let mediaId: string | null = null;
@@ -844,7 +857,7 @@ route("GET", "/users/:id/risk", async (_r, env, p, url, ctx, who) => {
 route("GET", "/users/:id/briefing", async (_r, env, p, url, _c, who) => {
   const user = await requireUser(env, p.id);
   const cacheKey = `brief:${p.id}`;
-  if (url.searchParams.get("refresh") !== "1") {
+  if (!(await refreshRequested(env, url, who))) {
     const cached = await env.SESSIONS?.get(cacheKey, "json");
     if (cached) return json({ ...(cached as object), cached: true });
   }
@@ -884,7 +897,7 @@ route("GET", "/users/:id/prediction", async (_r, env, p, url, _c, who) => {
     `SELECT (SELECT MAX(ts) FROM observations WHERE user_id=?1) AS obs, (SELECT MAX(ts) FROM radiation_doses WHERE user_id=?1) AS dose`
   ).bind(p.id).first<{ obs: string | null; dose: string | null }>();
   const cacheKey = `pred:v1:${p.id}:${marker?.obs ?? "-"}:${marker?.dose ?? "-"}:${env.PREDICTION_PROVIDER ?? "ai"}`;
-  if (url.searchParams.get("refresh") !== "1") {
+  if (!(await refreshRequested(env, url, who))) {
     const cached = await env.SESSIONS?.get(cacheKey, "json");
     if (cached) return json({ ...(cached as object), cached: true });
   }
@@ -909,7 +922,7 @@ route("GET", "/users/:id/prediction", async (_r, env, p, url, _c, who) => {
 
 // Staff-only overview of an astronaut's condition from journal summaries and check-ins (/admin/* is staff-only in
 // authorize()). The astronaut never sees it, so the journal stays a place to talk rather than an assessment.
-route("GET", "/admin/astronauts/:id/journal/overview", async (_r, env, p, url) => {
+route("GET", "/admin/astronauts/:id/journal/overview", async (_r, env, p, url, _c, who) => {
   const user = await requireUser(env, p.id);
   if (user.role !== "astronaut") throw new HttpError(404, "Astronaut not found");
   const days = Math.max(3, Math.min(Number(url.searchParams.get("days")) || 14, 60));
@@ -936,7 +949,7 @@ route("GET", "/admin/astronauts/:id/journal/overview", async (_r, env, p, url) =
   };
   if (!entries.length && !checkins.length) return json({ ...stats, overview: null, generated_at: now() });
   const cacheKey = `jov:v1:${p.id}:${days}:${entries.at(-1)?.id ?? "-"}:${checkins.at(-1)?.id ?? "-"}`;
-  if (url.searchParams.get("refresh") !== "1") {
+  if (!(await refreshRequested(env, url, who))) {
     const cached = await env.SESSIONS?.get(cacheKey, "json");
     if (cached) return json({ ...(cached as object), cached: true });
   }

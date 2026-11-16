@@ -321,6 +321,21 @@ describe("xAI Grok", () => {
     expect(textModels({ XAI_TEXT_MODEL: "grok-4.7", XAI_FALLBACK_TEXT_MODEL: "" })).toEqual(["grok-4.7"]);
   });
 
+  it("caps paid xAI calls per account: over the budget entries still save, analysed by the rules", async () => {
+    env.XAI_API_KEY = XAI_KEY;
+    const requests = stubGrok(() => "{}");
+    const keys: string[] = [];
+    env.AUTH_RATE_LIMITER = { limit: async ({ key }: { key: string }) => (keys.push(key), { success: !key.startsWith("ai-") }) };
+    const entry = await call("POST", "/journal?analyze=sync", { body: { content: "Slept badly, headache this morning." } });
+    expect(entry.status).toBe(201);
+    expect(entry.data.id).toEqual(expect.any(Number));
+    const synced = await call("POST", "/sync", { body: { journal: [{ content: "One" }, { content: "Two" }, { content: "Three" }] } });
+    expect(synced.status).toBe(200);
+    await Promise.all(pending.splice(0));
+    expect(requests).toHaveLength(0);
+    expect(keys).toContain("ai-journal:" + ASTRONAUT);
+  });
+
   it("makes no model call without XAI_API_KEY and keeps the rule-based replies and the safety net", async () => {
     const requests = stubGrok(() => "{}");
     const chat = await call("POST", "/journal/chat", { body: { message: "Long day." } });
