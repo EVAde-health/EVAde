@@ -23,11 +23,13 @@ import { acquireBrowserSlot, countBrowserSlots, maxConcurrentSessions, maxSessio
 import { issueStreamToken, issueToken, WS_TICKET_PREFIX } from "./tokens";
 import { latestCheckin, listDownlink } from "./tools";
 import { alertTwiml, connectStreamTwiml, createCall, isValidTwilioRequest, parseForm, signatureCheckEnabled, signatureTokenMissing, TwilioError } from "./twilio";
+import { bucketSeconds, limitIp, logAbuse, rateLimited, readUsage, VOICE_PAUSED, type BudgetEnv } from "../../shared/abuse";
 
 export { VoiceSession } from "./session";
 
 const DEFAULT_ALERT = "EVAde red alert. Please check the crew health dashboard now.";
 const WS_TICKET_TTL_S = 60;
+type VoiceAbuseEnv = BudgetEnv & { VOICE_START_IP_LIMITER?: RateLimit; VOICE_SOCKET_IP_LIMITER?: RateLimit };
 
 const isWsUpgrade = (r: Request) => r.headers.get("Upgrade")?.toLowerCase() === "websocket";
 
@@ -109,13 +111,19 @@ const forbidden = () => errorResponse(403, "Missing or wrong token (Authorizatio
 
 async function voiceSocket(request: Request, env: Env): Promise<Response> {
   if (!isWsUpgrade(request)) return errorResponse(426, "Expected a WebSocket upgrade");
+  if (!await limitIp((env as VoiceAbuseEnv).VOICE_SOCKET_IP_LIMITER, request, "voice_socket_ip")) return rateLimited();
   if (!(await appAllowed(env, request, { allowTicket: true }))) return forbidden();
   const cap = maxConcurrentSessions(env);
   const slot = await acquireBrowserSlot(env.DB, cap);
-  if (!slot) return rejectSocket(TOO_MANY_TALKING);
+  if (!slot) {
+    logAbuse("rate_limited", "voice_concurrency");
+    return rejectSocket(TOO_MANY_TALKING);
+  }
   const crew = (new URL(request.url).searchParams.get("crew") || "browser-demo").slice(0, 64);
   try {
-    return await toSession(request, env, "browser", crew, slot);
+    const response = await toSession(request, env, "browser", crew, slot);
+    if (response.status !== 101) await releaseSlot(env.DB, slot);
+    return response.status === 429 ? rejectSocket(VOICE_PAUSED) : response;
   } catch (err) {
     await releaseSlot(env.DB, slot);
     throw err;
@@ -123,9 +131,19 @@ async function voiceSocket(request: Request, env: Env): Promise<Response> {
 }
 
 async function voiceStart(request: Request, env: Env): Promise<Response> {
+  const guards = env as VoiceAbuseEnv;
+  if (!await limitIp(guards.VOICE_START_IP_LIMITER, request, "voice_start_ip")) return rateLimited();
   if (!(await appAllowed(env, request))) return forbidden();
+  if (guards.ABUSE_BUDGET) {
+    const usage = await readUsage(guards).catch(() => null);
+    if (!usage || usage.calls.count >= usage.calls.budget || usage.voice_seconds.count >= usage.voice_seconds.budget) {
+      logAbuse(usage ? "budget_limited" : "guard_unavailable", "voice");
+      return rateLimited(usage ? bucketSeconds(86400) : 60, VOICE_PAUSED);
+    }
+  }
   if ((await countBrowserSlots(env.DB)) >= maxConcurrentSessions(env)) {
-    return errorResponse(429, TOO_MANY_TALKING);
+    logAbuse("rate_limited", "voice_concurrency");
+    return rateLimited(60, TOO_MANY_TALKING);
   }
   const url = new URL(request.url);
   let crew = url.searchParams.get("crew");

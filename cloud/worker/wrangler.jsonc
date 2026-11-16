@@ -23,12 +23,21 @@
   // Selfie assessment. The image stays on Workers AI; USDA_API_KEY stays a secret (see below).
   "ai": { "binding": "AI" },
   // Live crew feed over WebSockets
-  "durable_objects": { "bindings": [{ "name": "LIVE", "class_name": "CrewFeed" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CrewFeed"] }],
+  "durable_objects": { "bindings": [
+    { "name": "LIVE", "class_name": "CrewFeed" },
+    { "name": "ABUSE_BUDGET", "class_name": "AbuseBudget" }
+  ] },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["CrewFeed"] },
+    { "tag": "v2", "new_sqlite_classes": ["AbuseBudget"] }
+  ],
   // Sessions + OAuth state (Workers KV)
   "kv_namespaces": [{ "binding": "SESSIONS", "id": "784305dfc43442a78ccc2aac162e5811" }],
   "ratelimits": [
-    { "name": "AUTH_RATE_LIMITER", "namespace_id": "11340105", "simple": { "limit": 20, "period": 60 } }
+    { "name": "AUTH_RATE_LIMITER", "namespace_id": "11340105", "simple": { "limit": 20, "period": 60 } },
+    { "name": "SIGN_IN_IP_LIMITER", "namespace_id": "11340106", "simple": { "limit": 10, "period": 60 } },
+    { "name": "DEMO_WRITE_IP_LIMITER", "namespace_id": "11340107", "simple": { "limit": 15, "period": 60 } },
+    { "name": "DEMO_RESET_IP_LIMITER", "namespace_id": "11340108", "simple": { "limit": 3, "period": 60 } }
   ],
   // Pull NOAA space weather every 15 minutes into the space_weather table
   "triggers": { "crons": ["*/15 * * * *"] },
@@ -42,6 +51,14 @@
     // "true" enables GET /auth/demo: a 2-hour shared session as Demo Astronaut, or (?as=surgeon) Demo Flight Surgeon.
     // It reads and writes only the demo crew; POST /demo/reset restores the unchecked two-user seed. Never a real user.
     "DEMO_LOGIN": "true",
+    "TURNSTILE_SITE_KEY": "",
+    "NEW_ACCOUNT_IP_HOURLY": "3",
+    "AI_DAILY_CALL_BUDGET": "3000",
+    "AI_PER_USER_DAILY": "120",
+    "AI_STAFF_DAILY_CALL_BUDGET": "6000",
+    "AI_STAFF_PER_USER_DAILY": "600",
+    "VOICE_DAILY_SECONDS_BUDGET": "18000",
+    "MODEL_PER_USER_DAILY": "100",
     // Where users land after signing in if no redirect was requested.
     "FRONTEND_URL": "https://evade.health",
     // Comma-separated emails promoted to flight_surgeon when they sign in with a verified email (Cloudflare Access,
@@ -72,7 +89,7 @@
   //   MODEL_GATEWAY_KEY  sent as X-Gateway-Key to evade-gateway (same value as the gateway's GATEWAY_CALLER_KEY)
   //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   Google OAuth client
   //   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET   GitHub OAuth app
-  //   TURNSTILE_SITE_KEY, TURNSTILE_SECRET     Turnstile widget site key and private secret
+  //   TURNSTILE_SECRET      Existing OAuth Turnstile secret, if enabling optional OAuth providers
   //   USDA_API_KEY   FoodData Central key for GET /foods/search on this Worker (evade-api).
   //                  Never put it in the browser. If it is unset, search falls back to the pantry and Open Food Facts.
 }

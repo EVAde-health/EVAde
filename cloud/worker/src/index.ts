@@ -35,7 +35,10 @@ import { crewOverview, registerOps } from "./ops";
 import { registerMessaging } from "./messages";
 import { awardDaily, voiceSavedReply, materializeTasks, registerWebAppRoutes, type WebAppEnv } from "./webapp";
 import { extractHealth, rowsFor, stableId, type CheckinIn, type Extraction } from "./journalParse";
+import { bucketSeconds, clientIp, limitIp, logAbuse, rateLimited, readUsage, reserveQuota, VOICE_PAUSED } from "../../../shared/abuse";
+import { verifyDemoTurnstile } from "./turnstile";
 export { CrewFeed } from "./live";
+export { AbuseBudget } from "./abuseBudget";
 
 export interface Env extends AuthEnv, ModelEnv, WebAppEnv, PredictionEnv {
   DB: D1Database;
@@ -54,7 +57,8 @@ function cors(req: Request, env: Env): Record<string, string> {
   const allowed = (env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   const h: Record<string, string> = {
     "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,X-EVAde-Key,Authorization",
+    "Access-Control-Allow-Headers": "Content-Type,X-EVAde-Key,Authorization,X-Turnstile-Token",
+    "Access-Control-Expose-Headers": "Retry-After",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };
@@ -342,7 +346,9 @@ interface JournalProcessOpts {
 /** Paid AI calls (xAI, Workers AI, model-gateway runs) per account and kind: AUTH_RATE_LIMITER allows 20 a minute.
  * The shared demo counts as one account. */
 async function aiAllowed(env: Env, kind: string, account: string) {
-  return (await env.AUTH_RATE_LIMITER.limit({ key: `ai-${kind}:${account}` })).success;
+  const { success } = await env.AUTH_RATE_LIMITER.limit({ key: `ai-${kind}:${account}` });
+  if (!success) logAbuse("rate_limited", "ai_" + kind);
+  return success;
 }
 
 /** `?refresh=1` skips the cached AI answer, within the caller's xAI budget. */
@@ -537,12 +543,12 @@ route("GET", "/users/:id", async (_r, env, p) => json(await requireUser(env, p.i
 
 // Auth link (called server-side by Ryan B's auth / edge functions with the API key).
 // Login once -> POST /auth/identities; afterwards GET /auth/identities/:provider/:subject returns the user.
-route("POST", "/auth/identities", async (req, env) => {
+route("POST", "/auth/identities", async (req, env, _p, _url, _ctx, who) => {
   const b = await body(req);
   if (!b.provider || !b.subject) throw new HttpError(422, "provider and subject are required");
   if (b.provider === STAFF_ACCESS_PROVIDER) throw new HttpError(403, "Staff accounts sign in with Cloudflare Access");
   if (b.user_id) await requireUser(env, b.user_id);
-  return json(await linkIdentity(env, b, (id) => seedTasks(env, id)), 201);
+  return json(await linkIdentity(env, b, (id) => seedTasks(env, id), who.kind === "user" ? clientIp(req) : undefined), 201);
 });
 route("GET", "/auth/identities/:provider/:subject", async (_r, env, p) => {
   const row = await env.DB.prepare(
@@ -679,6 +685,7 @@ route("POST", "/journal/voice", async (req, env, _p, url, ctx, who) => {
   await requireUser(env, userId);
   if (!aiConfigured(env)) throw new HttpError(503, "Speech-to-text is not configured (XAI_API_KEY)");
   if (!(await aiAllowed(env, "voice", userId))) throw new HttpError(429, "Too many voice entries. Try again in a minute");
+  if (env.reservePaidAi && !await env.reservePaidAi()) return rateLimited(bucketSeconds(86400), VOICE_PAUSED);
   const audioType = req.headers.get("Content-Type")?.split(";")[0].trim() || "application/octet-stream";
   let audio: ArrayBuffer;
   let mediaId: string | null = null;
@@ -1264,6 +1271,12 @@ route("GET", "/admin/astronauts/:id/deep-model-results", async (_r, env, p) => {
 // are returned with placeholder: true and never stored or alerted on. Every result is a flag for human review.
 const modelError = (e: unknown) => (e instanceof ModelApiError ? new HttpError(e.status, e.message) : e);
 
+async function enforceModelQuota(env: Env, who: Principal) {
+  if ((isStaff(who) && !who.demo) || !who.user_id) return;
+  const quota = await reserveQuota(env, { kind: "predictions", key: who.user_id });
+  if (!quota.allowed) throw new HttpError(429, "Daily model limit reached. Try again tomorrow UTC.", quota.retryAfter);
+}
+
 route("GET", "/models", async (_r, env) => {
   try {
     const r = await callModelApi(env, "GET", "/v1/models");
@@ -1373,6 +1386,7 @@ route("POST", "/model-transparency/run", async (req, env, _p, _url, _ctx, who) =
     });
   }
   if (!(await aiAllowed(env, "model-run", who.user_id ?? who.kind))) throw new HttpError(429, "Too many model runs. Try again in a minute");
+  await enforceModelQuota(env, who);
   const input = {
     transparency_sample: true,
     note: "Synthetic probe from the model transparency page. Not a crew recording and not stored as a prediction.",
@@ -1450,12 +1464,13 @@ async function predictFor(env: Env, kind: PredictKind, userId: string, payload: 
   }
 }
 
-route("POST", "/predict/:kind", async (req, env, p) => {
+route("POST", "/predict/:kind", async (req, env, p, _url, _ctx, who) => {
   if (!(PREDICT_KINDS as readonly string[]).includes(p.kind)) throw new HttpError(404, "unknown model endpoint");
   const kind = p.kind as PredictKind;
   const payload = await body<Record<string, unknown>>(req);
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new HttpError(400, "Body must be a JSON object");
   const user = await requireUser(env, payload.user_id as string | undefined);
+  await enforceModelQuota(env, who);
   return predictFor(env, kind, user.user_id, payload);
 });
 
@@ -1532,7 +1547,7 @@ route("DELETE", "/me", async (req, env, _p, _u, _c, who) => {
 route("POST", "/demo/reset", async (_r, env, _p, _u, _c, who) => {
   if (who.kind !== "user" || !who.demo || !who.user_id) throw new HttpError(403, "Only the demo can be reset");
   const { success } = await env.AUTH_RATE_LIMITER.limit({ key: "demo-reset" });
-  if (!success) throw new HttpError(429, "The demo was just reset. Try again in a minute.");
+  if (!success) { logAbuse("rate_limited", "demo_reset_global"); throw new HttpError(429, "The demo was just reset. Try again in a minute."); }
   await resetDemo(env);
   return json({ reset: true, reset_at: now() });
 });
@@ -1567,6 +1582,13 @@ registerOps(route, { json, body, now });
 registerMessaging(route, { json, body, now });
 registerCompanion<Env>(route, { json, body, parse: parseChatMessage });
 
+route("GET", "/admin/usage", async (_req, env, _p, _url, _ctx, who) => {
+  if (who.role !== "admin" || who.demo) throw new HttpError(403, "Admin access only");
+  const usage = await readUsage(env).catch(() => null);
+  if (!usage) throw new HttpError(503, "Usage counters are unavailable");
+  return json(usage);
+});
+
 // ---------- Access control ----------
 // service  = X-EVAde-Key (Python seeding, Michael's FastAPI, Ryan B's edge functions): integration routes
 // staff    = session with role flight_surgeon / therapist / admin: every astronaut + admin routes
@@ -1598,6 +1620,12 @@ async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Reque
     return { req, principal: { kind: "service" } };
   }
   const session = await getSessionPrincipal(req, env);
+  if ((!session || session.demo) && req.method === "POST" && /^(?:\/demo\/reset|\/journal(?:\/.*)?|\/sync|\/media)$/.test(path)) {
+    const reset = path === "/demo/reset";
+    if (!await limitIp(reset ? env.DEMO_RESET_IP_LIMITER : env.DEMO_WRITE_IP_LIMITER, req, reset ? "demo_reset_ip" : "demo_write_ip")) {
+      throw new HttpError(429, "Too many attempts, try again in a minute");
+    }
+  }
   if (!session) throw new HttpError(401, "Sign in at /login, or send X-EVAde-Key");
   // Cookie-authenticated writes must come from our own frontend (CSRF guard on top of SameSite=Lax)
   if (req.method !== "GET") {
@@ -1607,6 +1635,14 @@ async function authorize(req: Request, env: Env, url: URL): Promise<{ req: Reque
   }
   // The shared demo reads and writes freely, but only inside the demo crew (demo.ts).
   if (session.demo) await assertDemoScope(env.DB, req, path);
+  const action = path === "/demo/reset" ? "demo_reset" : ["/journal/chat", "/journal/messages"].includes(path) ? "demo_chat" : null;
+  if (session.demo && req.method === "POST" && action) {
+    const origin = req.headers.get("Origin");
+    const hostname = origin && trustedOrigin(env, url, origin) ? new URL(origin).hostname : url.hostname;
+    if (!await verifyDemoTurnstile(env, req.headers.get("X-Turnstile-Token"), action, hostname, req.headers.get("CF-Connecting-IP"))) {
+      throw new HttpError(403, "Human check failed. Try again.");
+    }
+  }
   const staff = STAFF_ROLES.has(session.role ?? "");
   if (STAFF_ONLY.some(([m, re]) => (m === "*" || m === req.method) && re.test(path)) && !staff)
     throw new HttpError(403, "Flight surgeon / admin access only");
@@ -1665,13 +1701,20 @@ export default {
       for (const [m, re, handler] of routes) {
         const match = url.pathname.match(re);
         if (match && m === req.method) {
-          const res = await handler(req, env, (match.groups ?? {}) as Record<string, string>, url, ctx, who);
+          const paidEnv: Env = env.ABUSE_BUDGET ? {
+            ...env,
+            reservePaidAi: async () => (await reserveQuota(env, {
+              kind: "ai", key: who.user_id ?? "service", staff: who.kind === "user" && !who.demo && isStaff(who),
+            })).allowed,
+          } : env;
+          const res = await handler(req, paidEnv, (match.groups ?? {}) as Record<string, string>, url, ctx, who);
           return withHeaders(who.demo ? await scrubDemoResponse(res) : res);
         }
       }
       throw new HttpError(404, `No route ${req.method} ${url.pathname}`);
     } catch (e: any) {
       const status = e instanceof HttpError ? e.status : 500;
+      if (status === 429) return withHeaders(rateLimited(e.retryAfter ?? 60, e.message));
       if (status === 500) console.error("Worker request failed", request.method, e instanceof Error ? e.name : "Error");
       return withHeaders(json({ error: status === 500 ? "Internal error" : e.message }, status));
     }

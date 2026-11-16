@@ -7,8 +7,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import worker, { type Env } from "../src/index";
 import { _resetAccessKeyCache, verifyAccessJwt } from "../src/access";
 import { enabledProviders, handleAuth, type AuthEnv } from "../src/auth";
+import { budgetHarness } from "./budgetHarness";
 
 vi.mock("../src/live", () => ({ CrewFeed: class {} }));
+vi.mock("cloudflare:workers", () => ({
+  DurableObject: class { constructor(public ctx: unknown, public env: unknown) {} },
+}));
 
 // ---------- fakes ----------
 function fakeD1(): D1Database {
@@ -182,6 +186,22 @@ describe("verifyAccessJwt", () => {
 });
 
 describe("GET /auth/access", () => {
+  it("limits new identities per IP without charging returning identities", async () => {
+    const harness = budgetHarness();
+    Object.assign(env, harness.env);
+    const enter = async (n: number, ip = "192.0.2.1") => call("GET", "/auth/access", {
+      "CF-Connecting-IP": ip,
+      "Cf-Access-Jwt-Assertion": await sign({ sub: "new-" + n, email: `member-${n}@evade.test` }),
+    });
+    try {
+      for (const n of [1, 2, 3]) expect((await enter(n)).status).toBe(302);
+      const blocked = await enter(4);
+      expect(blocked.status).toBe(429);
+      expect(Number(blocked.headers.get("Retry-After"))).toBeGreaterThan(0);
+      expect((await enter(1)).status).toBe(302);
+      expect((await enter(4, "192.0.2.2")).status).toBe(302);
+    } finally { harness.close(); }
+  });
   it("creates an astronaut, seeds tasks, sets a secure session cookie and redirects", async () => {
     const res = await login(await sign({}));
     expect(res.status).toBe(302);

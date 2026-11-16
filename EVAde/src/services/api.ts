@@ -1,5 +1,6 @@
 // Browser client for the EVAde Worker API. The session lives in an HttpOnly cookie set by the Worker,
 // so no token or key ever touches JavaScript; every request just sends credentials to one fixed origin.
+import { requestTurnstile } from './turnstile';
 
 type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 
@@ -8,6 +9,7 @@ interface RequestOptions {
   body?: unknown;
   raw?: Blob;
   signal?: AbortSignal;
+  demoAction?: 'demo_reset' | 'demo_chat';
 }
 
 export const SIGN_IN_REQUIRED = 'evade:sign-in-required';
@@ -44,8 +46,14 @@ function apiUrl(path: string) {
 }
 
 // Sends one credentialed request; signals sign-in expiry on 401.
-async function send(path: string, { method = 'GET', body, raw, signal }: RequestOptions) {
+async function send(path: string, { method = 'GET', body, raw, signal, demoAction }: RequestOptions) {
   const headers = new Headers({ Accept: 'application/json' });
+  if (demoAction) {
+    const config = await api<{ demo_turnstile_site_key?: string }>('/auth/providers', { signal });
+    if (config.demo_turnstile_site_key) {
+      headers.set('X-Turnstile-Token', await requestTurnstile(config.demo_turnstile_site_key, demoAction, signal));
+    }
+  }
   if (body !== undefined) headers.set('Content-Type', 'application/json');
   if (raw) headers.set('Content-Type', raw.type);
   const response = await fetch(apiUrl(path), {
@@ -59,8 +67,11 @@ async function send(path: string, { method = 'GET', body, raw, signal }: Request
   });
   if (response.status === 401 && !signal?.aborted) window.dispatchEvent(new Event(SIGN_IN_REQUIRED));
   if (!response.ok) {
-    const detail = await response.json().then((data: { error?: string }) => data.error, () => undefined);
-    throw new ApiError(response.status, detail);
+    const failure = await response.json().then((data: { error?: string; safety_guidance?: boolean }) => data, () => undefined);
+    const detail = failure?.error;
+    const minuteLimit = response.status === 429 && Number(response.headers.get('Retry-After')) <= 60;
+    throw new ApiError(response.status, minuteLimit && !failure?.safety_guidance && !detail?.startsWith('Voice is paused for today')
+      ? 'Too many attempts, try again in a minute' : detail);
   }
   return response;
 }

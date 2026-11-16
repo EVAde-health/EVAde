@@ -20,6 +20,10 @@
     "bindings": [{ "name": "VOICE_SESSION", "class_name": "VoiceSession" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["VoiceSession"] }],
+  "ratelimits": [
+    { "name": "VOICE_START_IP_LIMITER", "namespace_id": "11340109", "simple": { "limit": 8, "period": 60 } },
+    { "name": "VOICE_SOCKET_IP_LIMITER", "namespace_id": "11340110", "simple": { "limit": 8, "period": 60 } }
+  ],
 
   // Check-ins, downlink queue and one-time stream tokens (replaces data/evade.db).
   "d1_databases": [

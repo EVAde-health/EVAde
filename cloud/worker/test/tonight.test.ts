@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../src/index";
+vi.mock("cloudflare:workers", () => ({ DurableObject: class {} }));
 import { sha256hex } from "../src/auth";
 import { DELETE_USER_SQL } from "../src/deleteUser";
 // 0008 and 0011_seed_surgeon_demo are data-only (demo rows, applied on live); the tests seed their own data.

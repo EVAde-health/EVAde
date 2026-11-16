@@ -27,6 +27,7 @@ export function corsHeaders(env: EnvLike, request: Request): Headers {
   }
   headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-EVADE-Token");
+  headers.set("Access-Control-Expose-Headers", "Retry-After");
   headers.set("Access-Control-Max-Age", "86400");
   return headers;
 }

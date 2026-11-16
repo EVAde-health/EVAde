@@ -4,7 +4,7 @@ import { Icon } from '@astryxdesign/core/Icon';
 import { HStack } from '@astryxdesign/core/Stack';
 import { ArrowPathIcon, ArrowsRightLeftIcon } from '@heroicons/react/20/solid';
 import { useToast } from '../context/ToastCenterContext';
-import { demoLoginUrl } from '../services/api';
+import { ApiError, demoLoginUrl } from '../services/api';
 import { resetDemo } from '../services/healthApi';
 
 type Persona = 'astronaut' | 'surgeon';
@@ -23,8 +23,8 @@ export default function DemoBar({ persona }: { persona: Persona }) {
   async function handleReset() {
     try {
       await resetDemo();
-    } catch {
-      showToast({ body: 'The demo could not be reset. Try again in a minute.' });
+    } catch (error) {
+      showToast({ body: error instanceof ApiError ? error.message : 'The demo could not be reset. Try again in a minute.' });
       return;
     }
     showToast({ body: 'Demo data reset.' });
