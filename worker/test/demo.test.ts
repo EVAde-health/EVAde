@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { handleRequest } from "../src/index";
-import { makeEnv, resetDb, WsInbox } from "./helpers";
+import { queueFlightSurgeonMessage, saveCheckin } from "../src/tools";
+import { makeEnv, resetDb, toolCtx, WsInbox } from "./helpers";
 
 const call = (req: Request, env: Env) => handleRequest(req, env);
 const open = (url: string, env: Env, headers: Record<string, string> = {}) =>
@@ -12,10 +13,10 @@ describe("DEMO_OPEN access and spending guards", () => {
   it("opens the browser voice endpoints without a token when DEMO_OPEN is true", async () => {
     const env = makeEnv({ DEMO_OPEN: "true" });
     for (const path of [
-      "/api/checkins/latest",
-      "/api/downlink",
-      "/voice/api/checkins/latest",
-      "/voice/api/downlink",
+      "/api/checkins/latest?crew_id=crew-demo",
+      "/api/downlink?crew_id=crew-demo",
+      "/voice/api/checkins/latest?crew_id=browser-demo",
+      "/voice/api/downlink?crew_id=browser-demo",
     ]) {
       expect((await call(new Request(`https://evade.health${path}`), env)).status).toBe(200);
     }
@@ -33,6 +34,21 @@ describe("DEMO_OPEN access and spending guards", () => {
       expect((await inbox.waitFor((m) => m.type === "status")).state).toBe("connecting");
       ws.close(1000);
       await inbox.waitClosed();
+    }
+  });
+
+  it("never exposes phone callers' check-ins or the crew-wide feed without a token", async () => {
+    const env = makeEnv({ DEMO_OPEN: "true", EVADE_BROWSER_TOKEN: "browser-token" });
+    await saveCheckin(toolCtx(), "+15550001111", { sleep_hours: 3, mood: 1 });
+    await queueFlightSurgeonMessage(toolCtx(), "+15550001111", { message: "call me", priority: "urgent" });
+    for (const path of ["/api/checkins/latest", "/api/downlink", "/voice/api/checkins/latest", "/voice/api/downlink"]) {
+      for (const query of ["", "?crew_id=%2B15550001111", "?crew_id=15550001111", "?crew_id=anonymous", "?crew_id=unknown"]) {
+        const r = await call(new Request(`https://evade.health${path}${query}`), env);
+        expect(r.status, path + query).toBe(403);
+        expect(JSON.stringify(await r.json())).not.toContain("5550001111");
+      }
+      // The voice API token still reads everything.
+      expect((await call(new Request(`https://evade.health${path}`, { headers: { Authorization: "Bearer browser-token" } }), env)).status).toBe(200);
     }
   });
 

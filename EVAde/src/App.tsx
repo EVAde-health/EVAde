@@ -21,6 +21,8 @@ const SelfiesPage = lazy(() => import('./pages/SelfiesPage'));
 const MessagesPage = lazy(() => import('./pages/MessagesPage'));
 const ResearchPage = lazy(() => import('./pages/ResearchPage'));
 const ModelsPage = lazy(() => import('./pages/ModelsPage'));
+const RoadmapPage = lazy(() => import('./pages/RoadmapPage'));
+const BibliographyPage = lazy(() => import('./pages/BibliographyPage'));
 const CrewPage = lazy(() => import('./pages/surgeon/CrewPage'));
 const AstronautPage = lazy(() => import('./pages/surgeon/AstronautPage'));
 const SurgeonMessagesPage = lazy(() => import('./pages/surgeon/SurgeonMessagesPage'));
@@ -41,6 +43,7 @@ export default function App() {
                 <Routes>
                   <Route path="/" element={<LandingPage />} />
                   <Route path="/login" element={<LoginPage />} />
+                  <Route path="/bibliography" element={<BibliographyPage />} />
                   <Route element={<AppFrame />}>
                     <Route path="/dashboard" element={<DashboardPage />} />
                     <Route path="/tutorials" element={<TutorialsPage />} />
@@ -49,6 +52,7 @@ export default function App() {
                     <Route path="/selfies" element={<SelfiesPage />} />
                     <Route path="/research" element={<ResearchPage />} />
                     <Route path="/models" element={<ModelsPage />} />
+                    <Route path="/roadmap" element={<RoadmapPage />} />
                     <Route path="/messages" element={<MessagesPage />} />
                     <Route path="/messages/:id" element={<MessagesPage />} />
                     <Route path="/chat/*" element={<Navigate to="/messages" replace />} />

@@ -43,6 +43,11 @@ function originMatchesHost(request: Request): boolean {
 
 export async function appAllowed(env: EnvLike & { DB?: D1Database }, request: Request, opts: { allowTicket?: boolean } = {}): Promise<boolean> {
   if (demoOpen(env)) return true;
+  return appPrivileged(env, request, opts);
+}
+
+/** Access that does not rely on DEMO_OPEN: the browser token, a one-time ticket, or local development. */
+export async function appPrivileged(env: EnvLike & { DB?: D1Database }, request: Request, opts: { allowTicket?: boolean } = {}): Promise<boolean> {
   const expected = envStr(env, "EVADE_BROWSER_TOKEN");
   const token = suppliedToken(request);
   if (expected && token && (await safeEqual(token, expected))) return true;

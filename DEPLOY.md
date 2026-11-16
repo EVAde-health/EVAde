@@ -2,6 +2,8 @@
 
 Deploy production from a clean, merged `main` checkout. The deploy script checks that the checkout matches the current remote `main` before each upload. Use these commands from the repository root for all three Workers.
 
+> **Production deploys run only from a clean, up-to-date `main`, and only on Daniel's PC.** No other machine, CI job, coding agent or feature branch runs `wrangler deploy`, `node deploy/deploy.mjs` or a remote D1 migration. To ship a change, merge it to `main` through a reviewed pull request and ask Daniel to deploy. `deploy.mjs` refuses to run on another branch, with uncommitted or staged changes, or when `HEAD` differs from `origin/main`.
+
 ## Prerequisites
 
 - Git, Node.js 24, access to the EVAde Cloudflare account through Wrangler, and read access to Michael’s model API repository.

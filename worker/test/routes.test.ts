@@ -26,7 +26,7 @@ describe("phone routes (api/voice.py)", () => {
   beforeEach(resetDb);
 
   it("incoming returns Connect/Stream TwiML with a one-time D1 token", async () => {
-    const r = await call(post("https://evade.health/voice/incoming", FORM), makeEnv({ PUBLIC_BASE_URL: PUBLIC + "/" }));
+    const r = await call(post("https://evade.health/voice/incoming", FORM), makeEnv({ PUBLIC_BASE_URL: PUBLIC + "/", TWILIO_VALIDATE_SIGNATURE: "false" }));
     expect(r.status).toBe(200);
     expect(r.headers.get("content-type")).toMatch(/^application\/xml/);
     const { url, params } = parseStream(await r.text());
@@ -43,10 +43,18 @@ describe("phone routes (api/voice.py)", () => {
   });
 
   it("caller defaults to unknown and values are XML-escaped", async () => {
-    const r = await call(post("https://evade.health/voice/incoming", { From: 'a"<b>&' }), makeEnv({ PUBLIC_BASE_URL: PUBLIC }));
+    const r = await call(post("https://evade.health/voice/incoming", { From: 'a"<b>&' }), makeEnv({ PUBLIC_BASE_URL: PUBLIC, TWILIO_VALIDATE_SIGNATURE: "false" }));
     expect(await r.text()).toContain('value="a&quot;&lt;b&gt;&amp;"');
-    const r2 = await call(post("https://evade.health/voice/incoming", {}), makeEnv({ PUBLIC_BASE_URL: PUBLIC }));
+    const r2 = await call(post("https://evade.health/voice/incoming", {}), makeEnv({ PUBLIC_BASE_URL: PUBLIC, TWILIO_VALIDATE_SIGNATURE: "false" }));
     expect(parseStream(await r2.text()).params.caller).toBe("unknown");
+  });
+
+  it("refuses a public webhook when checks are on but TWILIO_AUTH_TOKEN is missing", async () => {
+    const r = await call(post("https://evade.health/voice/incoming", FORM), makeEnv({ PUBLIC_BASE_URL: PUBLIC }));
+    expect(r.status).toBe(503);
+    expect(await r.text()).not.toContain("<Stream");
+    // Local development without a token still works.
+    expect((await call(post("http://localhost:8787/voice/incoming", FORM), makeEnv())).status).toBe(200);
   });
 
   it("signature rejected when missing or wrong", async () => {

@@ -345,6 +345,9 @@ ${accessLink}
 // ---------- route handler (returns null when the path isn't an auth route) ----------
 export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks: (id: string) => Promise<void>): Promise<Response | null> {
   const path = url.pathname.replace(/\/$/, "");
+  if (path === "/auth/access/staff" && req.method === "GET") {
+    return Response.redirect(`${url.origin}/auth/access${url.search}`, 302);
+  }
   const ip = req.headers.get("CF-Connecting-IP");
   const accessPath = path === "/auth/access";
   if (accessPath || path === "/auth/demo" || path === "/auth/start" || path.startsWith("/auth/callback/")) {
@@ -493,6 +496,10 @@ export async function handleAuth(req: Request, env: AuthEnv, url: URL, seedTasks
   // inside the demo crew (demo.ts) and can't delete the account. Switching persona replaces the current session.
   if (path === "/auth/demo" && req.method === "GET") {
     if (env.DEMO_LOGIN !== "true") return Response.json({ error: "Demo sign-in is off" }, { status: 404 });
+    // Another site must not sign a visitor into the shared demo (ending their own session) with a link or redirect.
+    if (req.headers.get("Sec-Fetch-Site") === "cross-site") {
+      return Response.json({ error: "Open the demo from the EVAde website" }, { status: 403 });
+    }
     await ensureCurrentDemo(env);
     const redirect = safeRedirect(env, url.searchParams.get("redirect"), url);
     const persona: DemoPersona = url.searchParams.get("as") === "surgeon" ? "surgeon" : "astronaut";

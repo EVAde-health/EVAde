@@ -1,4 +1,5 @@
 import { Heading, Text } from '@astryxdesign/core/Text';
+import { Link } from '@astryxdesign/core/Link';
 import { HStack, Stack, VStack } from '@astryxdesign/core/Stack';
 import { Grid } from '@astryxdesign/core/Grid';
 import { Icon } from '@astryxdesign/core/Icon';
@@ -93,6 +94,7 @@ export default function SpaceAppsFooter() {
               Space Apps is a global hackathon led by NASA with space agencies around the world. Learn more at{' '}
               <a href={EVENT_URL} target="_blank" rel="noreferrer" className="space-footer__link">spaceappschallenge.org</a>.
             </Text>
+            <Link href="/bibliography">Bibliography</Link>
           </VStack>
           <VStack gap={2}>
             <HStack gap={1} vAlign="center">

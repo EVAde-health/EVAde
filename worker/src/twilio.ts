@@ -1,5 +1,5 @@
 /** Twilio helpers: TwiML builders, X-Twilio-Signature validation (WebCrypto), REST call. */
-import { envStr, flag, publicBaseUrl, type EnvLike } from "./config";
+import { envStr, flag, isLocalRequest, publicBaseUrl, type EnvLike } from "./config";
 
 export function xmlEscape(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -24,6 +24,11 @@ export function alertTwiml(message: string): string {
 // --------------------------------------------------------- signature check
 export function signatureCheckEnabled(env: EnvLike): boolean {
   return Boolean(envStr(env, "TWILIO_AUTH_TOKEN")) && flag(env, "TWILIO_VALIDATE_SIGNATURE", true);
+}
+
+/** Checks are on (the default) but there is no auth token to check with: a public webhook must refuse, not trust. */
+export function signatureTokenMissing(env: EnvLike, request: Request): boolean {
+  return flag(env, "TWILIO_VALIDATE_SIGNATURE", true) && !envStr(env, "TWILIO_AUTH_TOKEN") && !isLocalRequest(request);
 }
 
 /** The URL Twilio actually called (PUBLIC_BASE_URL + path + query), not the internal one. */

@@ -2,6 +2,7 @@ import { exports } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { handleRequest } from "../src/index";
 import { queueFlightSurgeonMessage, saveCheckin } from "../src/tools";
+import { computeSignature } from "../src/twilio";
 import { makeEnv, resetDb, testEnv, toolCtx, WsInbox } from "./helpers";
 
 const TOKEN = "test-browser-token";
@@ -144,8 +145,11 @@ describe("voice WebSockets end to end (Durable Object + fake xAI)", () => {
   });
 
   it("phone: /voice/incoming token -> /voice/stream bridges audio to xAI and back", async () => {
+    const form = { CallSid: "CA9", From: "+15550001111" };
+    const signature = await computeSignature("test-twilio-token", "https://evade.health/voice/incoming", form);
     const twiml = await (await exports.default.fetch("https://evade.health/voice/incoming", { method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "CallSid=CA9&From=%2B15550001111" })).text();
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Twilio-Signature": signature },
+      body: new URLSearchParams(form).toString() })).text();
     const token = /name="token" value="([^"]+)"/.exec(twiml)![1];
     expect(twiml).toContain('url="wss://evade.health/voice/stream"');
     const r = await openWs("https://evade.health/voice/stream");

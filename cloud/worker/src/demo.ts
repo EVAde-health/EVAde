@@ -60,6 +60,11 @@ export async function assertDemoScope(db: D1Database, req: Request, path: string
     throw new HttpError(403, "Use a personal account to view crew activity");
   }
   if (path.split("/").some(isRealPerson)) throw new HttpError(403, "The demo only reaches the demo crew");
+  // Staff routes such as POST /media and POST /journal/voice take the target person from ?user_id=.
+  const query = new URL(req.url).searchParams;
+  if ([...query.values()].some(isRealPerson) || PERSON_KEYS.some((key) => query.has(key) && !isDemoId(query.get(key)))) {
+    throw new HttpError(403, "The demo only reaches the demo crew");
+  }
   for (const [re, table] of OWNED_ROWS) {
     const id = path.match(re)?.[1];
     if (!id) continue;

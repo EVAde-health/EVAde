@@ -202,7 +202,9 @@ def test_websocket_bridge_end_to_end(monkeypatch):
             "customParameters": {"caller": "+15550001111", "token": token}}, "streamSid": "MZ9"}))
         # wait until the session is ready (greeting sent), then send audio
         for _ in range(200):
-            if any(m["type"] == "response.create" for m in fake_holder["xai"].sent):
+            # The server connects to (fake) xAI on its own task, so the fake may not exist yet.
+            xai = fake_holder.get("xai")
+            if xai and any(m["type"] == "response.create" for m in xai.sent):
                 break
             import time; time.sleep(0.01)
         ws.send_text(json.dumps({"event": "media", "streamSid": "MZ9",

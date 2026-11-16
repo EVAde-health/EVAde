@@ -45,6 +45,11 @@ Twilio phone calls (phone calls still end after 600 s).
 `/voice/api/checkins/latest` and `/voice/api/downlink` are aliases (kept for older clients),
 and `/voice/alert` is an alias of `/api/alert`.
 
+Without a token (`DEMO_OPEN` alone), the two read endpoints need the `crew_id` of a browser/app crew (for
+example the web app's `crew-<user id>`). They refuse the crew-wide feed (no `crew_id`) and phone callers'
+crews (a phone number, `anonymous` or `unknown`) with HTTP `403`, because phone check-ins are stored under
+the caller's number. The bearer token still reads every crew.
+
 `checkin` object: `id, created_at, crew_id, source, sleep_hours, mood, symptoms[], systolic,
 diastolic, temperature_c, blood_sugar_mg_dl, notes, level ("green"|"yellow"|"red"), reasons[], actions[]`.
 
