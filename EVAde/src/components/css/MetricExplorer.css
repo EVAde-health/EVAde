@@ -4,7 +4,18 @@
 }
 
 .explorer__table {
+  /* A plain block scroller: a flex column with a max height shrinks or centres its child, which hid the first rows. */
+  display: block;
   max-block-size: 300px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.explorer__table thead th {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  background: var(--color-background-surface, var(--color-background-primary, Canvas));
 }
 
 .explorer__zone-bar {
