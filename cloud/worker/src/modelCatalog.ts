@@ -45,3 +45,34 @@ export function catalogById(id: string) {
 export function catalogDocument() {
   return JSON.stringify(MODEL_CATALOG);
 }
+
+/** R2 folders in the evade-models bucket that evade-gateway loads, with the registry id each serves. */
+const SERVED_FOLDERS = [
+  ["seizure", "EVA-2"], ["ecg", "EVA-6"], ["spaceweather", "EVA-12"], ["ecg_deep", "EVA-13"], ["sleep_deep", "EVA-14"],
+] as const;
+
+export interface ArtifactManifest {
+  folder: string;
+  model_id: string;
+  weights: string | null;
+  weights_sha256: string | null;
+  code_commit: string | null;
+  trained_at: string | null;
+  r2_key: string;
+}
+
+/** Reads each served folder's manifest.json from R2: the weight file's SHA-256 that the gateway checks on load.
+ * Null when the bucket is not bound to this Worker (the page then says so instead of showing a hash). */
+export async function modelArtifacts(bucket: R2Bucket | undefined): Promise<ArtifactManifest[] | null> {
+  if (!bucket) return null;
+  return Promise.all(SERVED_FOLDERS.map(async ([folder, id]) => {
+    const key = `models/${folder}/manifest.json`;
+    let m: Record<string, unknown> | null = null;
+    try {
+      m = await (await bucket.get(key))?.json<Record<string, unknown>>() ?? null;
+    } catch { /* missing or unreadable manifest */ }
+    const text = (v: unknown) => (typeof v === "string" ? v : null);
+    return { folder, model_id: text(m?.model_id) ?? id, weights: text(m?.weights), weights_sha256: text(m?.sha256),
+      code_commit: text(m?.code_commit), trained_at: text(m?.trained_at), r2_key: key };
+  }));
+}

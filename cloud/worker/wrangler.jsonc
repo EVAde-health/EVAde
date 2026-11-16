@@ -19,7 +19,12 @@
     }
   ],
   // Private uploads, accessed through the authenticated media endpoints.
-  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "evade-media" }],
+  // MODEL_ARTIFACTS: Michael's model bucket. This Worker only reads models/<task>/manifest.json from it, so the
+  // Models page can show the weight SHA-256 that evade-gateway verifies when it loads each model.
+  "r2_buckets": [
+    { "binding": "MEDIA", "bucket_name": "evade-media" },
+    { "binding": "MODEL_ARTIFACTS", "bucket_name": "evade-models" }
+  ],
   // Selfie assessment. The image stays on Workers AI; USDA_API_KEY stays a secret (see below).
   "ai": { "binding": "AI" },
   // Live crew feed over WebSockets

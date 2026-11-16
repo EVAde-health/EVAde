@@ -456,11 +456,15 @@ describe("model predictions", () => {
     expect(count("alerts", uid)).toBe(0);
   });
 
-  it("space-weather is sent without a user id", async () => {
+  // Michael's SpaceWeatherRequest requires a registered user_id (backend-models evade/api/schemas.py); without it the
+  // model service answers 422 and EVA-12 never runs.
+  it("space-weather is sent with the model service's user id, like every other endpoint", async () => {
     const { token } = await astronaut();
-    await call("POST", "/predict/space-weather", { cookie: token, body: {} });
-    expect(calls.find((c) => c.path === "/v1/predict/space-weather")!.body.user_id).toBeUndefined();
-    expect(calls.some((c) => c.path === "/v1/users")).toBe(false);
+    await call("POST", "/predict/space-weather", { cookie: token, body: { provider: "noaa_swpc" } });
+    const sent = calls.find((c) => c.path === "/v1/predict/space-weather")!.body;
+    expect(typeof sent.user_id).toBe("string");
+    expect(sent.provider).toBe("noaa_swpc");
+    expect(calls.some((c) => c.path === "/v1/users")).toBe(true);
   });
 
   it("astronauts can't run predictions as someone else; unknown kinds are 404", async () => {
