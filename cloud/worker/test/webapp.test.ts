@@ -109,6 +109,7 @@ beforeEach(async () => {
 afterEach(() => {
   env.DB.raw.close();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 async function call(method: string, path: string, { token = "astro", body, origin = FRONTEND }: { token?: string | null; body?: unknown; origin?: string } = {}) {
@@ -554,6 +555,9 @@ describe("food search", () => {
 
 describe("synthetic simulation", () => {
   it("checks the admin role and simulates only seeded or explicitly synthetic astronauts", async () => {
+    // Simulated meals and water only exist after their hour of the UTC day, so pin the clock to the afternoon.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.parse("2026-11-15T15:15:00Z"));
     const raw: DatabaseSync = env.DB.raw;
     const demo = "00000000-0000-4000-8000-00000000d001";
     const demoStaff = "00000000-0000-4000-8000-00000000d002";
