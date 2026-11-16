@@ -215,7 +215,7 @@ export default function MetricExplorer({ vital, onVitalChange }: { vital: string
     if (activeView === 'zones' && normal) return <ZonesView readings={inWindow} normal={normal} unit={unit} decimals={decimals} />;
     if (activeView === 'table') {
       return (
-        <VStack className="explorer__table" isScrollable>
+        <div className="explorer__table" tabIndex={0} aria-label={`${label} readings table`}>
           <Table<TableRow>
             data={tableRows}
             idKey="id"
@@ -228,7 +228,7 @@ export default function MetricExplorer({ vital, onVitalChange }: { vital: string
               { key: 'high', header: 'High', align: 'end' },
             ]}
           />
-        </VStack>
+        </div>
       );
     }
     return (
