@@ -31,6 +31,7 @@ import SpaceWeatherPanel from '../components/SpaceWeatherPanel';
 import StatusBadge from '../components/StatusBadge';
 import VitalTile from '../components/VitalTile';
 import MetricModelDialog from '../components/MetricModelDialog';
+import { hasAiInsight } from '../data/aiInsight';
 import { useHealthData } from '../context/HealthDataContext';
 import { crewGreetingName, levelInfo, useMission } from '../context/MissionContext';
 import { behaviorAxes, behaviorIndex, classifyWith, healthScore, missionDay, sleepNights, weeklySleepAverage } from '../data/health';
@@ -237,7 +238,7 @@ function DashboardContent() {
       </VStack>
 
       <VStack gap={4}>
-        <SectionTitle title="Vitals" caption="Select a vital to explore its history below" />
+        <SectionTitle title="Vitals" caption="Tiles marked AI insight open the matching model. Use the explorer below for any vital's history" />
         <Grid columns={{ minWidth: 200, max: 4 }} gap={3}>
           {tiles.map((tile, i) => (
             <VitalTile
@@ -250,7 +251,8 @@ function DashboardContent() {
               delta={tile.delta}
               spark={tile.spark}
               isSelected={selectedVital === tile.id}
-              onSelect={() => { exploreVital(tile.id); setRiskMetric({ metric: tile.id, label: tile.label }); }}
+              hasAiInsight={hasAiInsight(tile.id)}
+              onSelect={hasAiInsight(tile.id) ? () => { exploreVital(tile.id); setRiskMetric({ metric: tile.id, label: tile.label }); } : undefined}
             />
           ))}
         </Grid>
