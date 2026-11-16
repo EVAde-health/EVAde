@@ -1,6 +1,6 @@
 import {
   fetchJournalMessages,
-  postJournalChat,
+  postJournalMessage,
   postVoiceSession,
   type ApiJournalMessage,
   type VoiceSessionCheckin,
@@ -24,9 +24,11 @@ export async function loadJournal(userId: string, signal: AbortSignal) {
   return (await fetchJournalMessages(userId, { signal })).map(toJournalMessage);
 }
 
-// Saves a private message and returns the companion's check-in reply.
+// Saves a private message and returns the EVAde companion's reply, written by Grok (POST /journal/messages).
+// The same call stores a journal entry, so the AI summary, mood and health-data parser run on it for the surgeon.
+// When Grok is unavailable the stored reply is a fixed fallback line, recorded with model "rules".
 export async function getAssistantReply(entry: JournalMessage, signal: AbortSignal): Promise<JournalMessage | null> {
-  const { reply } = await postJournalChat(entry.id, entry.text, { signal });
+  const { reply } = await postJournalMessage(entry.id, entry.text, { signal });
   return reply ? toJournalMessage(reply) : null;
 }
 
