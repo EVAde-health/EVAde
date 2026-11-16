@@ -1,1 +1,6 @@
-
+/* The meal list scrolls inside the card once it grows past a few entries. */
+.meal-logger__list {
+  max-block-size: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
