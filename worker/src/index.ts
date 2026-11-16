@@ -22,7 +22,7 @@ import { LANDING_HTML } from "./landing";
 import { acquireBrowserSlot, countBrowserSlots, maxConcurrentSessions, maxSessionSeconds, releaseSlot, TOO_MANY_TALKING } from "./slots";
 import { issueStreamToken, issueToken, WS_TICKET_PREFIX } from "./tokens";
 import { latestCheckin, listDownlink } from "./tools";
-import { alertTwiml, connectStreamTwiml, createCall, isValidTwilioRequest, parseForm, signatureCheckEnabled, TwilioError } from "./twilio";
+import { alertTwiml, connectStreamTwiml, createCall, isValidTwilioRequest, parseForm, signatureCheckEnabled, signatureTokenMissing, TwilioError } from "./twilio";
 
 export { VoiceSession } from "./session";
 
@@ -48,6 +48,10 @@ async function incomingCall(request: Request, env: Env): Promise<Response> {
   // Python: body.decode("utf-8", errors="replace")
   const body = new TextDecoder().decode(await request.arrayBuffer());
   const params = parseForm(body);
+  if (signatureTokenMissing(env, request)) {
+    log("error", "Rejected /voice/incoming: TWILIO_VALIDATE_SIGNATURE is on but TWILIO_AUTH_TOKEN is not set");
+    return errorResponse(503, "Twilio signature validation is not configured");
+  }
   if (signatureCheckEnabled(env) && !(await isValidTwilioRequest(env, request, params))) {
     log("warn", "Rejected /voice/incoming: bad or missing X-Twilio-Signature");
     return errorResponse(403, "Invalid Twilio signature");
